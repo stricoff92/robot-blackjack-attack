@@ -1,0 +1,30 @@
+{
+  "name": "robot-blackjack-attack",
+  "version": "1.0.0",
+  "description": "A blackjack roguelike web game for CrazyGames.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "homepage": "https://github.com/stricoff92/robot-blackjack-attack#readme",
+  "bugs": {
+    "url": "https://github.com/stricoff92/robot-blackjack-attack/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stricoff92/robot-blackjack-attack.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
+  }
+}
