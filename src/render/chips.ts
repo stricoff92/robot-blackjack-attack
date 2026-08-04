@@ -117,7 +117,7 @@ export function drawTableMarkings(ctx: CanvasRenderingContext2D, l: Layout): voi
   const cardTopY = feltTop + feltH * PLAYER_ROW
 
   ctx.save()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)'
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.32)'
   ctx.lineWidth = Math.max(3, cardW * 0.055)
 
   // Card box: rounded rectangle around the dealt-card area.
