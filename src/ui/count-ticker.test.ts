@@ -40,12 +40,25 @@ describe('CountTicker', () => {
     expect(t.isAnimating(520)).toBe(false)
   })
 
-  it('snaps down instead of rolling — a cost should read instantly', () => {
+  it('snaps down by default — a cost should read instantly', () => {
     const t = new CountTicker(30)
     t.retarget(10, 1000)
     expect(t.value(1000)).toBe(10)
     expect(t.isAnimating(1000)).toBe(false)
     expect(t.scale(1000)).toBe(1)
+  })
+
+  it('rolls DOWN through the integers, swelling, when rollDown is set', () => {
+    const t = new CountTicker(30, true)
+    t.retarget(10, 1000)
+    expect(t.isAnimating(1000)).toBe(true)
+    expect(t.value(1000)).toBe(30) // start
+    const mid = t.value(1180) // partway through the count-down
+    expect(mid).toBeLessThan(30)
+    expect(mid).toBeGreaterThan(10)
+    expect(t.scale(1180)).toBeGreaterThan(1) // swells while ticking down, like ticking up
+    expect(t.value(10_000)).toBe(10) // landed
+    expect(t.isAnimating(10_000)).toBe(false)
   })
 
   it('retargets from the value shown mid-roll, not the old origin', () => {

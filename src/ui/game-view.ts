@@ -5,20 +5,25 @@ import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
 import { canDouble, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
-import { isLastCall, nextBet, TOTAL_DEALERS } from '../game/run'
+import { DESTROY_TOKEN, isLastCall, nextBet, TOTAL_DEALERS } from '../game/run'
 import { Session, type SessionState } from '../game/session'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawShoe, drawShuffle, playerCardCenter, playerHandCenter, shoeAnchor, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
+import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
 import { drawHealthBar } from '../render/health'
+import { drawNexus, drawStrikeFx, nexusYellowLight } from '../render/nexus'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
 import { CountTicker } from './count-ticker'
 import { DealAnimation } from './deal-animator'
+import { DealerAnimation, HIT_TOTAL_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
 import { HealthAnimation } from './health-animator'
 import { MulliganAnimation } from './mulligan-animator'
+import { NexusAnimation } from './nexus-animator'
+import { ReturnAnimation } from './return-animator'
 import { TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
 
@@ -27,13 +32,17 @@ import { createStage, type Stage } from './stage'
 // counter + each powerup cost pill) then serves from cache.
 import powerUrl from '../assets/power.png'
 
-// Canvas layers, bottom → top. Chips sit ABOVE cards so flying chips (deal /
-// payout) pass in front of the cards; the bet chips rest in the betting circle
-// well below the cards, so nothing overlaps at rest. The HUD (dealer health bar)
-// sits above that, and reward tokens fly above that up to the counter. The 'mask'
-// layer is on top of everything: a darkness that the Analyze projection lights
-// through (the HTML button/counter overlay sits above it, so those stay bright).
-const LAYERS = ['back', 'table', 'cards', 'chips', 'hud', 'tokens', 'mask'] as const
+// Canvas layers, bottom → top. The dealer figure sits between the room ('back')
+// and the felt/rail ('table') so the rail overlaps its lower body (and death
+// debris) — it reads as standing behind the table. Chips sit ABOVE cards so
+// flying chips (deal / payout) pass in front of the cards; the bet chips rest in
+// the betting circle well below the cards, so nothing overlaps at rest. The HUD
+// (dealer health bar) sits above that. 'fx' carries the nexus laser strike (above
+// the table + cards, below the reward tokens that fly up to the counter). The
+// 'mask' layer is on top of everything: a darkness that the Analyze projection
+// lights through, and the dealer's emissive eye glow (the HTML button/counter
+// overlay sits above it, so those stay bright).
+const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'hud', 'fx', 'tokens', 'mask'] as const
 
 // When a reward's tokens lift off, relative to the card motion settling
 // (anim.animEnd): a hit's token waits a short beat after its card lands, and a
@@ -43,6 +52,15 @@ const TOKEN_HAND_STAGGER = 120
 
 // How long a dismissed Analyze reading takes to flicker out.
 const ANALYSIS_FADE_MS = 300
+
+// Beat after the won chips collect into the player's stack before the nexus fires
+// its damage laser — so the payout finishes landing before the attack, never during.
+const LASER_GAP = 180
+// Beat after the nexus attack (and any death → walk-in) finishes before the spent
+// cards gather back into the deck — the winning hand's final beat.
+const GATHER_GAP = 220
+// Beat after the returned card merges into the deck before the dealer plays out.
+const RETURN_DEAL_DELAY = 220
 
 const SUIT_SYMBOLS: Record<Suit, string> = {
   hearts: '♥',
@@ -82,16 +100,33 @@ class GameView {
   private readonly anim = new DealAnimation()
   private readonly chips = new ChipAnimation()
   private readonly health = new HealthAnimation()
+  private readonly dealer = new DealerAnimation()
   private readonly tokens = new TokenAnimation()
   private readonly mulligan = new MulliganAnimation()
+  private readonly returnAnim = new ReturnAnimation()
+  // The table nexus's twin emitter lights: dim at rest, glowing while the nexus
+  // pays out its reward tokens and fires its damage laser (see run()).
+  private readonly nexus = new NexusAnimation()
   // The two number readouts roll from their old value to the new one (ticking
   // through the integers) and swell while they roll, rather than snapping: the
   // token count as rewards land, the bankroll as a payout merges into the pile.
-  private readonly tokenTicker = new CountTicker()
+  // The token counter rolls in BOTH directions (rewards tick up, spends tick down);
+  // the bankroll snaps on a decrease (a bet/loss is an instant cost).
+  private readonly tokenTicker = new CountTicker(0, true)
   private readonly bankrollTicker = new CountTicker()
   private readonly stage: Stage
   private raf = 0
   private lastAnimating = false
+  // Edge tracker for the dealer-death pause: when it clears, buttons re-enable.
+  private lastDealerBlocking = false
+  // The card being returned (flips + flies back to the deck) and where it set off.
+  private returnCardData: { card: Card; from: Point } | null = null
+  // Damage/kill deferred from the resolve to the Next-hand click: the laser fires
+  // AFTER the token reward flies, and the cards gather back into the deck only once
+  // it's done. `dealAfter` is the timestamp the next deal waits for while the laser
+  // (and any death → walk-in), then the card gather + shuffle, play out.
+  private pendingAttack: { fromIntegrity: number; fromShift: number; toIntegrity: number; toShift: number } | null = null
+  private dealAfter = 0
   // When the current Analyze reading first appeared, so its flicker can ramp in
   // from that moment (the projection stutters on over the first few hundred ms).
   private analysisStart = 0
@@ -148,15 +183,19 @@ class GameView {
   // resize (and the initial paint). The cards layer is redrawn per frame too.
   private onResize(canvas: LayeredCanvas): void {
     const layout = computeLayout(canvas.width, canvas.height)
-    this.scene.drawBackground(canvas.layers.back.ctx, layout)
-    this.paintTable(canvas, layout, !this.deckOnCards)
     const t = now()
     this.anim.setNow(t)
+    this.scene.drawBackground(canvas.layers.back.ctx, layout)
+    this.paintTable(canvas, layout, !this.deckOnCards)
+    // Repaint the dealer + strike fx at their CURRENT animated state, so a resize
+    // mid-death/mid-strike doesn't blank the figure or the beam.
+    this.drawDealerFigure(canvas, layout, t)
     this.drawCards(canvas, layout, t)
     this.drawChips(canvas, layout, t)
     this.drawHealth(canvas, layout, t)
     this.drawTokens(canvas, layout, t)
     this.drawMask(canvas, layout, t)
+    this.drawFx(canvas, layout, t)
   }
 
   // Repaint the table layer (felt + rail + betting-spot markings), optionally
@@ -166,10 +205,29 @@ class GameView {
     ctx.clearRect(0, 0, layout.width, layout.height)
     this.scene.drawTable(ctx, layout)
     drawTableMarkings(ctx, layout)
+    drawNexus(ctx, layout) // the placeholder device damage + tokens originate from
     if (withDeck) {
       const a = shoeAnchor(layout)
       drawShoe(ctx, a.x, a.y, a.w, a.h)
     }
+  }
+
+  // The dealer layer: the animated robot figure, below the rail so its lower body
+  // and death debris tuck behind the table.
+  private drawDealerFigure(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+    drawDealer(canvas.layers.dealer.ctx, layout, this.dealer, timestamp)
+  }
+
+  // The fx layer: the nexus emitter-light charge glow + the laser strike (beam +
+  // muzzle flash + impact sparks).
+  private drawFx(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+    const charge = {
+      red: this.nexus.redLight(timestamp),
+      yellow: this.nexus.yellowLight(timestamp),
+      vent: this.nexus.ventAge(timestamp),
+      chargeUp: this.nexus.chargeUp(timestamp),
+    }
+    drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer, charge, timestamp)
   }
 
   // The only per-frame work: clear + repaint the cards layer.
@@ -204,6 +262,14 @@ class GameView {
       drawMulliganDiscard(ctx, layout, this.mulligan.frames(timestamp))
     }
 
+    // Return: the returned card flips face-down and flies back onto the deck,
+    // just before the dealer reveals + plays out.
+    if (this.returnCardData && this.returnAnim.isAnimating(timestamp)) {
+      const f = this.returnAnim.frame(timestamp)
+      const { card, from } = this.returnCardData
+      drawReturnCard(ctx, layout, card, from.x, from.y, f.flip, f.fly)
+    }
+
     // The Analyze readout sits in the band between the two hands. Only while a
     // reading is live and the table is settled — never over cards in flight. It
     // shimmers, so `timestamp` drives it and the loop is kept alive below.
@@ -222,6 +288,10 @@ class GameView {
     if (ar) {
       drawAnalysisMask(ctx, layout, ar.a, ar.age, ar.fade)
     }
+    // The dealer's emissive red eye glow, added on top (so it also shows through
+    // the Analyze darkness). Drawn every frame the loop runs and on resize; at
+    // rest the last frame's glow persists on this otherwise-clear layer.
+    drawDealerEyeGlow(ctx, layout, this.dealer.eyeGlow(timestamp))
   }
 
   // The Analyze projection to paint this frame (live or flickering out), with the
@@ -360,6 +430,8 @@ class GameView {
     this.drawHealth(canvas, layout, timestamp)
     this.drawTokens(canvas, layout, timestamp)
     this.drawMask(canvas, layout, timestamp)
+    this.drawDealerFigure(canvas, layout, timestamp)
+    this.drawFx(canvas, layout, timestamp)
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter(timestamp)
 
@@ -391,25 +463,48 @@ class GameView {
       this.drawTokens(canvas, layout, timestamp)
       this.syncOverlay(timestamp)
 
-      // No Deal button — once the deck is ready, deal the next hand automatically.
-      if (this.state.phase === 'betting') {
+      // No Deal button — once the deck is ready, deal the next hand automatically,
+      // UNLESS a deferred laser/death is still to play (dealAfter) — then wait.
+      if (this.state.phase === 'betting' && this.dealAfter <= timestamp) {
         this.run(() => this.session.deal())
         return
       }
     }
 
-    // Keep the loop alive while the sequence, the health bar, a reward token, or
-    // a still-rolling counter is moving. Like the health bar, tokens fly on past
+    // Deferred deal: the token reward + nexus laser (and any death → walk-in) play
+    // after the Next-hand click; only once that finishes do the next cards deal.
+    if (this.dealAfter > 0 && timestamp >= this.dealAfter && this.state.phase === 'betting' && !sequenceAnimating) {
+      this.dealAfter = 0
+      this.run(() => this.session.deal())
+      return
+    }
+
+    // The dealer-death pause blocks the buttons via syncOverlay's `animating`, but
+    // syncOverlay only runs per-action + on the settle edge — so detect the moment
+    // the block clears and re-sync to re-enable the buttons + show the result.
+    const dealerBlocking = this.dealer.isBlocking(timestamp)
+    if (this.lastDealerBlocking && !dealerBlocking) {
+      this.syncOverlay(timestamp)
+    }
+    this.lastDealerBlocking = dealerBlocking
+
+    // Keep the loop alive while the sequence, the health bar, a reward token, the
+    // dealer (its strike/death/walk-in or low-health ambient sparks), or a
+    // still-rolling counter is moving. Like the health bar, tokens fly on past
     // the settle (they don't gate the buttons), and the counters keep rolling for
     // a beat after their last burst lands — so all are checked here to finish
     // smoothly.
     if (
       sequenceAnimating ||
       this.health.isAnimating(timestamp) ||
+      this.dealer.isAnimating(timestamp) ||
       this.tokens.isAnimating(timestamp) ||
       this.tokenTicker.isAnimating(timestamp) ||
       this.bankrollTicker.isAnimating(timestamp) ||
       this.mulligan.isAnimating(timestamp) ||
+      this.returnAnim.isAnimating(timestamp) || // the returned card flying back to the deck
+      this.nexus.isAnimating(timestamp) || // the emitter lights glowing / fading back to dim
+      this.dealAfter > timestamp || // waiting to deal until the deferred laser/death finishes
       this.showingAnalysis(timestamp) || // the Analyze projection shimmers until dismissed
       this.analysisFade(timestamp) !== null // ...then flickers out
     ) {
@@ -600,36 +695,82 @@ class GameView {
       this.analysisFadeStart = t
     }
     if (prevRound && !this.state.round) {
-      // Next hand called: gather the cards back into the deck + shuffle, AND
-      // settle the deferred chips now (winners collect, losers pay the house).
-      // Move the deck onto the cards layer so the shuffle can split it.
+      // Next hand called: settle the deferred chips now (winners collect, losers
+      // pay the house) and, once the choreography lets it, gather the cards back
+      // into the deck + shuffle. Move the deck onto the cards layer so the shuffle
+      // can split it; it rests there until the gather actually begins.
       this.collectRound = prevRound
-      this.anim.collect(prevRound, t)
       this.chips.clear(prevRound, t)
       this.clearEnd = this.chips.animEnd
       this.clearPending = true
       this.deckOnCards = true
       const canvas = this.stage.canvas
       this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
-      // Only a New-run resets health here (a plain next hand leaves it untouched).
-      this.health.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
-      // A plain next hand (from 'resolved') now flies the withheld win tokens up
-      // to the counter; a New run (from 'over') just drops them — the count is
-      // resetting to zero anyway.
-      if (prevPhase === 'resolved' && prevRound) {
-        this.releaseWinTokens(prevRound, t)
-      }
+      // The win tokens were already awarded on the resolve (they flew in behind the
+      // won chips). A New run (from 'over') just drops the withheld final reward.
       this.heldTokens = 0
+      // A New run zeroes the count: snap it rather than dramatically rolling the
+      // whole balance down (a full reset isn't a "spend").
+      if (prevPhase === 'over') {
+        this.tokenTicker.set(this.displayedTokens(t))
+      }
+      if (this.pendingAttack && prevPhase === 'resolved') {
+        // A win: the won chips first collect from the bet area into the player's
+        // stack (chips.clear, above), THEN the laser fires, THEN (on a kill) the
+        // dealer dies and the next walks in — and only after ALL of that do the spent
+        // cards gather back into the deck. Each beat follows the last, so the payout
+        // never animates during the attack.
+        const pa = this.pendingAttack
+        this.pendingAttack = null
+        const attackStart = this.chips.animEnd + LASER_GAP
+        const attackEnd = this.playAttack(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
+        this.anim.collect(prevRound, attackEnd + GATHER_GAP)
+        this.dealAfter = this.anim.animEnd
+        // The red muzzle blasts for the laser, then fades + vents steam. No yellow
+        // flare — the tokens already flew on the resolve; the yellow just eases out
+        // of its anticipation glow (fire's null tokensEnd).
+        this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+      } else {
+        // No deferred damage (a losing/pushing hand) or a New run: nothing attacks,
+        // so gather the cards right away and refresh the health + dealer state now
+        // (only a New run actually changes them here).
+        this.anim.collect(prevRound, t)
+        this.pendingAttack = null
+        this.dealAfter = 0
+        this.health.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
+        this.dealer.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
+      }
     } else {
       if (this.state.round) {
         this.collectRound = null
       }
       const round = this.state.round
+      const ai = prevRound ? prevRound.activeIndex : 0
+      // Return pops the most-recently-drawn card off the active hand (one fewer
+      // card than before) and auto-stands — the only action that REMOVES a card.
+      const returned =
+        prevPhase === 'playing' &&
+        !!prevRound &&
+        !!round &&
+        prevRound.hands.length === round.hands.length && // not a split (which also drops a card)
+        !!prevRound.hands[ai] &&
+        !!round.hands[ai] &&
+        round.hands[ai].cards.length === prevRound.hands[ai].cards.length - 1
       const mulliganed = !!prevRound && !prevRound.mulliganed && !!round && round.mulliganed
       const split =
         prevPhase === 'playing' && !!prevRound && prevRound.hands.length === 1 && !!round && round.hands.length === 2
       this.splitPrev = null // stale after any action; the split branch re-sets it
-      if (mulliganed && prevRound && round) {
+      this.returnCardData = null
+      if (returned && prevRound && round) {
+        // Flip the returned card face-down + fly it back onto the deck, THEN a
+        // short beat, THEN the dealer reveals its hole and plays out.
+        const li = prevRound.hands[ai].cards.length - 1
+        const canvas = this.stage.canvas
+        const layout = computeLayout(canvas.width, canvas.height)
+        this.returnCardData = { card: prevRound.hands[ai].cards[li], from: playerCardCenter(layout, prevRound, ai, li) }
+        const returnEnd = this.returnAnim.begin(t)
+        this.anim.sync(prevPhase, this.state, returnEnd + RETURN_DEAL_DELAY)
+      } else if (mulliganed && prevRound && round) {
         // Toss the old opening cards to the dealer, then deal the fresh pair once
         // they've been swept away.
         const discardEnd = this.mulligan.begin(prevRound.hands[0].cards, t)
@@ -650,9 +791,30 @@ class GameView {
       } else {
         this.anim.sync(prevPhase, this.state, t)
       }
-      // Damage lands once the cards settle, in sync with the payout.
-      this.health.sync(prevIntegrity, prevShift, integrity, shiftIndex, this.anim.animEnd)
-      // Reward tokens fly up to the counter once the cards settle.
+      // A winning hand damages the dealer, but the nexus LASER doesn't fire yet:
+      // it's deferred to the Next-hand click, after the token reward (see the
+      // Next-hand branch above). The exception is the final kill / game end
+      // (phase 'over'), where there's no Next hand — so the attack plays now.
+      const damaged = integrity < prevIntegrity || shiftIndex > prevShift
+      if (damaged) {
+        if (this.state.phase === 'over') {
+          const attackStart = this.anim.animEnd
+          this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, attackStart)
+          // No Next hand (and no reward tokens) on the final blow: the red muzzle
+          // blasts for the laser, then fades + vents steam. No yellow flare.
+          this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+        } else {
+          this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
+          // The nexus now holds a reward + strike to deliver: light both emitters in
+          // anticipation and hold the glow until the player calls the next hand. It
+          // starts only once the cards have SETTLED (anim.animEnd), not at the
+          // action — otherwise a natural blackjack, which resolves right off the
+          // deal, would have the nexus charging before the cards even land.
+          this.nexus.anticipate(this.anim.animEnd)
+        }
+      }
+      // Reward tokens for a surviving hit fly up right away; the win reward is
+      // handled below, timed to the chips.
       this.scheduleTokens(prevPhase, prevTokens)
       // On resolve, freeze the bankroll at its pre-settle *available* value (the
       // live bet is on the table); it releases to the new total once the payout
@@ -660,6 +822,12 @@ class GameView {
       if (this.syncChips(prevPhase, t)) {
         const bet = this.state.round ? this.state.round.hands.reduce((sum, hand) => sum + hand.bet, 0) : 0
         this.heldChips = prevChips - bet
+        // Award the win reward the moment the won chips finish sliding into place
+        // beside the bet (chips.animEnd) — no longer deferred to the Next-hand click.
+        // Only a normal resolve pays the counter; a final blow ('over') ends the run.
+        if (this.state.phase === 'resolved' && this.state.round) {
+          this.awardWinTokens(this.state.round, this.chips.animEnd + TOKEN_SPAWN_DELAY)
+        }
       } else if (prevPhase === 'betting') {
         this.heldChips = null
       }
@@ -691,13 +859,11 @@ class GameView {
     return false
   }
 
-  // React to the tokens this action just earned. A surviving hit credits +1
-  // while play continues, so its token flies from the fresh card right away. A
-  // resolve's winning hands are WITHHELD instead of flown: the reward waits at
-  // the counter (frozen out of the count) until the player calls the next hand,
-  // then flies in from the hands — the same deferral the payout chips use. The
-  // +40 dealer-kill token is not handled here at all; it belongs with the
-  // dealer-death animation, so for now it just lands in the count at resolve.
+  // React to the tokens this action just earned. Every token flies from the table
+  // nexus (the device damage + rewards originate from). A surviving hit credits +1
+  // while play continues, so its token flies right away. A winning resolve's reward
+  // is flown by awardWinTokens (timed to the chips), not here. The +40 dealer-kill
+  // token is emitted from the nexus in run() (timed to the dealer's destruction).
   private scheduleTokens(prevPhase: SessionState['phase'], prevTokens: number): void {
     const round = this.state.round
     if (!round) {
@@ -710,40 +876,64 @@ class GameView {
     if (phase === 'playing' && this.state.run.tokens > prevTokens) {
       const canvas = this.stage.canvas
       const layout = computeLayout(canvas.width, canvas.height)
-      const hi = round.activeIndex
-      const ci = round.hands[hi].cards.length - 1
       const amount = this.state.run.tokens - prevTokens
-      this.tokens.emit(playerCardCenter(layout, round, hi, ci), amount, this.anim.animEnd + TOKEN_SPAWN_DELAY)
+      const liftoff = this.anim.animEnd + TOKEN_SPAWN_DELAY
+      this.tokens.emit(nexusYellowLight(layout), amount, liftoff)
+      // Pulse the yellow vent as the reward token shoots out of it.
+      this.nexus.pulseYellow(liftoff)
       return
     }
 
-    // Resolve: withhold the winning hands' reward from the count; it flies on the
-    // next hand (see releaseWinTokens).
-    const resolvedNow = phase === 'resolved' || phase === 'over'
-    const wasResolved = prevPhase === 'resolved' || prevPhase === 'over'
-    if (resolvedNow && !wasResolved) {
+    // Final blow: the run is ending, so the last hand's reward is withheld from the
+    // count and simply dropped when it resets — never flown to the counter.
+    if (phase === 'over' && prevPhase !== 'over') {
       this.heldTokens = winTokensTotal(round)
     }
   }
 
-  // Fly the withheld win/blackjack tokens up to the counter when the next hand is
-  // called, from each winning hand, staggered so a split's two wins cascade.
-  private releaseWinTokens(round: Round, t: number): void {
+  // Fly the win/blackjack tokens up to the counter, from the nexus yellow vent,
+  // staggered per winning hand so a split's two wins cascade. Called on the resolve
+  // once the won chips have slid into place (startAfter = chips settle), so the
+  // reward lands right behind the money — no waiting for the Next-hand click.
+  private awardWinTokens(round: Round, startAfter: number): void {
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
+    const from = nexusYellowLight(layout)
     round.hands.forEach((hand, hi) => {
       const amount = winTokenFor(hand, round)
       if (amount > 0) {
-        this.tokens.emit(playerHandCenter(layout, round, hi), amount, t + hi * TOKEN_HAND_STAGGER)
+        const liftoff = startAfter + hi * TOKEN_HAND_STAGGER
+        this.tokens.emit(from, amount, liftoff)
+        // Pulse the yellow vent as the reward shoots out of it.
+        this.nexus.pulseYellow(liftoff)
       }
     })
+  }
+
+  // Fire the nexus laser at the dealer for a damage/kill, starting at `startAfter`.
+  // Returns when the sequence finishes — a plain hit, or the full death → walk-in
+  // → recharge on a kill — so the next deal can wait for it. The +40 kill token
+  // flies from the nexus once the old dealer is fully destroyed.
+  private playAttack(fromI: number, fromS: number, toI: number, toS: number, startAfter: number): number {
+    const final = this.state.run.won || toS > TOTAL_DEALERS
+    this.health.sync(fromI, fromS, toI, toS, startAfter)
+    this.dealer.sync(fromI, fromS, toI, toS, startAfter, final)
+    if (toS > fromS) {
+      const canvas = this.stage.canvas
+      const layout = computeLayout(canvas.width, canvas.height)
+      this.tokens.emit(nexusYellowLight(layout), DESTROY_TOKEN, startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS)
+      return startAfter + KILL_TOTAL_MS
+    }
+    return startAfter + HIT_TOTAL_MS
   }
 
   // Sync overlay text + button state. While cards are in motion, buttons are
   // disabled and the result message is withheld until the sequence settles.
   private syncOverlay(timestamp: number): void {
     const s = this.state
-    const animating = this.anim.isAnimating(timestamp)
+    // The dealer-death pause blocks input the same way card motion does: all
+    // buttons disabled and the result message withheld until the sequence ends.
+    const animating = this.anim.isAnimating(timestamp) || this.dealer.isBlocking(timestamp)
 
     // Point the counter at its current value (tokens still flying are withheld);
     // the frame loop rolls it up as they land.

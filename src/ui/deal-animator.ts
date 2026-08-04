@@ -26,7 +26,7 @@ const COLLECT_MS = 380 // per card: flip face-down in place, then fly to the dec
 const COLLECT_STAGGER = 55 // between cards being gathered
 const SHUFFLE_GAP = 130 // pause between the last card landing and the riffle
 const SLIDE_MS = 220 // deck slides out to centre (and back) for the shuffle
-const SHUFFLE_MS = 900 // riffle shuffle (two passes)
+const SHUFFLE_MS = 450 // riffle shuffle (one pass)
 
 type Phase = SessionState['phase']
 

@@ -13,11 +13,16 @@
 import { FULL_INTEGRITY } from '../game/run'
 import { smoothEnd3, smoothStep } from '../render/easing'
 import type { Ghost, HealthView } from '../render/health'
+import { KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_GONE_MS } from './dealer-animator'
 
 const DROP_MS = 640 // removed slice flashes then fades (a normal hit)
-const DRAIN_MS = 460 // the whole bar drains to empty when the dealer is destroyed
-const KILL_PAUSE = 160 // beat of emptiness before the next dealer's bar fills
-const REFILL_MS = 620 // the replacement dealer's bar fills up
+// Kill timing is locked to the dealer death choreography (dealer-animator.ts) so
+// the two never drift: the bar drains as the figure breaks apart, sits empty
+// through the gap while the old dealer is gone, then refills exactly as the
+// replacement walks in. drain → pause → refill sums to the same 1700ms window.
+const DRAIN_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS * 0.6 // empty by the time it's mostly rubble
+const KILL_PAUSE = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS - DRAIN_MS // drainEnd → arrival
+const REFILL_MS = KILL_ARRIVE_MS // fills as the new dealer walks in
 
 type Mode = 'none' | 'drop' | 'kill' | 'refill'
 

@@ -650,6 +650,34 @@ export function drawMulliganDiscard(ctx: CanvasRenderingContext2D, l: Layout, fr
   })
 }
 
+// The Return toss: a single card flips face-down and flies from its slot (given
+// as a centre point) back onto the deck (shoe), fading in as it merges. Reuses
+// the shared flip render. `fly` 0→1 = resting slot → merged into the deck.
+export function drawReturnCard(
+  ctx: CanvasRenderingContext2D,
+  l: Layout,
+  card: Card,
+  fromCx: number,
+  fromCy: number,
+  flip: number,
+  fly: number,
+): void {
+  if (fly >= 1) {
+    return
+  }
+  const dpr = window.devicePixelRatio || 1
+  const { w, h } = cardSize(l)
+  const shoe = shoeAnchor(l)
+  const fromX = fromCx - w / 2
+  const fromY = fromCy - h / 2
+  const e = smoothStep(fly)
+  const x = fromX + (shoe.x - fromX) * e
+  const y = fromY + (shoe.y - fromY) * e
+  // Fade out over the back half so it dissolves into the deck rather than stopping.
+  const alpha = fly < 0.6 ? 1 : Math.max(0, 1 - (fly - 0.6) / 0.4)
+  drawFlipCard(ctx, card, x, y, w, h, flip, alpha, dpr)
+}
+
 // Draw a single card at (x, y) at a given flip (1 = face, 0 = back) and alpha —
 // the shared flip render used by the deal and the mulligan discard.
 function drawFlipCard(
@@ -740,11 +768,11 @@ export function drawShoe(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   blitCard(ctx, getCardSprite(null, w, h, dpr), x, y)
 }
 
-// A riffle shuffle, run twice. Each pass: the deck splits into two piles that
-// slide apart, then cards fly from both piles into a single deck reforming in
-// the centre. Drawn on the cards layer (the static table-layer deck is hidden
-// while this plays, so the split leaves no ghost deck behind).
-const SHUFFLE_PASSES = 2
+// A riffle shuffle, a single pass: the deck splits into two piles that slide
+// apart, then cards fly from both piles into a single deck reforming in the
+// centre. Drawn on the cards layer (the static table-layer deck is hidden while
+// this plays, so the split leaves no ghost deck behind).
+const SHUFFLE_PASSES = 1
 const SPLIT_FRACTION = 0.3 // portion of each pass spent splitting apart
 const FLYERS = 8 // cards riffling across per pass
 

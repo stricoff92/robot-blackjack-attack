@@ -13,7 +13,7 @@
 
 import type { Point, TokenBurst, TokenView } from '../render/tokens'
 
-const FLY_MS = 680 // source → counter
+export const FLY_MS = 665 // source → counter
 
 // How many sprites make up a burst of `amount` tokens — a small, readable puff,
 // never one-per-token (a 21-token blackjack would be a blizzard).

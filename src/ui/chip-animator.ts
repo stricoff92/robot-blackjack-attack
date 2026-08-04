@@ -15,7 +15,7 @@ import type { BetChipState, ChipView } from '../render/chips'
 
 const PLACE_MS = 380 // bet flies from the player's stack to the bet spot on the deal
 const FLY_MS = 420 // winnings dealer → beside the bet (win), or bet → dealer (loss)
-const COLLECT_MS = 520 // bet (+ winnings) fly into the player's bankroll
+const COLLECT_MS = 442 // bet (+ winnings) fly into the player's bankroll
 const HAND_STAGGER = 90 // offset between hands settling, so splits cascade
 
 export class ChipAnimation implements ChipView {

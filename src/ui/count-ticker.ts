@@ -23,7 +23,9 @@ export class CountTicker {
   private start = 0
   private end = 0
 
-  constructor(initial = 0) {
+  // When true, decreases roll (tick + swell) the same as increases instead of
+  // snapping — used by the token counter, whose spends should count down.
+  constructor(initial = 0, private readonly rollDown = false) {
     this.from = initial
     this.target = initial
   }
@@ -37,21 +39,22 @@ export class CountTicker {
     this.end = 0
   }
 
-  // Aim at `value`, rolling up from whatever shows right now. A decrease snaps
-  // (spending tokens, paying the house) — only rewards roll; instant is the right
-  // feedback for a cost. A no-op when already headed there.
+  // Aim at `value`, rolling from whatever shows right now. By default a decrease
+  // snaps — instant is the right feedback for a cost (a bet placed, the house paid);
+  // a `rollDown` ticker instead counts DOWN, ticking + swelling just like a rise.
+  // A no-op when already headed there.
   retarget(value: number, now: number): void {
     if (value === this.target) {
       return
     }
-    if (value < this.target) {
+    if (value < this.target && !this.rollDown) {
       this.set(value)
       return
     }
     this.from = this.value(now)
     this.target = value
     this.start = now
-    const jump = value - this.from
+    const jump = Math.abs(value - this.from)
     this.end = now + clamp(MIN_MS + jump * MS_PER_UNIT, MIN_MS, MAX_MS)
   }
 
