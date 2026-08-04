@@ -1,4 +1,12 @@
-export type PowerupId = 'peek' | 'late-double' | 'foresight' | 'second-chance' | 'freeze' | 'mulligan' | 'analyze'
+export type PowerupId =
+  | 'peek'
+  | 'late-double'
+  | 'foresight'
+  | 'second-chance'
+  | 'freeze'
+  | 'mulligan'
+  | 'analyze'
+  | 'return'
 
 export interface Powerup {
   id: PowerupId
@@ -49,5 +57,11 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
     name: 'Analyze',
     cost: 4,
     description: 'Read your bust-on-hit odds and the dealer-win odds. Folds in any peeked cards. Clears the moment you act.',
+  },
+  return: {
+    id: 'return',
+    name: 'Return',
+    cost: 50,
+    description: 'Push your most recent card back onto the shoe for the dealer to draw, then stand.',
   },
 }

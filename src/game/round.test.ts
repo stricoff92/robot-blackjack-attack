@@ -4,6 +4,7 @@ import type { Card, Rank, Suit } from './deck'
 import {
   armSecondChance,
   canMulligan,
+  canReturn,
   canSplit,
   DEFAULT_ROUND_RULES,
   doubleDown,
@@ -14,6 +15,7 @@ import {
   mulligan,
   payout,
   type PlayerHand,
+  returnCard,
   split,
   stand,
   startRound,
@@ -41,6 +43,32 @@ describe('startRound', () => {
 
     expect(outcomeOf(round)).toBe('push')
     expect(payout(round)).toBe(0)
+  })
+})
+
+describe('returnCard', () => {
+  it('pushes the last-drawn card back onto the shoe for the dealer to draw, then auto-stands', () => {
+    // Player 6+6=12 hits a 9 -> 21 (alive, three cards). Dealer shows 10 over a 6
+    // (16, must hit). The 9 is a poison: fine for the player, a bust for the dealer.
+    const round = hit(startRound([card('6'), card('6', 'hearts'), card('10'), card('6', 'diamonds'), card('9')], 50))
+    expect(round.hands[0].cards.map((c) => c.rank)).toEqual(['6', '6', '9'])
+    expect(round.hands[0].busted).toBe(false)
+
+    const returned = returnCard(round)
+    // Player is back to two cards and stood; the round resolves straight away.
+    expect(returned.hands[0].cards.map((c) => c.rank)).toEqual(['6', '6'])
+    expect(returned.hands[0].finished).toBe(true)
+    expect(returned.status).toBe('resolved')
+    // The dealer drew the returned 9 (16 -> 25) and busted, so the 12 wins.
+    expect(returned.dealer.map((c) => c.rank)).toEqual(['10', '6', '9'])
+    expect(outcomeOf(returned)).toBe('win')
+  })
+
+  it('is unavailable until the hand has taken a hit', () => {
+    const fresh = startRound([card('9'), card('7'), card('10'), card('6'), card('2')], 50)
+    expect(canReturn(fresh)).toBe(false)
+    expect(() => returnCard(fresh)).toThrow()
+    expect(canReturn(hit(fresh))).toBe(true)
   })
 })
 

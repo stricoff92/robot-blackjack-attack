@@ -114,6 +114,25 @@ export class DealAnimation implements CardAnim {
     this.end = this.slideBackStart + SLIDE_MS
   }
 
+  // Split: the two originally-dealt cards glide (staying face-up) from the
+  // single-hand layout into the two new hands, then a fresh card deals into each
+  // hand from the shoe. The glide's from-position is resolved in the render layer
+  // (drawHands via splitPrev); here we only re-time the cards. The glide reuses the
+  // flight track, so drawDealt tweens it from the render-supplied origin.
+  splitHands(now: number): void {
+    for (const key of [playerKey(0, 0), playerKey(1, 0)]) {
+      // Flight runs now → now + FLIGHT_MS; flipStart in the past pins flip at 1 so
+      // the card stays face-up through the glide (no re-flip).
+      this.cards.set(key, { flightStart: now, flipStart: now - FLIP_MS })
+      this.end = Math.max(this.end, now + FLIGHT_MS)
+    }
+    let cursor = now + FLIGHT_MS + ACTION_GAP
+    for (const key of [playerKey(0, 1), playerKey(1, 1)]) {
+      this.cards.delete(key) // was the old hand-0 second card / brand new — deal fresh
+      cursor = this.place(key, cursor, true) + ACTION_GAP
+    }
+  }
+
   // Re-deal a hand's cards from scratch (mulligan): forget their existing timings
   // and schedule them to fly in + flip up starting at `startAt` — after the tossed
   // cards have finished their discard.

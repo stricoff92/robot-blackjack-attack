@@ -3,7 +3,7 @@ import './game-view.css'
 import { readDebugFlags } from '../game/debug'
 import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canMulligan, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { canDouble, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
 import { isLastCall, nextBet, TOTAL_DEALERS } from '../game/run'
 import { Session, type SessionState } from '../game/session'
@@ -102,6 +102,10 @@ class GameView {
   // The ending hand's round, retained so its cards can be gathered back into
   // the deck after the Session has already cleared `state.round`.
   private collectRound: Round | null = null
+  // The pre-split (single-hand) round, retained across the split's glide so
+  // drawHands can tween the two originals out of their old slots. Set on a split,
+  // cleared on the next action.
+  private splitPrev: Round | null = null
   // While gathering + shuffling, the deck is drawn on the cards layer (so it can
   // split/move) and hidden on the static table layer.
   private deckOnCards = false
@@ -191,7 +195,7 @@ class GameView {
     const round = this.state.round ?? this.collectRound
     if (round) {
       const revealHole = this.state.phase !== 'playing' || this.state.peeked
-      drawHands(ctx, layout, round, revealHole, this.anim, this.handResults(timestamp))
+      drawHands(ctx, layout, round, revealHole, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined)
     }
 
     // Mulligan: the tossed opening cards flip down and fly back to the deck while
@@ -482,6 +486,17 @@ class GameView {
           playing(s) && s.run.tokens >= POWERUPS['late-double'].cost && !!s.round && !canDouble(s.round) && affordsExtra(s),
       },
       {
+        key: 'return',
+        label: 'Return',
+        group: 'power',
+        cost: POWERUPS.return.cost,
+        act: () => this.session.buyReturn(),
+        visible: yes,
+        // Only once the hand has taken a hit (more than two cards) is there a
+        // drawn card to push back. Auto-stands, so it also ends the turn.
+        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.return.cost && !!s.round && canReturn(s.round),
+      },
+      {
         key: 'freeze',
         label: 'Freeze Dealer',
         group: 'power',
@@ -611,12 +626,24 @@ class GameView {
       }
       const round = this.state.round
       const mulliganed = !!prevRound && !prevRound.mulliganed && !!round && round.mulliganed
+      const split =
+        prevPhase === 'playing' && !!prevRound && prevRound.hands.length === 1 && !!round && round.hands.length === 2
+      this.splitPrev = null // stale after any action; the split branch re-sets it
       if (mulliganed && prevRound && round) {
-        // Toss the old opening cards back to the deck, then deal the fresh pair
-        // once they've merged in.
+        // Toss the old opening cards to the dealer, then deal the fresh pair once
+        // they've been swept away.
         const discardEnd = this.mulligan.begin(prevRound.hands[0].cards, t)
         this.anim.redealHand(0, round.hands[0].cards.length, discardEnd)
         // A fresh natural resolves at once — reveal the dealer after the redeal.
+        if (this.state.phase !== 'playing') {
+          this.anim.sync(prevPhase, this.state, this.anim.animEnd)
+        }
+      } else if (split && prevRound) {
+        // Glide the two originals into the two new hands, then deal each its card.
+        this.splitPrev = prevRound
+        this.anim.splitHands(t)
+        // Split aces resolve at the deal (each hand stands on one card) — schedule
+        // the hole flip + dealer draws to follow the glide.
         if (this.state.phase !== 'playing') {
           this.anim.sync(prevPhase, this.state, this.anim.animEnd)
         }

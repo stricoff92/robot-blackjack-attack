@@ -190,6 +190,26 @@ export function mulligan(round: Round): Round {
   return resolveOpeningNaturals(redealt)
 }
 
+// Return: available once the active hand has taken at least one hit (more than
+// two cards). Pops the most recently drawn card back onto the top of the shoe —
+// drawIndex steps back one, so shoe[drawIndex] is that card again and the
+// dealer's next hit draws it (there's no burn between the player and dealer
+// phases). Then auto-stands: re-hitting would only pull the same card straight
+// back, so standing on the lower total is the only sensible follow-up.
+export function canReturn(round: Round): boolean {
+  return round.status === 'player-turn' && activeHand(round).cards.length > 2
+}
+
+export function returnCard(round: Round): Round {
+  requirePlayerTurn(round)
+  if (!canReturn(round)) {
+    throw new Error('cannot return a card from this hand')
+  }
+  const active = activeHand(round)
+  const hand: PlayerHand = { ...active, cards: active.cards.slice(0, -1), finished: true }
+  return advanceHand({ ...replaceHand(round, round.activeIndex, hand), drawIndex: round.drawIndex - 1 })
+}
+
 export function payout(round: Round): number {
   return round.hands.reduce((total, hand) => total + handPayout(hand, round.rules), 0)
 }

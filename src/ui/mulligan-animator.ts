@@ -1,13 +1,14 @@
-// The mulligan discard: the tossed opening hand flips face-down and flies back
-// into the deck before the fresh cards are dealt. The cards are gone from play
-// (spent + known — the odds already exclude them), so this is pure showmanship;
-// it owns only the discard's timing, and the deal animator handles the redeal.
+// The mulligan discard: the tossed opening hand flips face-down and is swept up
+// to the dealer (who mucks it) before the fresh cards are dealt. The cards are
+// gone from play (spent + known — the odds already exclude them), so this is pure
+// showmanship; it owns only the discard's timing, and the deal animator handles
+// the redeal.
 
 import type { Card } from '../game/deck'
 import type { DiscardFrame } from '../render/cards'
 
 const FLIP_MS = 160 // face-up → face-down
-const FLY_MS = 300 // slot → deck
+const FLY_MS = 420 // slot → dealer (eased in-out, fades into the muck near the end)
 const STAGGER = 70 // between the two cards leaving
 
 export class MulliganAnimation {

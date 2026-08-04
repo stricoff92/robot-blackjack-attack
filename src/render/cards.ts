@@ -9,8 +9,8 @@ import type { Card } from '../game/deck'
 import { evaluateHand } from '../game/hand'
 import type { Round } from '../game/round'
 import { blitCard, getCardSprite } from './card-sprite'
-import { smoothEnd3, smoothStart2 } from './easing'
-import { dealerEyes, type DealerEyes, type Layout } from './scene'
+import { smoothEnd3, smoothStart2, smoothStep } from './easing'
+import { dealerBox, dealerEyes, type DealerEyes, type Layout } from './scene'
 
 const CARD_RATIO = 0.7 // width / height, roughly a real playing card
 
@@ -22,7 +22,7 @@ const SHOE_DY = 0.02 // vertical offset per stacked card, × card height
 // Player cards' top edge, as a fraction of felt height below the felt top. Kept
 // with room above (for the big count + result) and below (for the betting circle).
 // chips.ts shares it.
-export const PLAYER_ROW = 0.48
+export const PLAYER_ROW = 0.56
 
 // Per-card animation state, supplied by the deal animator.
 export interface CardState {
@@ -125,6 +125,7 @@ export function drawHands(
   revealHole: boolean,
   anim?: CardAnim,
   results?: readonly (RoundResult | undefined)[],
+  splitPrev?: Round,
 ): void {
   const dpr = window.devicePixelRatio || 1
   const feltTop = l.edgeY
@@ -153,6 +154,10 @@ export function drawHands(
   const scale = handCardScale(l, count)
   const w = cardW * scale
   const h = cardH * scale
+  // On a split, the two originally-dealt cards glide out of the single-hand
+  // layout into the two new hands (rather than flying in from the shoe); their
+  // pre-split slots come from `splitPrev`. Every other card flies from the shoe.
+  const slideOrigin = splitSlideOrigin(l, round, splitPrev, w, h, playerY)
   round.hands.forEach((hand, hi) => {
     const centerX = handCenterX(l, hi, count)
     const xs = rowXs(centerX, hand.cards.length, w)
@@ -164,13 +169,48 @@ export function drawHands(
       drawActiveHandRing(ctx, left, playerY, width, h)
     }
     hand.cards.forEach((card, ci) => {
-      drawDealt(ctx, playerKey(hi, ci), xs[ci], playerY, w, h, card, false, true, anim, origin, dpr)
+      const key = playerKey(hi, ci)
+      const from = slideOrigin?.(key) ?? origin
+      drawDealt(ctx, key, xs[ci], playerY, w, h, card, false, true, anim, from, dpr)
     })
     if (laneSettled(hand.cards.length, (ci) => playerKey(hi, ci), anim)) {
       // Each hand shows its own win/loss/push — both halves of a split settle.
       drawCount(ctx, evaluateHand(hand.cards).total, centerX, playerY - cardH * 0.34, countPx, results?.[hi])
     }
   })
+}
+
+// Origin resolver for a split's gliding cards. On a fresh 1-hand → 2-hand split
+// the two originals map back to their single-hand slots, so drawDealt tweens them
+// from where they sat into their new hands (drawn at the new, smaller size but
+// starting centred on the original). Returns null when this isn't such a split,
+// so every card just flies from the shoe.
+function splitSlideOrigin(
+  l: Layout,
+  round: Round,
+  splitPrev: Round | undefined,
+  w: number,
+  h: number,
+  playerY: number,
+): ((key: string) => { x: number; y: number } | null) | null {
+  if (!splitPrev || splitPrev.hands.length !== 1 || round.hands.length !== 2) {
+    return null
+  }
+  const { w: cardW, h: cardH } = cardSize(l)
+  const oldScale = handCardScale(l, 1)
+  const oldW = cardW * oldScale
+  const oldH = cardH * oldScale
+  const oldXs = rowXs(handCenterX(l, 0, 1), splitPrev.hands[0].cards.length, oldW)
+  const originFor = (oldIndex: number) => ({
+    x: oldXs[oldIndex] + oldW / 2 - w / 2,
+    y: playerY + oldH / 2 - h / 2,
+  })
+  // The left original heads to the first hand, the right original to the second.
+  const map: Record<string, number> = {
+    [playerKey(0, 0)]: 0,
+    [playerKey(1, 0)]: 1,
+  }
+  return (key) => (key in map ? originFor(map[key]) : null)
 }
 
 // The dealer cards currently showing their face — the basis for the live total.
@@ -578,8 +618,9 @@ export interface DiscardFrame {
 }
 
 // The mulligan discard: the tossed opening cards (frames from the mulligan
-// animator) flip face-down and fly from their slots back into the deck. Uses the
-// same hand-0 slot geometry as drawHands, so it lines up with where the cards sat.
+// animator) flip face-down and are swept up to the DEALER, who mucks them. Their
+// slots use the same hand-0 geometry as drawHands, so they set off from where the
+// cards sat.
 export function drawMulliganDiscard(ctx: CanvasRenderingContext2D, l: Layout, frames: readonly DiscardFrame[]): void {
   if (frames.length === 0) {
     return
@@ -588,17 +629,24 @@ export function drawMulliganDiscard(ctx: CanvasRenderingContext2D, l: Layout, fr
   const { w, h } = cardSize(l)
   const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
   const xs = rowXs(l.width / 2, frames.length, w)
-  const origin = shoeAnchor(l)
+  // Sweep target: the dealer figure's torso (centred), as a top-left for the card
+  // size so the card lands centred on the dealer.
+  const d = dealerBox(l)
+  const targetX = d.cx - w / 2
+  const targetY = (d.bodyTop + d.baseY) / 2 - h / 2
   frames.forEach((frame, i) => {
     if (frame.fly >= 1) {
-      return // landed on the deck (which is drawn beneath it)
+      return
     }
     const slotX = xs[i]
-    const e = smoothStart2(frame.fly) // accelerate toward the deck
-    const x = slotX + (origin.x - slotX) * e
-    const y = playerY + (origin.y - playerY) * e
-    // No fade — the face-down card tweens right onto the deck's top card back.
-    drawFlipCard(ctx, frame.card, x, y, w, h, frame.flip, 1, dpr)
+    // Ease in-out from rest (the card just finished flipping) toward the dealer.
+    const e = smoothStep(frame.fly)
+    const x = slotX + (targetX - slotX) * e
+    const y = playerY + (targetY - playerY) * e
+    // Fade out over the back half of the trip so the card dissolves into the
+    // dealer's muck rather than stopping dead on arrival.
+    const alpha = frame.fly < 0.5 ? 1 : Math.max(0, 1 - (frame.fly - 0.5) / 0.5)
+    drawFlipCard(ctx, frame.card, x, y, w, h, frame.flip, alpha, dpr)
   })
 }
 

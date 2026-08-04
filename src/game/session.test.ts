@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { bustChanceOnHit } from './odds'
+import { POWERUPS } from './powerups'
 import { canSplit } from './round'
 import { hitTokens } from './run'
 import { Session } from './session'
@@ -155,6 +156,60 @@ describe('Session', () => {
         expect(canSplit(snap.round!)).toBe(true)
       }
     })
+  })
+})
+
+describe('Session.buyReturn', () => {
+  it('spends the cost, pops the last-drawn card, and auto-stands the hand', () => {
+    const cost = POWERUPS.return.cost
+    // Drive a real session (the exact path the Return button fires) until it has
+    // banked the cost and holds a single, live three-card hand — then Return.
+    for (let seed = 1; seed < 3000; seed += 1) {
+      const session = new Session(seed)
+      for (let guard = 0; guard < 200; guard += 1) {
+        const snap = session.snapshot()
+        if (snap.phase === 'over') break
+        if (snap.phase === 'betting') {
+          session.deal()
+          continue
+        }
+        if (snap.phase === 'resolved') {
+          session.nextHand()
+          continue
+        }
+        // phase === 'playing': once we can afford Return, take a single hand to
+        // three cards; if it survives, that's our scenario.
+        const round = snap.round!
+        const affordableCleanStart =
+          snap.run.tokens >= cost && round.hands.length === 1 && round.hands[0].cards.length === 2
+        if (affordableCleanStart) {
+          session.hit()
+          const mid = session.snapshot()
+          const active = mid.round ? mid.round.hands[mid.round.activeIndex] : null
+          if (mid.phase === 'playing' && active && active.cards.length > 2 && !active.busted) {
+            const tokensBefore = mid.run.tokens
+            const cardsBefore = active.cards.length
+            session.buyReturn()
+            const after = session.snapshot()
+            const returned = after.round!.hands[0]
+            // Structural effects hold regardless of how the resolution lands.
+            expect(returned.cards.length).toBe(cardsBefore - 1) // last card popped off
+            expect(returned.finished).toBe(true) // auto-stood
+            expect(['resolved', 'over']).toContain(after.phase) // turn handed to the dealer
+            // Isolate the spend on a non-winning return: a win would credit its
+            // own reward tokens on settle and mask the deduction. A loss/push/bust
+            // credits nothing, so the balance is exactly the pre-cast total minus cost.
+            if (returned.outcome !== 'win' && returned.outcome !== 'blackjack') {
+              expect(after.run.tokens).toBe(tokensBefore - cost)
+              return
+            }
+          }
+          continue // hit busted, resolved, or won (reward masks the spend) — try again
+        }
+        session.stand() // not affordable yet — resolve this hand to bank its reward
+      }
+    }
+    throw new Error('no seed reached an affordable Return scenario')
   })
 })
 

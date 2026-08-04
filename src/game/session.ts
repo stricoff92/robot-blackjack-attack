@@ -6,12 +6,14 @@ import {
   activeHand,
   armSecondChance,
   canMulligan,
+  canReturn,
   DEFAULT_ROUND_RULES,
   doubleDown,
   freezeDealer,
   hit,
   lateDouble,
   mulligan,
+  returnCard,
   split,
   stand,
   startRound,
@@ -198,6 +200,23 @@ export class Session {
     // The peeked next card is dealt into the fresh hand, so the stale preview clears.
     this.foresightCard = null
     this.round = mulligan(this.requireRound())
+    if (this.requireRound().status === 'resolved') {
+      this.settle()
+    }
+  }
+
+  buyReturn(): void {
+    if (!this.canBuy('return') || !canReturn(this.requireRound())) {
+      return
+    }
+    this.analysis = null
+    // The returned card becomes the new top of the shoe, so any Peek Deck preview
+    // (which pointed at the old top) is now stale — drop it.
+    this.foresightCard = null
+    this.run = spendTokens(this.run, POWERUPS.return.cost)
+    this.round = returnCard(this.requireRound())
+    // Return auto-stands, which can hand the turn to the dealer and resolve the
+    // round outright — settle if so, exactly like a normal stand.
     if (this.requireRound().status === 'resolved') {
       this.settle()
     }
