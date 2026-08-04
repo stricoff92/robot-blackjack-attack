@@ -40,6 +40,11 @@ export interface Round {
   status: RoundStatus
   secondChanceArmed: boolean
   burned: Card | null
+  dealerFrozen: boolean
+  mulliganed: boolean
+  // Cards permanently out of play but seen by the player (mulligan-discarded
+  // opening hands). Known, spent, and no longer drawable — the odds exclude them.
+  discarded: Card[]
 }
 
 const MAX_HANDS = 4
@@ -56,6 +61,9 @@ export function startRound(shoe: Card[], bet: number, rules: RoundRules = DEFAUL
     status: 'player-turn',
     secondChanceArmed: false,
     burned: null,
+    dealerFrozen: false,
+    mulliganed: false,
+    discarded: [],
   }
   return resolveOpeningNaturals(round)
 }
@@ -148,8 +156,48 @@ export function armSecondChance(round: Round): Round {
   return { ...round, secondChanceArmed: true }
 }
 
+export function freezeDealer(round: Round): Round {
+  requirePlayerTurn(round)
+  return { ...round, dealerFrozen: true }
+}
+
+// Mulligan only applies to an untouched opening hand: a single hand of exactly
+// two cards that hasn't been hit, doubled, or split. Once per round.
+export function canMulligan(round: Round): boolean {
+  if (round.status !== 'player-turn' || round.mulliganed || round.hands.length !== 1) {
+    return false
+  }
+  const hand = activeHand(round)
+  return hand.cards.length === 2 && !hand.doubled && !hand.finished
+}
+
+export function mulligan(round: Round): Round {
+  requirePlayerTurn(round)
+  if (!canMulligan(round)) {
+    throw new Error('cannot mulligan this hand')
+  }
+  const active = activeHand(round)
+  const cards = [round.shoe[round.drawIndex], round.shoe[round.drawIndex + 1]]
+  const redealt: Round = {
+    ...replaceHand(round, round.activeIndex, newHand(cards, active.bet, false)),
+    drawIndex: round.drawIndex + 2,
+    mulliganed: true,
+    // The tossed opening cards are now spent + known; keep them out of the shoe odds.
+    discarded: [...round.discarded, ...active.cards],
+  }
+  // The dealer can't hold a natural here (that resolves the round at the deal, so
+  // we'd never reach player-turn), but the fresh hand still can — honor it.
+  return resolveOpeningNaturals(redealt)
+}
+
 export function payout(round: Round): number {
   return round.hands.reduce((total, hand) => total + handPayout(hand, round.rules), 0)
+}
+
+// Net chips won (+) or lost (-) on a single settled hand — used to label each
+// hand's result, so split hands each show their own win/loss.
+export function handNet(hand: PlayerHand, rules: RoundRules): number {
+  return handPayout(hand, rules)
 }
 
 function newHand(cards: Card[], bet: number, splitAce: boolean): PlayerHand {
@@ -187,9 +235,13 @@ function hitWithSecondChance(round: Round): Round {
   if (!isBust(attempt)) {
     return { ...withActiveCards(round, attempt, round.drawIndex + 1), secondChanceArmed: false }
   }
-  const finalCards = [...active.cards, round.shoe[round.drawIndex + 1]]
-  const busted = isBust(finalCards)
-  const hand: PlayerHand = { ...active, cards: finalCards, finished: true, busted, outcome: busted ? 'bust' : null }
+  // The hit would bust, so the shield burns it and tries one replacement. If the
+  // replacement keeps the hand alive you stand on it; if it would ALSO bust, the
+  // shield absorbs the whole thing and you stand on your current total. Either
+  // way the hand never busts — that's the point of the shield.
+  const replacement = [...active.cards, round.shoe[round.drawIndex + 1]]
+  const cards = isBust(replacement) ? active.cards : replacement
+  const hand: PlayerHand = { ...active, cards, finished: true, busted: false, outcome: null }
   const settled: Round = {
     ...replaceHand(round, round.activeIndex, hand),
     drawIndex: round.drawIndex + 2,
@@ -232,6 +284,10 @@ function finishPlayerTurns(round: Round): Round {
 }
 
 function playDealer(round: Round): Round {
+  // Freeze Dealer: the dealer stands on its current two cards, taking no draws.
+  if (round.dealerFrozen) {
+    return round
+  }
   let dealer = round.dealer
   let drawIndex = round.drawIndex
   while (dealerShouldHit(dealer, round.rules)) {

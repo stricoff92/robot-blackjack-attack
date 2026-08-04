@@ -126,10 +126,10 @@ class GameUI {
     this.gameoverGroup = this.select('#gameover')
     this.resume = this.select('#resume')
 
-    this.peekButton.textContent = `Peek (${POWERUPS.peek.cost})`
+    this.peekButton.textContent = `Dealer Peek (${POWERUPS.peek.cost})`
     this.lateDoubleButton.textContent = `Late double (${POWERUPS['late-double'].cost})`
-    this.foresightButton.textContent = `Foresight (${POWERUPS.foresight.cost})`
-    this.secondChanceButton.textContent = `Second chance (${POWERUPS['second-chance'].cost})`
+    this.foresightButton.textContent = `Deck Peek (${POWERUPS.foresight.cost})`
+    this.secondChanceButton.textContent = `Bust Block (${POWERUPS['second-chance'].cost})`
 
     this.select<HTMLButtonElement>('#deal').addEventListener('click', () => this.dispatch(() => this.session.deal()))
     this.select<HTMLButtonElement>('#hit').addEventListener('click', () => this.dispatch(() => this.session.hit()))
@@ -257,7 +257,9 @@ class GameUI {
     this.resume.replaceChildren()
     const title = document.createElement('div')
     title.className = 'resume__title'
-    title.textContent = `The house shuts you down — final score ${run.score}`
+    title.textContent = run.won
+      ? `You dismantled every dealer — final score ${run.score}`
+      : `The house shuts you down — final score ${run.score}`
     this.resume.appendChild(title)
     run.kills.forEach((dealerIndex) => {
       const row = document.createElement('div')
@@ -265,10 +267,12 @@ class GameUI {
       row.textContent = `💥 destroyed — Dealer ${dealerIndex}`
       this.resume.appendChild(row)
     })
-    const fell = document.createElement('div')
-    fell.className = 'resume__row'
-    fell.textContent = `☠️ fell to — Dealer ${run.shiftIndex}`
-    this.resume.appendChild(fell)
+    if (!run.won) {
+      const fell = document.createElement('div')
+      fell.className = 'resume__row'
+      fell.textContent = `☠️ fell to — Dealer ${run.shiftIndex}`
+      this.resume.appendChild(fell)
+    }
   }
 
   private buildMessage(): string {

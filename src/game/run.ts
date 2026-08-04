@@ -1,17 +1,32 @@
 import { damageForRound } from './integrity'
+import { handReward } from './rewards'
 import { payout, type Round } from './round'
 
-export const RULES_VERSION = 2
+export const RULES_VERSION = 3
 export const STARTING_CHIPS = 300
 export const FULL_INTEGRITY = 100
+// The run is won by destroying this many dealers; there is no dealer beyond it.
+export const TOTAL_DEALERS = 6
 
-export const HIT_TOKEN = 1
-export const WIN_TOKEN = 10
-export const BLACKJACK_TOKEN = 21
 export const DESTROY_TOKEN = 40
+
+// A surviving hit pays tokens scaled by how risky it was: the base for a safe
+// hit, climbing to base+bonus for a hit that was very likely to bust but landed
+// anyway. Expected value stays modest — the riskier the hit, the rarer it
+// survives to be paid — so this rewards nerve without inflating the economy.
+export const HIT_TOKEN_BASE = 1
+export const HIT_TOKEN_MAX_BONUS = 9
+
+export function hitTokens(bustChance: number): number {
+  const risk = Math.min(1, Math.max(0, bustChance))
+  return HIT_TOKEN_BASE + Math.round(risk * HIT_TOKEN_MAX_BONUS)
+}
 
 const DESTRUCTION_SCORE_BASE = 150
 const HAND_BET_STEP = 0.5
+// On a kill, seed the next dealer's bankroll with this many of its minimum bets,
+// so the escalating min-bet ladder stays survivable instead of starving the run.
+const KILL_REWARD_RATIO = 3
 const PROTOTYPE_MIN_GROWTH = 2.5
 const PROTOTYPE_MULTIPLIER_STEP = 1.5
 
@@ -33,15 +48,18 @@ export interface RunState {
   integrity: number
   kills: number[]
   over: boolean
+  won: boolean
 }
 
+// Gentle ~1.6x/shift min-bet ladder: the floor climbs slowly enough that a flat
+// bankroll (topped up by kill rewards) can keep pace. maxBet stays at 10x min.
 const SHIFT_TABLE: readonly Shift[] = [
   { index: 1, minBet: 10, maxBet: 100, scoreMultiplier: 1.0 },
-  { index: 2, minBet: 25, maxBet: 250, scoreMultiplier: 1.5 },
-  { index: 3, minBet: 60, maxBet: 600, scoreMultiplier: 2.0 },
-  { index: 4, minBet: 150, maxBet: 1500, scoreMultiplier: 3.0 },
-  { index: 5, minBet: 400, maxBet: 4000, scoreMultiplier: 4.0 },
-  { index: 6, minBet: 1000, maxBet: 10000, scoreMultiplier: 5.5 },
+  { index: 2, minBet: 15, maxBet: 150, scoreMultiplier: 1.5 },
+  { index: 3, minBet: 25, maxBet: 250, scoreMultiplier: 2.0 },
+  { index: 4, minBet: 40, maxBet: 400, scoreMultiplier: 3.0 },
+  { index: 5, minBet: 65, maxBet: 650, scoreMultiplier: 4.0 },
+  { index: 6, minBet: 100, maxBet: 1000, scoreMultiplier: 5.5 },
 ]
 
 export function startRun(seed: number): RunState {
@@ -56,6 +74,7 @@ export function startRun(seed: number): RunState {
     integrity: FULL_INTEGRITY,
     kills: [],
     over: false,
+    won: false,
   }
 }
 
@@ -117,6 +136,7 @@ export function applyRound(run: RunState, round: Round): RunState {
   let shiftIndex = run.shiftIndex
   let handsThisDealer = run.handsThisDealer + 1
   let kills = run.kills
+  let won = false
 
   if (integrity <= 0) {
     tokens += DESTROY_TOKEN
@@ -125,6 +145,11 @@ export function applyRound(run: RunState, round: Round): RunState {
     shiftIndex += 1
     handsThisDealer = 0
     integrity = FULL_INTEGRITY
+    if (kills.length >= TOTAL_DEALERS) {
+      won = true
+    } else {
+      chips += KILL_REWARD_RATIO * getShift(shiftIndex).minBet
+    }
   }
 
   return {
@@ -137,19 +162,14 @@ export function applyRound(run: RunState, round: Round): RunState {
     handsPlayed: run.handsPlayed + 1,
     integrity,
     kills,
-    over: chips <= 0,
+    won,
+    over: won || chips <= 0,
   }
 }
 
-// Hit tokens are credited live by the Session as each hit happens, so they are not counted here.
+// Reward tokens for the round, scaled by how each hand won (see rewards.ts). Hit
+// tokens are credited live by the Session as each hit happens, so they aren't
+// counted here.
 function tokensForRound(round: Round): number {
-  let earned = 0
-  for (const hand of round.hands) {
-    if (hand.outcome === 'blackjack') {
-      earned += BLACKJACK_TOKEN
-    } else if (hand.outcome === 'win') {
-      earned += WIN_TOKEN
-    }
-  }
-  return earned
+  return round.hands.reduce((earned, hand) => earned + handReward(hand, round).tokens, 0)
 }

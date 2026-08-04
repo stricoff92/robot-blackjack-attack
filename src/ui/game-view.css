@@ -1,0 +1,255 @@
+/* HUD overlay layout:
+ *   - token counter: top-left corner (icon + count)
+ *   - powerups: vertical stack in the top-left, below the token counter (hint as
+ *     its header)
+ *   - primary actions (Hit/Stand/Double/Split/Deal/…): bottom-center row
+ *   - message line: centered, just above the action bar
+ *
+ * Text layers are click-through; only buttons take input. */
+
+/* Token bankroll counter: icon + count on a white pill, pinned to the very
+ * top-left corner. */
+.hud-tokens {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 16px 5px 11px;
+  border-radius: 9px;
+  background: #ffffff;
+  font: 800 32px system-ui, -apple-system, sans-serif;
+  color: #000000;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.hud-tokens__icon {
+  height: 40px;
+  width: auto; /* preserve the icon's portrait aspect ratio */
+  display: block;
+}
+
+/* Only the game-over banner uses this now (the win/loss/push result is drawn on
+ * the canvas beside the winning count). Centered so it reads as a headline. */
+.hud-message {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46%;
+  transform: translateY(-50%);
+  text-align: center;
+  font: 700 24px system-ui, -apple-system, sans-serif;
+  color: #ffffff;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+/* Powerups: top-left vertical column, just below the token counter (the felt's
+ * upper-left is empty now the house chip pile is gone). */
+.hud-powerups {
+  position: absolute;
+  left: 14px;
+  top: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 44vw;
+  pointer-events: none;
+}
+
+.hud-powerhint {
+  font: 600 13px system-ui, -apple-system, sans-serif;
+  color: #cfe0ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  margin-bottom: 2px;
+  min-height: 1em;
+}
+
+.hud-powerups button {
+  position: relative; /* anchors the absolutely-placed cost pill */
+  pointer-events: auto;
+  text-align: left;
+  font: 600 15px system-ui, -apple-system, sans-serif;
+  color: #1c2436;
+  background: linear-gradient(#c2ccdd, #9fadc6);
+  border: none;
+  border-radius: 10px; /* the cost pill's bottom-right radius matches this */
+  /* Tight top/side padding; the bottom reserves space for the cost pill tucked
+   * flush into the bottom-right corner so it never overlaps the label. */
+  padding: 7px 11px 23px;
+  min-height: 48px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #5f6b82, 0 3px 6px rgba(0, 0, 0, 0.35);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.hud-powerups button:hover {
+  background: linear-gradient(#d2dbe9, #aeb9cf);
+}
+
+.power-label {
+  display: block;
+  line-height: 1.05; /* keep the label tight so the bigger font adds no leading */
+}
+
+/* Cost pill: token price ("<cost> <icon>") pinned to the button's bottom-right. */
+.cost-pill {
+  position: absolute;
+  right: 0; /* flush into the button's bottom-right corner */
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  /* Bottom-right corner matches the button's radius so the pill nests into it;
+   * the two edges meeting the button's sides stay square for a flush tuck. */
+  border-radius: 10px 0 10px 0;
+  background: #d23a3a;
+  color: #ffffff;
+  font: 700 13px system-ui, -apple-system, sans-serif;
+  line-height: 1;
+}
+
+.cost-pill__icon {
+  height: 17px;
+  width: auto; /* preserve the icon's portrait aspect ratio */
+  display: block;
+}
+
+.hud-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 20px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 0 12px;
+}
+
+.hud-actions button {
+  font: 700 16px system-ui, -apple-system, sans-serif;
+  color: #2f2013;
+  background: linear-gradient(#dab55e, #c9a24b);
+  border: none;
+  border-radius: 12px;
+  padding: 14px 20px;
+  min-width: 72px;
+  min-height: 48px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #8a6b32, 0 4px 8px rgba(0, 0, 0, 0.4);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.hud-actions button:hover {
+  background: linear-gradient(#e6c473, #d4ad57);
+}
+
+.hud-actions button:active,
+.hud-powerups button:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+.hud-actions button:disabled,
+.hud-powerups button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+button.is-hidden {
+  display: none;
+}
+
+/* An armed powerup (e.g. Bust Block) pulses gold to show it's live. It overrides
+ * the dimmed :disabled look — armed reads as "on", not unavailable — and clears
+ * itself once the shield is spent and syncOverlay drops the class. */
+.hud-powerups button.is-active,
+.hud-powerups button.is-active:disabled {
+  opacity: 1;
+  cursor: default;
+  color: #2a1e04;
+  background: linear-gradient(#ffe08a, #f5c24b);
+  animation: powerup-glow 1.2s ease-in-out infinite;
+}
+
+@keyframes powerup-glow {
+  0%,
+  100% {
+    box-shadow: 0 2px 0 #a77c1e, 0 0 0 2px rgba(255, 214, 110, 0.45), 0 0 10px 2px rgba(255, 196, 74, 0.55);
+  }
+  50% {
+    box-shadow: 0 2px 0 #a77c1e, 0 0 0 2px rgba(255, 214, 110, 0.75), 0 0 22px 6px rgba(255, 196, 74, 0.95);
+  }
+}
+
+/* Mobile: smaller buttons + tighter padding; keep the action bar to one row so
+ * it stays a thin strip below the raised powerup column. */
+@media (max-width: 560px) {
+  .hud-tokens {
+    top: 8px;
+    left: 10px;
+    gap: 6px;
+    font-size: 25px;
+  }
+
+  .hud-tokens__icon {
+    height: 31px;
+    width: auto;
+  }
+
+  .hud-message {
+    font-size: 19px;
+  }
+
+  .hud-powerups {
+    left: 10px;
+    top: 60px;
+    gap: 6px;
+  }
+
+  .hud-powerhint {
+    font-size: 12px;
+  }
+
+  .hud-powerups button {
+    font-size: 14px;
+    padding: 4px 7px 19px; /* tighter top/side; bottom still clears the corner pill */
+    min-height: 38px;
+    border-radius: 8px;
+  }
+
+  .cost-pill {
+    right: 0;
+    bottom: 0;
+    padding: 1px 5px;
+    font-size: 12px;
+    border-radius: 8px 0 8px 0; /* match the mobile button's 8px corner */
+  }
+
+  .cost-pill__icon {
+    height: 15px;
+    width: auto;
+  }
+
+  .hud-actions {
+    bottom: 12px;
+    gap: 6px;
+    padding: 0 8px;
+    flex-wrap: nowrap;
+  }
+
+  .hud-actions button {
+    font-size: 13px;
+    padding: 5px 12px;
+    min-width: 54px;
+    min-height: 32px;
+    border-radius: 9px;
+  }
+}

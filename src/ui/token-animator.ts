@@ -1,0 +1,106 @@
+// Timing for the reward tokens that fly up to the counter.
+//
+// Generic on purpose: `emit(from, amount, startAfter)` knows nothing about WHY
+// the tokens were earned, so the same flight serves hits (+1 from the fresh
+// card), wins (+10 from the hand) and blackjacks (+21) today — and the dealer
+// kill burst (+40 from the dealer) once the dealer-death animation exists.
+//
+// Mirrors DealAnimation / ChipAnimation / HealthAnimation: this owns timing,
+// render/tokens.ts owns geometry. Each flight captures its source POINT at emit
+// time (rather than a card identity), so overlapping bursts — rapid hits, a
+// split's two winning hands — never interfere, and the round can move on
+// underneath a token that's still in the air.
+
+import type { Point, TokenBurst, TokenView } from '../render/tokens'
+
+const FLY_MS = 680 // source → counter
+
+// How many sprites make up a burst of `amount` tokens — a small, readable puff,
+// never one-per-token (a 21-token blackjack would be a blizzard).
+function burstIcons(amount: number): number {
+  if (amount <= 1) {
+    return 1
+  }
+  if (amount <= 5) {
+    return 2
+  }
+  if (amount <= 12) {
+    return 3
+  }
+  if (amount <= 25) {
+    return 4
+  }
+  return 5
+}
+
+interface Flight {
+  from: Point
+  amount: number // credited to the displayed count once the burst lands
+  icons: number
+  start: number
+  end: number
+  spin: number
+}
+
+export class TokenAnimation implements TokenView {
+  private flights: Flight[] = []
+  private end = 0
+
+  isAnimating(now: number): boolean {
+    return now < this.end
+  }
+
+  // Schedule `amount` tokens flying from `from`, lifting off at `startAfter`.
+  emit(from: Point, amount: number, startAfter: number): void {
+    if (amount <= 0) {
+      return
+    }
+    this.prune(startAfter)
+    const end = startAfter + FLY_MS
+    this.flights.push({
+      from: { x: from.x, y: from.y },
+      amount,
+      icons: burstIcons(amount),
+      start: startAfter,
+      end,
+      spin: Math.random(),
+    })
+    this.end = Math.max(this.end, end)
+  }
+
+  // Tokens still on their way to the counter (started or not) — the amount the
+  // displayed count must withhold until each burst arrives.
+  pending(now: number): number {
+    let sum = 0
+    for (const flight of this.flights) {
+      if (now < flight.end) {
+        sum += flight.amount
+      }
+    }
+    return sum
+  }
+
+  // The bursts currently visible (lifted off, not yet landed), for the renderer.
+  bursts(now: number): readonly TokenBurst[] {
+    const out: TokenBurst[] = []
+    for (const flight of this.flights) {
+      if (now < flight.start || now >= flight.end) {
+        continue
+      }
+      out.push({
+        from: flight.from,
+        progress: (now - flight.start) / FLY_MS,
+        icons: flight.icons,
+        spin: flight.spin,
+      })
+    }
+    return out
+  }
+
+  // Drop flights that have already landed, so the list can't grow without bound.
+  private prune(now: number): void {
+    if (this.flights.length > 0) {
+      this.flights = this.flights.filter((flight) => now < flight.end)
+    }
+  }
+}

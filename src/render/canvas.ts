@@ -1,27 +1,47 @@
-export type CanvasRenderer = (
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-) => void
+// Stacked canvas layers sharing one size + device-pixel-ratio.
+//
+// Splitting the scene across layers lets static content (table, dealer) be
+// painted once on resize while only the animated layer (cards/chips) is
+// cleared and redrawn each frame — the difference between repainting the whole
+// table 60×/sec and just blitting a handful of card sprites.
 
-export interface GameCanvas {
+export interface CanvasLayer {
   readonly canvas: HTMLCanvasElement
-  readonly context: CanvasRenderingContext2D
-  width: number
-  height: number
+  readonly ctx: CanvasRenderingContext2D
+}
+
+export interface LayeredCanvas {
+  readonly layers: Record<string, CanvasLayer>
+  readonly width: number // CSS pixels
+  readonly height: number
   dispose(): void
 }
 
-export function createGameCanvas(root: HTMLElement, render: CanvasRenderer): GameCanvas {
-  const canvas = document.createElement('canvas')
-  const context = requireContext(canvas)
-  root.appendChild(canvas)
+export function createLayeredCanvas(
+  root: HTMLElement,
+  names: readonly string[],
+  onResize: (canvas: LayeredCanvas) => void,
+): LayeredCanvas {
+  const layers: Record<string, CanvasLayer> = {}
+  for (const name of names) {
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('2d canvas context unavailable')
+    }
+    root.appendChild(canvas)
+    layers[name] = { canvas, ctx }
+  }
 
-  const gameCanvas: GameCanvas = {
-    canvas,
-    context,
-    width: 0,
-    height: 0,
+  const size = { width: 0, height: 0 }
+  const api: LayeredCanvas = {
+    layers,
+    get width() {
+      return size.width
+    },
+    get height() {
+      return size.height
+    },
     dispose,
   }
 
@@ -30,16 +50,20 @@ export function createGameCanvas(root: HTMLElement, render: CanvasRenderer): Gam
     const width = root.clientWidth
     const height = root.clientHeight
 
-    // backing store at device resolution keeps rendering crisp on high-DPI screens
-    canvas.width = Math.round(width * dpr)
-    canvas.height = Math.round(height * dpr)
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${height}px`
-    context.setTransform(dpr, 0, 0, dpr, 0, 0)
+    for (const name of names) {
+      const { canvas, ctx } = layers[name]
+      // Setting width/height also clears the layer.
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      // Backing store at device resolution keeps rendering crisp on high-DPI.
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
 
-    gameCanvas.width = width
-    gameCanvas.height = height
-    render(context, width, height)
+    size.width = width
+    size.height = height
+    onResize(api)
   }
 
   const observer = new ResizeObserver(resize)
@@ -48,16 +72,10 @@ export function createGameCanvas(root: HTMLElement, render: CanvasRenderer): Gam
 
   function dispose(): void {
     observer.disconnect()
-    canvas.remove()
+    for (const name of names) {
+      layers[name].canvas.remove()
+    }
   }
 
-  return gameCanvas
-}
-
-function requireContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
-  const context = canvas.getContext('2d')
-  if (!context) {
-    throw new Error('2d canvas context unavailable')
-  }
-  return context
+  return api
 }
