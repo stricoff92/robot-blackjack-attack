@@ -9,8 +9,8 @@
 
 import type { Round } from '../game/round'
 import { blitCard, getCardSprite, setCardBack } from './card-sprite'
-import { drawShoe, shoeAnchor, shoeStackExtent, tableCards } from './cards'
-import { smoothEnd2, smoothEnd3, smoothStart2, smoothStep } from './easing'
+import { drawDepletingShoe, drawShoe, shoeAnchor, shoeStackExtent, shoeTopFor, tableCards } from './cards'
+import { smoothEnd2, smoothEnd3, smoothStart2, smoothStart4, smoothStep } from './easing'
 import type { CardBack } from './palette'
 import { dealerBox, dealerMouth, type Layout } from './scene'
 
@@ -20,6 +20,13 @@ export interface SpawnView {
   cardSuck(i: number, now: number): number | null
   // Card `i`'s paper-chunk spray life (0..1), or null when it isn't spraying.
   chunk(i: number, now: number): number | null
+  // The previous dealer's DECK shred: how many backs it sheds, the fraction still resting
+  // on the shoe (1 = full, 0 = spent), and per-card suck (null = resting / no old deck,
+  // 0..1 = flying into the mouth) + paper-chunk spray life (0..1, or null).
+  deckCardCount(): number
+  deckRemaining(now: number): number
+  deckCardSuck(k: number, now: number): number | null
+  deckCardChunk(k: number, now: number): number | null
   // The fresh deck's fly-in + unwrap state, or null before it emerges.
   deckState(now: number): { fly: number; unwrap: number } | null
 }
@@ -48,6 +55,46 @@ export function drawShred(ctx: CanvasRenderingContext2D, l: Layout, round: Round
     const chunk = view.chunk(i, now)
     if (chunk !== null) {
       drawPaperCone(ctx, mouth.x, mouth.y, chunk, scale, i)
+    }
+  }
+}
+
+// The previous dealer's DECK being shredded: it rests on the shoe through the death/
+// walk-in, then — once the table cards are gone — sheds its cards off the top in a rapid
+// flurry, 40 backs peeling away one after another into the new dealer's mouth (each
+// shrinking + fading and throwing its own paper spray) while the resting stack shrinks
+// beneath them, so the shoe is empty before the fresh wrapped deck lands. `back` is the
+// OUTGOING dealer's card-back palette.
+export function drawOldDeckShred(ctx: CanvasRenderingContext2D, l: Layout, back: CardBack, view: SpawnView, now: number): void {
+  setCardBack(back) // the resting + flying deck cards stay the old dealer's colour
+  drawDepletingShoe(ctx, l, view.deckRemaining(now)) // the resting remainder, shrinking as cards leave
+
+  const mouth = dealerMouth(l)
+  const scale = Math.min(l.width, l.height)
+  const rest = shoeAnchor(l)
+  const dpr = window.devicePixelRatio || 1
+  const count = view.deckCardCount()
+  for (let k = 0; k < count; k++) {
+    const suck = view.deckCardSuck(k, now)
+    if (suck !== null && suck < 1) {
+      // Each card peels off the TOP of the deck at the height the top had when it left
+      // (spent = k / count), so it rides the receding top surface — not a fixed point.
+      const top = shoeTopFor(l, k / count)
+      const ocx = top.x + rest.w / 2
+      const ocy = top.y + rest.h / 2
+      // Lift UP off the top first (a quick pop that fades over the flight) so the card is
+      // clearly plucked off the top surface, then accelerate up into the mouth. It shrinks
+      // only modestly (still a readable card) and fades late — holding opaque through the
+      // flight, then vanishing crisply into the mouth (smoothStart4).
+      const e = smoothStart2(suck)
+      const lift = rest.h * 0.3 * smoothEnd3(clamp01(suck / 0.3)) * (1 - suck)
+      const cardScale = 1 - 0.5 * smoothStart2(suck)
+      const alpha = 1 - smoothStart4(suck)
+      drawBackCentered(ctx, ocx + (mouth.x - ocx) * e, ocy + (mouth.y - ocy) * e - lift, rest.w, rest.h, cardScale, alpha, dpr)
+    }
+    const chunk = view.deckCardChunk(k, now)
+    if (chunk !== null) {
+      drawPaperCone(ctx, mouth.x, mouth.y, chunk, scale, 200 + k, DECK_CHUNK_COUNT)
     }
   }
 }
@@ -112,6 +159,22 @@ function drawCardCentered(
   ctx.restore()
 }
 
+// A card BACK centred on (cx, cy) at uniform scale `s` and opacity `alpha` — the
+// outgoing-deck cards peeling off the shoe into the mouth (uses the active card-back
+// palette set by the caller).
+function drawBackCentered(ctx: CanvasRenderingContext2D, cx: number, cy: number, w: number, h: number, s: number, alpha: number, dpr: number): void {
+  if (s <= 0.02 || alpha <= 0.02) {
+    return
+  }
+  const sprite = getCardSprite(null, w, h, dpr)
+  ctx.save()
+  ctx.globalAlpha = alpha
+  ctx.translate(cx, cy)
+  ctx.scale(s, s)
+  blitCard(ctx, sprite, -w / 2, -h / 2)
+  ctx.restore()
+}
+
 // A spray of cream paper chunks bursting out of the mouth and coning off to the
 // LEFT: each chunk flies out on its own leftward heading to its own distance
 // (smoothEnd3 — a fast burst that eases to rest), drooping a touch under gravity and
@@ -120,19 +183,20 @@ function drawCardCentered(
 // never jitters frame-to-frame. Staggered cards' sprays overlap into one continuous
 // stream filling the cone.
 const CHUNK_COUNT = 12
+const DECK_CHUNK_COUNT = 7 // lighter per-card spray for the deck shred (40 cards, many overlapping)
 const CHUNK_SPREAD = 0.62 // half-angle of the leftward cone, radians (~35°)
 
-function drawPaperCone(ctx: CanvasRenderingContext2D, mx: number, my: number, life: number, scale: number, seed: number): void {
+function drawPaperCone(ctx: CanvasRenderingContext2D, mx: number, my: number, life: number, scale: number, seed: number, count = CHUNK_COUNT): void {
   const fade = 1 - smoothEnd2(life)
   if (fade <= 0.02) {
     return
   }
-  const reach = scale * 0.3
+  const reach = scale * 0.45 // how far the furthest chunks fly off to the left
   const travel = smoothEnd3(life)
   const gy = scale * 0.05 * life * life // slight downward droop, growing quadratically
   const s = seed * 13 + 1
   ctx.save()
-  for (let i = 0; i < CHUNK_COUNT; i++) {
+  for (let i = 0; i < count; i++) {
     const ang = Math.PI + (hash(i, s) * 2 - 1) * CHUNK_SPREAD // pointing left, fanned
     const dist = reach * (0.3 + hash(i, s + 7) * 0.7) * travel
     const x = mx + Math.cos(ang) * dist
@@ -160,6 +224,8 @@ function drawPaperCone(ctx: CanvasRenderingContext2D, mx: number, my: number, li
 // edge, while the peeled part folds over — then that strip is tossed fully off to the
 // right; and ONLY THEN does the big sheet (which never flips) SLIDE LEFT off the cards
 // (revealing them), then get flicked off the page to the RIGHT.
+const SHEET_SPIN = 0.7 // radians the big sheet tumbles through as it flicks off right (~40°)
+
 function drawPlastic(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, unwrap: number, l: Layout): void {
   // Size the wrap to the deck's FULL footprint — the offset stack fans down-right, so
   // the plastic has to cover (w + dx) × (h + dy) or the stack pokes out bottom-right.
@@ -195,8 +261,9 @@ function drawPlastic(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   // Still-attached wrap: an L-shape while the strip peels (sheet-width ABOVE the tear
   // line, full-width BELOW it) — its stepped right edge IS the tear line, so the line is
   // drawn PROGRESSIVELY as the tear descends. Once the strip is gone it's a plain
-  // sheet-width rect that slides left then flicks off right (it never flips).
-  drawAttachedWrap(ctx, bx, by, bw, sheetW, bh, tearY, lip, sheetX, -flick * bh * 0.1, 1 - flick)
+  // sheet-width rect that slides left then TUMBLES off the page to the right — spinning
+  // clockwise about its centre as it flicks away (it never flips).
+  drawAttachedWrap(ctx, bx, by, bw, sheetW, bh, tearY, lip, sheetX, -flick * bh * 0.1, SHEET_SPIN * flick, 1 - flick)
 
   // Peeled edge strip: the part above the tear line folds over (about the descending
   // tear line); once fully peeled it's tossed off to the right.
@@ -218,6 +285,7 @@ function drawAttachedWrap(
   lip: number,
   tx: number,
   ty: number,
+  rot: number,
   alpha: number,
 ): void {
   if (alpha <= 0.02) {
@@ -226,6 +294,15 @@ function drawAttachedWrap(
   ctx.save()
   ctx.globalAlpha = alpha
   ctx.translate(tx, ty)
+  if (rot !== 0) {
+    // Spin about the sheet's centre (it's a plain sheet-width rect by the flick, the
+    // strip already tossed) so it tumbles rather than sliding flat off the page.
+    const cx = bx + sheetW / 2
+    const cy = by + bh / 2
+    ctx.translate(cx, cy)
+    ctx.rotate(rot)
+    ctx.translate(-cx, -cy)
+  }
 
   traceAttached(ctx, bx, by, bw, sheetW, bh, tearY, lip)
   ctx.fillStyle = 'rgba(214, 230, 240, 0.17)'

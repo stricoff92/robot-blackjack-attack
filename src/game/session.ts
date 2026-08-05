@@ -38,7 +38,8 @@ import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades
 const SHOE_DECKS = 6
 
 // 'choosing-upgrade' holds the deal after a non-final kill until the player picks
-// a roguelite upgrade; the dealer walk-in ceremony plays over it in the UI.
+// a roguelite upgrade; in the UI the dealer dies first, the selector shows, then the
+// replacement's walk-in ceremony plays once the pick releases the deal.
 export type Phase = 'betting' | 'playing' | 'resolved' | 'over' | 'choosing-upgrade'
 
 export interface SessionOptions {
@@ -308,7 +309,7 @@ export class Session {
     this.round = null
     this.analysis = null
     // A kill grants an upgrade pick: hold in choose-upgrade until the player picks
-    // (the walk-in ceremony plays over it), unless every path is already maxed.
+    // (the walk-in ceremony plays after the pick), unless every path is already maxed.
     this.phase = this.upgradePending && hasAvailableUpgrade(this.run) ? 'choosing-upgrade' : 'betting'
     this.upgradePending = false
   }

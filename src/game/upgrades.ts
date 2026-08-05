@@ -103,7 +103,8 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
     tiers: [
       'Natural blackjack pays 3:1',
       'player 21s upgrade to natural blackjack',
-      'Player 20s upgrade to natural blackjack'],
+      'Player 20s upgrade to natural blackjack',
+    ],
   },
   {
     path: 'tokenEco',

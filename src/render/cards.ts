@@ -829,6 +829,61 @@ export function drawShoe(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   blitCard(ctx, getCardSprite(null, w, h, dpr), x, y)
 }
 
+// The top (front) card's top-left position when the deck is `spent` (0..1) depleted:
+// 0 = full, the top card sits at the anchor; 1 = empty, the top has descended all the way
+// onto the fixed bottom card. The shred flies each card off from the top at the instant it
+// leaves (spent = its index / count), and drawDepletingShoe rests its top card here — so
+// cards peel off the same receding top surface the stack is shrinking down to.
+export function shoeTopFor(l: Layout, spent: number): { x: number; y: number } {
+  const a = shoeAnchor(l)
+  return { x: a.x + a.w * SHOE_DX * SHOE_LAYERS * spent, y: a.y + a.h * SHOE_DY * SHOE_LAYERS * spent }
+}
+
+// The shoe with only `remaining` (0..1) of its deck left: the BOTTOM card stays fixed on
+// the felt (carrying the shadow) while the TOP card DESCENDS onto it — the stack loses its
+// upper layers so the top surface recedes downward, card by card, exactly like a deck being
+// dealt off the top. The dealer-spawn shred uses this to shrink the outgoing dealer's deck
+// as its 40 backs are fed off the top into the new dealer's mouth.
+export function drawDepletingShoe(ctx: CanvasRenderingContext2D, l: Layout, remaining: number): void {
+  if (remaining <= 0.001) {
+    return
+  }
+  const { x, y, w, h } = shoeAnchor(l)
+  const dpr = window.devicePixelRatio || 1
+  const radius = w * 0.09
+  const dx = w * SHOE_DX
+  const dy = h * SHOE_DY
+  const back = activeCardBack()
+  const topGone = SHOE_LAYERS * (1 - remaining) // layers the top has descended toward the base
+
+  // Bottom card FIXED at full depth, carrying the drop shadow — it rests on the felt to the
+  // very end, so the deck shrinks by the top coming down, not by the bottom being eaten.
+  ctx.save()
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.45)'
+  ctx.shadowBlur = h * 0.09
+  ctx.shadowOffsetY = h * 0.05
+  ctx.beginPath()
+  ctx.roundRect(x + dx * SHOE_LAYERS, y + dy * SHOE_LAYERS, w, h, radius)
+  ctx.fillStyle = back.deckBase
+  ctx.fill()
+  ctx.restore()
+
+  // The layers still under the top card — from the fixed base up to the descending top.
+  for (let i = SHOE_LAYERS; i > topGone; i--) {
+    ctx.beginPath()
+    ctx.roundRect(x + dx * i, y + dy * i, w, h, radius)
+    ctx.fillStyle = i % 2 === 0 ? back.deckDark : back.deckLight
+    ctx.fill()
+    ctx.lineWidth = 1
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.22)'
+    ctx.stroke()
+  }
+
+  // Top/front card at its DESCENDED position — it visibly recedes toward the base as the
+  // deck is sucked away, so the removal unmistakably reads at the top.
+  blitCard(ctx, getCardSprite(null, w, h, dpr), x + dx * topGone, y + dy * topGone)
+}
+
 // A riffle shuffle, a single pass: the deck splits into two piles that slide
 // apart, then cards fly from both piles into a single deck reforming in the
 // centre. Drawn on the cards layer (the static table-layer deck is hidden while

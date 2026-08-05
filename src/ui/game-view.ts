@@ -18,12 +18,12 @@ import { drawHealthBar } from '../render/health'
 import { drawStrikeFx, nexusYellowLight } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
-import { drawShred, drawSpawnDeck } from '../render/spawn'
+import { drawOldDeckShred, drawShred, drawSpawnDeck } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
 import { CountTicker } from './count-ticker'
 import { DealAnimation } from './deal-animator'
-import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
+import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
 import { HealthAnimation } from './health-animator'
 import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
@@ -80,6 +80,17 @@ const RETURN_DEAL_DELAY = 220
 // How much the dealer-spawn shred overlaps the tail of the walk-in, so the cards
 // start being sucked in just as the new dealer arrives (no dead beat between).
 const SHRED_ARRIVE_OVERLAP = 140
+// A kill that grants an upgrade pick is played in two halves so the selector sits in
+// the middle: the dealer is destroyed, then after this beat the upgrade card appears;
+// once the player picks, the replacement's walk-in ceremony begins after this beat.
+// Dealer gone → upgrade card. Sized to outlast the +40 bounty token, which lifts off
+// at the death and flies to the counter (FLY_MS ≈ 665ms) — so the reward animation has
+// landed and settled before the selector takes over the screen, plus a breath.
+const UPGRADE_REVEAL_LEAD = 1400
+const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
+// A picked upgrade plays a dismiss animation (darkness + card fade, chosen button
+// scales up) before the pick commits. Kept in sync with .upgrade-panel.is-dismissing.
+const UPGRADE_DISMISS_MS = 350
 
 const SUIT_SYMBOLS: Record<Suit, string> = {
   hearts: '♥',
@@ -153,6 +164,17 @@ class GameView {
   // (and any death → walk-in), then the card gather + shuffle, play out.
   private pendingAttack: { fromIntegrity: number; fromShift: number; toIntegrity: number; toShift: number } | null = null
   private dealAfter = 0
+  // A kill that grants an upgrade pick splits the ceremony around the selector: the
+  // dealer dies on the Next-hand click, and the replacement's arrival (walk-in + shred
+  // + fresh deck) is deferred until the player picks. This holds what that deferred
+  // arrival needs — the round to shred + the incoming dealer — set on the death, cleared
+  // when the arrival fires. `upgradeRevealAt` is when the selector may surface (a beat
+  // after the death), gating syncUpgradePanel so it doesn't pop up mid-death.
+  private pendingCeremony: { prevRound: Round; incomingShift: number; incomingIntegrity: number } | null = null
+  private upgradeRevealAt = 0
+  // True while a picked upgrade's dismiss animation plays (before the pick commits);
+  // syncUpgradePanel yields the panel to the animation during this window.
+  private upgradeDismissing = false
   // When the current Analyze reading first appeared, so its flicker can ramp in
   // from that moment (the projection stutters on over the first few hundred ms).
   private analysisStart = 0
@@ -180,6 +202,10 @@ class GameView {
   // A dealer-spawn ceremony's incoming deck colour, committed to `deckColorShift`
   // (and handed back to the static table) once the new wrapped deck lands + unwraps.
   private spawnIncomingShift: number | null = null
+  // True while a ceremony is shredding the PREVIOUS dealer's resting deck (a kill / New
+  // run) — drawn on the cards layer (resting → sucked into the mouth) with the static
+  // table deck hidden. False on the opening intro (no old deck exists yet).
+  private spawnHasOldDeck = false
   // True only during the opening intro, before the very first deck has flown in —
   // suppresses the static resting deck until the ceremony delivers it.
   private deckHidden = false
@@ -376,6 +402,12 @@ class GameView {
     // deck, or hidden on the opening intro) until this one lands + commits.
     if (this.spawn.isAnimating(timestamp)) {
       const shift = this.spawnIncomingShift ?? this.deckColorShift
+      // The outgoing dealer's deck is shredded into the mouth first (drawn resting on the
+      // shoe until the shred reaches it), then the fresh wrapped deck flies in over the
+      // emptied shoe — instead of just landing on top of the old one.
+      if (this.spawnHasOldDeck) {
+        drawOldDeckShred(ctx, layout, dealerColors(this.deckColorShift, timestamp).back, this.spawn, timestamp)
+      }
       drawSpawnDeck(ctx, layout, dealerColors(shift, timestamp).back, this.spawn, timestamp)
     } else if (this.deckOnCards) {
       // While gathering/shuffling, the deck lives on this layer so it can slide
@@ -647,10 +679,16 @@ class GameView {
         // over is replaced right where they register, so the swap is unseen).
         this.deckColorShift = this.spawnIncomingShift
         this.spawnIncomingShift = null
+        this.spawnHasOldDeck = false
         this.deckHidden = false
         this.paintTable(canvas, layout, this.tableHasDeck())
       }
-      this.collectRound = null
+      // Keep the ending round's cards on the felt while a deferred arrival is pending —
+      // the dealer's dead and the upgrade selector is up, and those cards are what the
+      // new dealer will shred when it finally walks in (playArrival).
+      if (!this.pendingCeremony) {
+        this.collectRound = null
+      }
       // Release the frozen bankroll only when a next-hand CLEAR just finished (the
       // payout chips have moved) — NOT when a resolve animation settles, so the
       // count stays put through the resolved-waiting state until next hand.
@@ -692,8 +730,8 @@ class GameView {
     this.lastDealerBlocking = dealerBlocking
 
     // While the choose-upgrade pick is pending, keep the overlay synced every frame
-    // so the card surfaces the instant the walk-in ceremony settles (and clears the
-    // moment a pick releases the deal). The loop is already running for the hover.
+    // so the card surfaces the instant the death settles + its reveal beat passes (and
+    // clears the moment a pick releases the deal). The loop already runs for the hover.
     if (this.state.phase === 'choosing-upgrade') {
       this.syncOverlay(timestamp)
     }
@@ -874,7 +912,7 @@ class GameView {
     }
 
     // The choose-upgrade card sits above the columns (appended last), shown only
-    // during the choosing-upgrade phase once the walk-in ceremony settles.
+    // during the choosing-upgrade phase once the dealer's death settles.
     this.stage.overlay.append(tokens, this.messageEl, powers, actions, this.buildUpgradePanel())
   }
 
@@ -896,13 +934,35 @@ class GameView {
       icon.alt = info.name // the path name still reaches screen readers
       const effectEl = element('span', 'upgrade-btn__effect')
       btn.append(icon, effectEl)
-      btn.addEventListener('click', () => this.run(() => this.session.chooseUpgrade(info.path)))
+      btn.addEventListener('click', () => this.pickUpgrade(info, btn))
       row.appendChild(btn)
       return { info, btn, effectEl }
     })
     panel.append(title, row)
     this.upgradeEl = panel
     return panel
+  }
+
+  // A path button was clicked: play the dismiss animation (darkness + title fade,
+  // the unselected buttons snap away, the chosen button fades while scaling up) and
+  // only commit the pick — which releases the held deal and starts the next dealer's
+  // walk-in — once it finishes. Guarded so a second click mid-animation is ignored.
+  private pickUpgrade(info: UpgradePathInfo, btn: HTMLButtonElement): void {
+    if (this.upgradeDismissing) {
+      return
+    }
+    this.upgradeDismissing = true
+    btn.classList.add('is-chosen')
+    this.upgradeEl.classList.add('is-dismissing')
+    window.setTimeout(() => {
+      // Commit first: this flips to `betting`, and syncOverlay hides the card
+      // (is-hidden → visibility:hidden), so dropping the animation classes next is
+      // invisible. Clearing the flag before run() lets syncUpgradePanel hide it.
+      this.upgradeDismissing = false
+      this.run(() => this.session.chooseUpgrade(info.path))
+      this.upgradeEl.classList.remove('is-dismissing')
+      btn.classList.remove('is-chosen')
+    }, UPGRADE_DISMISS_MS)
   }
 
   // The player's token counter (icon + count), pinned top-left. The icon <img>
@@ -949,6 +1009,16 @@ class GameView {
       this.analysisFadeOut = prevAnalysis
       this.analysisFadeStart = t
     }
+    // The upgrade was just chosen (choosing-upgrade → betting): the dealer's already
+    // dead and gone; now the deferred arrival ceremony — walk-in + shred + fresh deck —
+    // plays, then the next hand deals. Handled on its own since there's no round change.
+    if (prevPhase === 'choosing-upgrade' && this.pendingCeremony) {
+      this.playArrival(t)
+      this.syncOverlay(t)
+      this.lastAnimating = this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t)
+      this.ensureLoop()
+      return
+    }
     if (prevRound && !this.state.round) {
       // Next hand called: settle the deferred chips now (winners collect, losers pay
       // the house). What follows depends on whether the DEALER CHANGES. A same-dealer
@@ -989,18 +1059,29 @@ class GameView {
         const pa = this.pendingAttack
         this.pendingAttack = null
         const attackStart = this.chips.animEnd + LASER_GAP
-        const attackEnd = this.playAttack(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
-        if (isKill) {
-          // The blow destroyed the dealer: as the replacement walks in (part of
-          // playAttack), its mouth shreds the old cards while a fresh wrapped deck
-          // flies in — no riffle. The next hand waits for the whole ceremony.
-          this.deckColorIncoming = null
-          this.dealAfter = this.beginSpawn(prevRound, pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
+        this.deckColorIncoming = null
+        if (isKill && this.state.phase === 'choosing-upgrade') {
+          // The kill grants an upgrade pick: play only the DEATH now (the figure breaks
+          // apart, the bar drains). The replacement's walk-in + shred + fresh deck are
+          // deferred until the pick (playArrival) — so the selector shows over an empty
+          // table with the old cards still resting. The old cards + round are held in
+          // `pendingCeremony` (and `collectRound`) for that later shred.
+          const deathEnd = this.playDeath(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
+          this.pendingCeremony = { prevRound, incomingShift: pa.toShift, incomingIntegrity: pa.toIntegrity }
+          this.upgradeRevealAt = deathEnd + UPGRADE_REVEAL_LEAD
+          this.dealAfter = 0 // the deal waits for the pick, not a timestamp
         } else {
-          // Same dealer, just damaged: gather the cards back + riffle after the laser.
-          this.deckColorIncoming = null
-          this.anim.collect(prevRound, attackEnd + GATHER_GAP)
-          this.dealAfter = this.anim.animEnd
+          const attackEnd = this.playAttack(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
+          if (isKill) {
+            // A kill with no upgrade to pick (every path maxed): the replacement walks
+            // in (part of playAttack), its mouth shreds the old cards while a fresh
+            // wrapped deck flies in — no riffle. The next hand waits for the ceremony.
+            this.dealAfter = this.beginSpawn(prevRound, pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
+          } else {
+            // Same dealer, just damaged: gather the cards back + riffle after the laser.
+            this.anim.collect(prevRound, attackEnd + GATHER_GAP)
+            this.dealAfter = this.anim.animEnd
+          }
         }
         // The red muzzle blasts for the laser, then fades. No yellow flare — the
         // tokens already flew on the resolve; the yellow just eases out of its glow.
@@ -1204,8 +1285,45 @@ class GameView {
   // frame loop). Returns the timestamp the deck is ready, so the next deal can wait.
   private beginSpawn(prevRound: Round, incomingShift: number, shredStart: number): number {
     this.spawnIncomingShift = incomingShift
+    // The previous dealer's resting deck moves off the static table onto the cards layer
+    // so it can be sucked into the new dealer's mouth; the static deck stays hidden until
+    // the fresh one lands + commits (frame settle). Draw it resting there right away.
+    this.spawnHasOldDeck = true
+    this.deckHidden = true
+    const canvas = this.stage.canvas
+    this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
     const cardCount = prevRound.dealer.length + prevRound.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
-    return this.spawn.begin(shredStart, cardCount)
+    return this.spawn.begin(shredStart, cardCount, true)
+  }
+
+  // The front half of an upgrade-granting kill: the laser fires, the dealer breaks
+  // apart (no walk-in), the health bar drains, and the +40 bounty flies from the nexus —
+  // but the replacement is held back for playArrival. Returns when the figure is gone.
+  private playDeath(fromI: number, fromS: number, toI: number, toS: number, startAfter: number): number {
+    this.health.drain(startAfter)
+    this.dealer.sync(fromI, fromS, toI, toS, startAfter, false, false) // death only, no walk-in
+    const canvas = this.stage.canvas
+    const layout = computeLayout(canvas.width, canvas.height)
+    const liftoff = startAfter + KILL_DEATH_MS
+    const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
+    this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
+    return startAfter + KILL_DEATH_MS
+  }
+
+  // The back half of an upgrade-granting kill, run when the player picks: after a beat
+  // the replacement dealer walks in (its bar refilling), its mouth shreds the old cards
+  // + resting deck, and a fresh wrapped deck flies in. The next deal waits for it all.
+  private playArrival(t: number): void {
+    const c = this.pendingCeremony!
+    this.pendingCeremony = null
+    this.collectRound = c.prevRound // re-anchor the cards to shred (kept resting till now)
+    const walkInStart = t + CEREMONY_LEAD
+    this.dealer.setLevel(c.incomingIntegrity)
+    this.dealer.setShift(c.incomingShift)
+    this.dealer.spawn(walkInStart)
+    this.health.refill(c.incomingIntegrity, walkInStart)
+    this.deckColorIncoming = null
+    this.dealAfter = this.beginSpawn(c.prevRound, c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
 
   // Fire the nexus laser at the dealer for a damage/kill, starting at `startAfter`.
@@ -1248,7 +1366,7 @@ class GameView {
     this.updateTokenCounter(timestamp)
     this.messageEl.textContent = animating ? '' : this.buildMessage()
     this.hintEl.textContent = animating ? '' : this.buildHint()
-    this.syncUpgradePanel(s, animating)
+    this.syncUpgradePanel(s, animating, timestamp)
 
     for (const def of this.defs) {
       const button = this.buttons[def.key]
@@ -1262,12 +1380,21 @@ class GameView {
   }
 
   // Show/hide the choose-upgrade card and swap the normal HUD columns out while it's
-  // up. The card appears only once the walk-in ceremony has settled (!animating);
+  // up. The card appears once the dealer's death settles and its reveal beat passes;
   // each path button shows the effect it would unlock next, and a maxed path's
   // button is hidden. No indication of what's already been picked — by design.
-  private syncUpgradePanel(s: SessionState, animating: boolean): void {
+  private syncUpgradePanel(s: SessionState, animating: boolean, timestamp: number): void {
+    // While a pick's dismiss animation is playing, let it own the panel — don't
+    // re-toggle is-hidden / the buttons out from under the fade + scale. The columns
+    // stay hidden too (still choosing-upgrade until pickUpgrade commits the pick).
+    if (this.upgradeDismissing) {
+      return
+    }
     const choosing = s.phase === 'choosing-upgrade'
-    this.upgradeEl.classList.toggle('is-hidden', !(choosing && !animating))
+    // The card surfaces only once the death has finished AND a beat has passed
+    // (upgradeRevealAt) — so it doesn't pop up over the dealer breaking apart.
+    const reveal = choosing && !animating && timestamp >= this.upgradeRevealAt
+    this.upgradeEl.classList.toggle('is-hidden', !reveal)
     this.powersEl.classList.toggle('is-hidden', choosing)
     this.actionsEl.classList.toggle('is-hidden', choosing)
     if (!choosing) {

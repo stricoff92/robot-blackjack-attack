@@ -37,6 +37,10 @@ export const KILL_DYING_MS = 640 // the figure blows apart and falls
 export const KILL_GONE_MS = 150 // empty beat before the replacement appears
 export const KILL_ARRIVE_MS = 1000 // the new dealer walks in + eyes re-ignite (also the page-load / new-run spawn walk-in)
 export const KILL_TOTAL_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS + KILL_ARRIVE_MS // 2050
+// A death-only kill (the replacement's walk-in is deferred while the upgrade selector
+// shows): by here the figure is fully broken apart and gone. Ends the block/sequence
+// early, before the walk-in that a bundled kill would run next.
+export const KILL_DEATH_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS // 900
 
 // Below this fraction of full health the dealer's eyes start to flicker; the
 // closer to zero, the harder they stutter (see flicker()).
@@ -49,6 +53,10 @@ type Mode = 'none' | 'hit' | 'kill' | 'spawn'
 export class DealerAnimation implements DealerView, StrikeView {
   private mode: Mode = 'none'
   private final = false // the last dealer — dies but never walks back in
+  // Whether the current kill plays its replacement's walk-in as part of the same
+  // sequence. False when the walk-in is deferred (a kill that grants an upgrade pick:
+  // the dealer dies now, the selector shows, then a later spawn() walks the new one in).
+  private killWalkIn = true
   private strikeStart = 0 // beam lift-off (t0)
   private hitStart = 0 // impact = t0 + STRIKE_TRAVEL_MS
   private killStart = 0 // t0 for a kill
@@ -71,16 +79,20 @@ export class DealerAnimation implements DealerView, StrikeView {
     nextShift: number,
     startAfter: number,
     final = false,
+    walkIn = true,
   ): void {
     this.level = clamp01(Math.max(0, nextIntegrity) / FULL_INTEGRITY)
 
     if (nextShift > prevShift) {
       this.mode = 'kill'
       this.final = final
+      this.killWalkIn = walkIn
       this.strikeStart = startAfter
       this.hitStart = startAfter + STRIKE_TRAVEL_MS
       this.killStart = startAfter
-      this.seqEnd = startAfter + KILL_TOTAL_MS
+      // A death-only kill ends when the figure is gone; a bundled kill runs on through
+      // the empty beat + the replacement's walk-in.
+      this.seqEnd = startAfter + (walkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
       // The dying figure keeps the outgoing colour; the arriving one takes the new.
       this.killFromShift = prevShift
       this.shift = nextShift
@@ -139,10 +151,15 @@ export class DealerAnimation implements DealerView, StrikeView {
     return this.damageIntensity() > 0
   }
 
-  // True across the WHOLE kill (t0 → t0 + 1700), so buttons stay disabled for the
-  // entire death → walk-in → recharge pause (a plain hit never blocks).
+  // True across the whole kill, so buttons stay disabled for the entire death →
+  // walk-in → recharge pause (a plain hit never blocks). A death-only kill blocks
+  // just through the death — the deferred walk-in re-blocks later on its own.
   isBlocking(now: number): boolean {
-    return this.mode === 'kill' && now >= this.killStart && now < this.killStart + KILL_TOTAL_MS
+    if (this.mode !== 'kill') {
+      return false
+    }
+    const blockEnd = this.killStart + (this.killWalkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
+    return now >= this.killStart && now < blockEnd
   }
 
   // True while a strike/hit/kill sequence is playing (NOT the idle eye flicker).
@@ -154,12 +171,17 @@ export class DealerAnimation implements DealerView, StrikeView {
   // --- DealerView --------------------------------------------------------------
 
   alive(now: number): boolean {
+    if (this.mode === 'spawn') {
+      // A deferred walk-in is parked/gone until it actually begins (its start may be
+      // scheduled a beat ahead — e.g. while the upgrade selector is still up).
+      return now >= this.spawnStart
+    }
     if (this.mode !== 'kill') {
       return true
     }
     const goneStart = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS
-    if (this.final) {
-      return now < goneStart // dies and stays gone
+    if (this.final || !this.killWalkIn) {
+      return now < goneStart // dies and stays gone (no walk-in in this sequence)
     }
     const goneEnd = goneStart + KILL_GONE_MS
     return !(now >= goneStart && now < goneEnd)
@@ -211,12 +233,13 @@ export class DealerAnimation implements DealerView, StrikeView {
   // moment it starts walking in (the empty gone-beat draws nothing, so it doesn't
   // matter there). A final kill has no replacement, so it stays the dying dealer.
   figureShift(now: number): number {
-    if (this.mode === 'kill' && !this.final) {
+    if (this.mode === 'kill' && !this.final && this.killWalkIn) {
       const arriveStart = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
       return now >= arriveStart ? this.shift : this.killFromShift
     }
     if (this.mode === 'kill') {
-      return this.killFromShift // final kill: the dying dealer keeps its colour
+      // Final kill / death-only: the dying dealer keeps its colour (no walk-in here).
+      return this.killFromShift
     }
     return this.shift
   }
@@ -239,7 +262,7 @@ export class DealerAnimation implements DealerView, StrikeView {
       }
       return (now - this.spawnStart) / KILL_ARRIVE_MS
     }
-    if (this.mode !== 'kill' || this.final) {
+    if (this.mode !== 'kill' || this.final || !this.killWalkIn) {
       return null
     }
     const start = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
@@ -273,8 +296,8 @@ export class DealerAnimation implements DealerView, StrikeView {
       if (now < dyingEnd) {
         return BASE_GLOW * (1 - (now - dyingStart) / KILL_DYING_MS) // dim out as it dies
       }
-      if (this.final) {
-        return 0
+      if (this.final || !this.killWalkIn) {
+        return 0 // no walk-in in this kill sequence — stays dark
       }
       const arriveStart = dyingEnd + KILL_GONE_MS
       if (now < arriveStart) {

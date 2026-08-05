@@ -24,7 +24,7 @@ const DRAIN_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS * 0.6 // empty by the time i
 const KILL_PAUSE = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS - DRAIN_MS // drainEnd → arrival
 const REFILL_MS = KILL_ARRIVE_MS // fills as the new dealer walks in
 
-type Mode = 'none' | 'drop' | 'kill' | 'refill'
+type Mode = 'none' | 'drop' | 'kill' | 'refill' | 'drain'
 
 export class HealthAnimation implements HealthView {
   private mode: Mode = 'none'
@@ -81,6 +81,27 @@ export class HealthAnimation implements HealthView {
     this.settle(to) // no change
   }
 
+  // The front half of a kill on its own: the bar drains to empty and HOLDS there. Used
+  // when the replacement's arrival is deferred (a kill that grants an upgrade pick — the
+  // dealer dies, the selector shows, then refill() runs as the new one walks in).
+  drain(startAfter: number): void {
+    this.mode = 'drain'
+    this.from = this.to // drain from whatever's currently displayed
+    this.to = 0
+    this.start = startAfter
+    this.end = startAfter + DRAIN_MS
+  }
+
+  // The back half of a kill: fill the emptied bar up to the incoming dealer's integrity
+  // as it walks in. Pairs with drain() across the upgrade-selector pause.
+  refill(integrity: number, startAfter: number): void {
+    this.mode = 'refill'
+    this.from = 0
+    this.to = frac(integrity)
+    this.start = startAfter
+    this.end = startAfter + REFILL_MS
+  }
+
   level(now: number): number {
     if (this.mode === 'refill') {
       if (now <= this.start) {
@@ -106,6 +127,11 @@ export class HealthAnimation implements HealthView {
     if (this.mode === 'drop') {
       return now < this.start ? this.from : this.to
     }
+    if (this.mode === 'drain') {
+      // Snap the fill to empty at the drain start (the vanishing slice shows as the
+      // fading ghost, like a kill), then hold empty until a refill().
+      return now < this.start ? this.from : 0
+    }
     return this.to
   }
 
@@ -116,8 +142,10 @@ export class HealthAnimation implements HealthView {
       }
       return { lo: this.to, hi: this.from, fade: 1 - smoothStep((now - this.start) / DROP_MS) }
     }
-    if (this.mode === 'kill') {
-      if (now < this.start || now >= this.drainEnd) {
+    if (this.mode === 'kill' || this.mode === 'drain') {
+      // Both drain the fill over the same DRAIN_MS; the kill also holds its own drainEnd.
+      const drainEnd = this.mode === 'kill' ? this.drainEnd : this.end
+      if (now < this.start || now >= drainEnd) {
         return null
       }
       return { lo: 0, hi: this.from, fade: 1 - smoothEnd3((now - this.start) / DRAIN_MS) }
