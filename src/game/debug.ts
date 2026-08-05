@@ -3,22 +3,27 @@
 // is false, so they are compiled out to a no-op and can never be triggered on
 // the deployed game. Append to the dev URL:
 //
-//   ?forcePairs      — every deal gives the player a splittable pair
-//   ?forcePairs=8    — ...specifically a pair of that rank (2-10, J, Q, K, A)
-//   ?tokens=200      — start the run with this many tokens (test powerups without grinding)
-//   ?dealerHealth=50 — start the first dealer at this % health (1-100), e.g. to see the
-//                      low-health eye flicker without playing a dealer down
-//   ?dealer=6        — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
-//                      to a dealer's colour: 1 blue, 2 purple, 3 green, 4 yellow, 5 red,
-//                      6 the RGB-cycling final dealer
+//   ?forcePairs        — every deal gives the player a splittable pair
+//   ?forcePairs=8      — ...specifically a pair of that rank (2-10, J, Q, K, A)
+//   ?tokens=200        — start the run with this many tokens (test powerups without grinding)
+//   ?dealerHealth=50   — start the first dealer at this % health (1-100), e.g. to see the
+//                        low-health eye flicker without playing a dealer down
+//   ?dealer=6          — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
+//                        to a dealer's colour: 1 blue, 2 purple, 3 green, 4 yellow, 5 red,
+//                        6 the RGB-cycling final dealer
+//   ?sabotageUpgrade=3 — start with the Sabotage (anti-dealer) path unlocked through this tier (0-3)
+//   ?chipUpgrade=2     — start with the Payout (chip) path unlocked through this tier (0-3)
+//   ?tokenUpgrades=1   — start with the Tokens path unlocked through this tier (0-3)
+//   ?dealerBlackjack   — the dealer draws a natural 21 every hand (test hijack/refund/push)
 //
-// Handy for exercising split (and re-split) without waiting for a natural pair,
-// buying a pricey powerup (Peek Deck, Mulligan) straight off the first deal,
-// dropping the opening dealer near death to check the damage animation, or checking
-// a later dealer's colours without grinding up to it.
+// See docs/dev-params.md for the full reference (values, effects, examples). Handy
+// for exercising split without waiting for a pair, buying a pricey powerup off the
+// first deal, testing any upgrade combo without grinding to kills, or forcing the
+// dealer-blackjack outcomes (loss/refund/hijack/push) on demand.
 
 import { RANKS, type Rank } from './deck'
 import { TOTAL_DEALERS } from './run'
+import { MAX_UPGRADE_TIER } from './upgrades'
 
 export interface DebugFlags {
   /** Force the player's opening two cards to be a pair. */
@@ -31,6 +36,14 @@ export interface DebugFlags {
   dealerHealth: number | null
   /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
   startDealer: number | null
+  /** Start with the Sabotage (anti-dealer) path unlocked through this tier (0-3); null = none. */
+  sabotageUpgrade: number | null
+  /** Start with the Payout (chip) path unlocked through this tier (0-3); null = none. */
+  chipUpgrade: number | null
+  /** Start with the Tokens path unlocked through this tier (0-3); null = none. */
+  tokenUpgrades: number | null
+  /** Force the dealer's opening two cards to be a natural 21 on every deal. */
+  dealerBlackjack: boolean
 }
 
 const OFF: DebugFlags = {
@@ -39,6 +52,10 @@ const OFF: DebugFlags = {
   startTokens: null,
   dealerHealth: null,
   startDealer: null,
+  sabotageUpgrade: null,
+  chipUpgrade: null,
+  tokenUpgrades: null,
+  dealerBlackjack: false,
 }
 
 export function readDebugFlags(): DebugFlags {
@@ -55,6 +72,10 @@ export function readDebugFlags(): DebugFlags {
     startTokens: parseStartTokens(params.get('tokens')),
     dealerHealth: parseDealerHealth(params.get('dealerHealth')),
     startDealer: parseStartDealer(params.get('dealer')),
+    sabotageUpgrade: parseUpgradeTier(params.get('sabotageUpgrade')),
+    chipUpgrade: parseUpgradeTier(params.get('chipUpgrade')),
+    tokenUpgrades: parseUpgradeTier(params.get('tokenUpgrades')),
+    dealerBlackjack: params.has('dealerBlackjack'),
   }
 }
 
@@ -85,4 +106,15 @@ function parseStartDealer(raw: string | null): number | null {
   }
   const n = Number(raw)
   return Number.isFinite(n) ? Math.min(TOTAL_DEALERS, Math.max(1, Math.floor(n))) : null
+}
+
+// An upgrade tier clamped to 0..MAX_UPGRADE_TIER, or null if absent/empty/invalid.
+// Tier N means the path is unlocked through tier N (tiers stack in order), so 3 is
+// fully maxed and 0 is the same as leaving it off.
+function parseUpgradeTier(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(MAX_UPGRADE_TIER, Math.max(0, Math.floor(n))) : null
 }

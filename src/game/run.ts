@@ -1,8 +1,18 @@
 import { damageForRound } from './integrity'
 import { handReward } from './rewards'
 import { payout, type Round } from './round'
+import {
+  bumpUpgrade,
+  emptyUpgrades,
+  hasAvailableUpgrade as hasAvailableUpgradeFor,
+  tokenMultiplierFor,
+  type RunUpgrades,
+  type UpgradePath,
+} from './upgrades'
 
-export const RULES_VERSION = 3
+// Bumped whenever resolution/reward maths change, so stale replays are invalidated.
+// v4: roguelite upgrades (auto-blackjack, dealer sabotage, chip/token scaling).
+export const RULES_VERSION = 4
 export const STARTING_CHIPS = 300
 export const FULL_INTEGRITY = 100
 // The run is won by destroying this many dealers; there is no dealer beyond it.
@@ -49,6 +59,8 @@ export interface RunState {
   kills: number[]
   over: boolean
   won: boolean
+  // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
+  upgrades: RunUpgrades
 }
 
 // Gentle ~1.6x/shift min-bet ladder: the floor climbs slowly enough that a flat
@@ -75,7 +87,23 @@ export function startRun(seed: number): RunState {
     kills: [],
     over: false,
     won: false,
+    upgrades: emptyUpgrades(),
   }
+}
+
+// The run's current token-reward multiplier (Token eco upgrade). Applied to hand
+// rewards via RoundRules and to the flat kill bounty here.
+export function tokenMultiplier(run: RunState): number {
+  return tokenMultiplierFor(run.upgrades)
+}
+
+// Unlock the next tier of an upgrade path (the choose-upgrade pick after a kill).
+export function applyUpgrade(run: RunState, path: UpgradePath): RunState {
+  return { ...run, upgrades: bumpUpgrade(run.upgrades, path) }
+}
+
+export function hasAvailableUpgrade(run: RunState): boolean {
+  return hasAvailableUpgradeFor(run.upgrades)
 }
 
 export function getShift(index: number): Shift {
@@ -139,7 +167,8 @@ export function applyRound(run: RunState, round: Round): RunState {
   let won = false
 
   if (integrity <= 0) {
-    tokens += DESTROY_TOKEN
+    // The kill bounty scales with the Token eco multiplier, like every other reward.
+    tokens += Math.round(DESTROY_TOKEN * tokenMultiplier(run))
     score += DESTRUCTION_SCORE_BASE * shiftIndex
     kills = [...kills, shiftIndex]
     shiftIndex += 1

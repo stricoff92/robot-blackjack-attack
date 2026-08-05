@@ -12,8 +12,7 @@
 // the floor of the standing tiers (17) — you can't pin a fat dealer to farm the
 // high tiers.
 
-import { evaluateHand } from './hand'
-import type { PlayerHand, Round } from './round'
+import { dealerSettleTotal, type PlayerHand, type Round } from './round'
 
 export interface HandReward {
   /** Integrity damage dealt to the dealer. */
@@ -38,6 +37,15 @@ const BY_DEALER_TOTAL: Record<number, HandReward> = {
 const FROZEN_TIER = 17 // Freeze Dealer wins always grade as the 17 tier.
 
 export function handReward(hand: PlayerHand, round: Round): HandReward {
+  const base = baseReward(hand, round)
+  // Token eco upgrade: every reward's tokens scale by the run's multiplier. Damage
+  // is untouched. Kept here so both the credited total (run.ts) and the flown count
+  // (the UI's winTokenFor) read the same scaled value.
+  const mult = round.rules.tokenMultiplier
+  return mult === 1 ? base : { damage: base.damage, tokens: Math.round(base.tokens * mult) }
+}
+
+function baseReward(hand: PlayerHand, round: Round): HandReward {
   if (hand.outcome === 'blackjack') {
     return BLACKJACK_REWARD
   }
@@ -47,7 +55,9 @@ export function handReward(hand: PlayerHand, round: Round): HandReward {
   if (round.dealerFrozen) {
     return BY_DEALER_TOTAL[FROZEN_TIER]
   }
-  const dealerTotal = evaluateHand(round.dealer).total
+  // dealerSettleTotal folds in the Anti-dealer downgrade, so a beaten downgraded
+  // dealer grades one tier weaker (matching how it was judged in round.ts).
+  const dealerTotal = dealerSettleTotal(round)
   if (dealerTotal > 21) {
     return DEALER_BUST_REWARD
   }

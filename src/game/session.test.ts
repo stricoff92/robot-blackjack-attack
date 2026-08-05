@@ -177,6 +177,12 @@ describe('Session.buyReturn', () => {
           session.nextHand()
           continue
         }
+        if (snap.phase === 'choosing-upgrade') {
+          // A kill parked us on the choose-upgrade screen; pick one (tokens-only, so
+          // it doesn't change hand resolution) and carry on hunting for the scenario.
+          session.chooseUpgrade('tokenEco')
+          continue
+        }
         // phase === 'playing': once we can afford Return, take a single hand to
         // three cards; if it survives, that's our scenario.
         const round = snap.round!
@@ -233,6 +239,8 @@ function playingSessionWithTokens(min: number): Session {
         session.stand() // resolve this hand to try to bank its reward
       } else if (phase === 'resolved') {
         session.nextHand()
+      } else if (phase === 'choosing-upgrade') {
+        session.chooseUpgrade('tokenEco') // a kill's upgrade pick; tokens-only, keep going
       } else {
         break // run is over — try another seed
       }

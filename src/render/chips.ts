@@ -46,8 +46,10 @@ const BOTTOM_HUD_RESERVE = 96 // px kept clear at the screen bottom for the acti
 // player's bankroll on the deal. On resolve, a win plays `winIn` (winnings fly
 // from the dealer to beside the bet) then `restWin` (both sit, waiting); a
 // loss/push just holds `idle`. When the next hand is called, the table settles:
-// `toDealer` (loss) or `collect` (win/push → bet + winnings into the bankroll).
-export type BetPhase = 'placing' | 'idle' | 'winIn' | 'restWin' | 'toDealer' | 'collect' | 'done'
+// `toDealer` (loss) or `collect` (win/push → bet + winnings into the bankroll). A
+// refunded loss adds `refundBack` after `toDealer`: the dealer slides part of the
+// bet back to the bankroll (Anti-dealer refund upgrade).
+export type BetPhase = 'placing' | 'idle' | 'winIn' | 'restWin' | 'toDealer' | 'refundBack' | 'collect' | 'done'
 
 export interface BetChipState {
   phase: BetPhase
@@ -210,7 +212,12 @@ function drawHandChips(
   const winSpot: Point = { x: bet.x + m.rx * 2.6, y: bet.y } // winnings land beside the bet
 
   const won = st.outcome === 'win' || st.outcome === 'blackjack'
-  const winAmount = st.outcome === 'blackjack' ? Math.floor(amount * 1.5) : amount
+  // The winnings must track handPayout: a blackjack pays the rules' ratio (3:2 by
+  // default, 3:1 with the Payout upgrade), not a hardcoded 1.5x.
+  const winAmount =
+    st.outcome === 'blackjack'
+      ? Math.floor(amount * (round.rules.blackjackPayoutNumerator / round.rules.blackjackPayoutDenominator))
+      : amount
   const winCount = discCount(winAmount, MAX_BET_DISCS)
 
   // Value labels sit BELOW the chips (just under the betting circle). The bet's
@@ -245,6 +252,16 @@ function drawHandChips(
       const e = smoothStep(st.progress)
       const alpha = st.progress > 0.75 ? 1 - (st.progress - 0.75) / 0.25 : 1
       paintBet(lerp(bet.x, dealer.x, e), lerp(bet.y, dealer.y, e), alpha)
+      break
+    }
+    case 'refundBack': {
+      // Anti-dealer refund: the dealer slides part of the lost bet back into the
+      // player's bankroll (its exact value shows on the bankroll count as it lands).
+      const refundAmount = Math.floor(amount * round.rules.dealerNaturalRefundRatio)
+      const refundCount = discCount(refundAmount, MAX_BET_DISCS)
+      const e = smoothStep(st.progress)
+      const alpha = st.progress < 0.15 ? st.progress / 0.15 : st.progress > 0.85 ? 1 - (st.progress - 0.85) / 0.15 : 1
+      drawChipStack(ctx, lerp(dealer.x, playerTop.x, e), lerp(dealer.y, playerTop.y, e), refundCount, m, CHIP_STYLE, alpha)
       break
     }
     case 'winIn': {

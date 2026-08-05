@@ -1,4 +1,5 @@
 import { createShoe, shuffle, type Card, type Rank } from './deck'
+import { cardValue } from './hand'
 import { bustChanceOnHit, computeAnalysis, type Analysis, type Knowledge } from './odds'
 import { POWERUPS, type PowerupId } from './powerups'
 import { createRng, type Rng } from './random'
@@ -8,7 +9,6 @@ import {
   canForcedSplit,
   canMulligan,
   canReturn,
-  DEFAULT_ROUND_RULES,
   doubleDown,
   forcedSplit,
   freezeDealer,
@@ -21,11 +21,25 @@ import {
   startRound,
   type Round,
 } from './round'
-import { addTokens, applyRound, FULL_INTEGRITY, hitTokens, nextBet, spendTokens, startRun, type RunState } from './run'
+import {
+  addTokens,
+  applyRound,
+  applyUpgrade,
+  FULL_INTEGRITY,
+  hasAvailableUpgrade,
+  hitTokens,
+  nextBet,
+  spendTokens,
+  startRun,
+  type RunState,
+} from './run'
+import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
 
 const SHOE_DECKS = 6
 
-export type Phase = 'betting' | 'playing' | 'resolved' | 'over'
+// 'choosing-upgrade' holds the deal after a non-final kill until the player picks
+// a roguelite upgrade; the dealer walk-in ceremony plays over it in the UI.
+export type Phase = 'betting' | 'playing' | 'resolved' | 'over' | 'choosing-upgrade'
 
 export interface SessionOptions {
   /** Dev switch: force the player's opening two cards to be a splittable pair. */
@@ -38,6 +52,10 @@ export interface SessionOptions {
   dealerHealth?: number | null
   /** Dev switch: start each run at this dealer (1-based); null = the first dealer. */
   startDealer?: number | null
+  /** Dev switch: start each run with these unlocked upgrade tiers; null = none. */
+  startUpgrades?: RunUpgrades | null
+  /** Dev switch: force the dealer's opening two cards to be a natural 21 every deal. */
+  forceDealerNatural?: boolean
 }
 
 export interface SessionState {
@@ -64,11 +82,16 @@ export class Session {
   private peeked = false
   private foresightCard: Card | null = null
   private analysis: Analysis | null = null
+  // Set when a kill just advanced the dealer (and the run isn't won): the next
+  // hand is gated on a choose-upgrade pick.
+  private upgradePending = false
   private readonly forcePairs: boolean
   private readonly forcePairRank: Rank | null
   private readonly startTokens: number | null
   private readonly dealerHealth: number | null
   private readonly startDealer: number | null
+  private readonly startUpgrades: RunUpgrades | null
+  private readonly forceDealerNatural: boolean
 
   constructor(seed: number, options: SessionOptions = {}) {
     this.nextRandom = createRng(seed)
@@ -78,6 +101,8 @@ export class Session {
     this.startTokens = options.startTokens ?? null
     this.dealerHealth = options.dealerHealth ?? null
     this.startDealer = options.startDealer ?? null
+    this.startUpgrades = options.startUpgrades ?? null
+    this.forceDealerNatural = options.forceDealerNatural ?? false
     this.run = this.freshRun(seed)
   }
 
@@ -100,6 +125,9 @@ export class Session {
     }
     if (this.dealerHealth !== null) {
       run = { ...run, integrity: Math.round((FULL_INTEGRITY * this.dealerHealth) / 100) }
+    }
+    if (this.startUpgrades !== null) {
+      run = { ...run, upgrades: this.startUpgrades }
     }
     return run
   }
@@ -124,10 +152,14 @@ export class Session {
     if (this.forcePairs) {
       forcePlayerPair(shoe, this.forcePairRank)
     }
+    if (this.forceDealerNatural) {
+      forceDealerNaturalCards(shoe)
+    }
     this.peeked = false
     this.foresightCard = null
     this.analysis = null
-    this.round = startRound(shoe, bet, DEFAULT_ROUND_RULES)
+    // Fold the run's unlocked upgrades into this round's rules.
+    this.round = startRound(shoe, bet, rulesForUpgrades(this.run.upgrades))
     if (this.round.status === 'resolved') {
       this.settle()
     } else {
@@ -144,10 +176,12 @@ export class Session {
     // Price the risk before taking it: the odds this hit busts (from public cards)
     // set how much a surviving hit pays.
     const bustChance = bustChanceOnHit(round)
+    const tokenMult = round.rules.tokenMultiplier
     this.act(() => hit(this.requireRound()))
-    // Only reward a hit that keeps the hand alive — a bust earns nothing.
+    // Only reward a hit that keeps the hand alive — a bust earns nothing. The Token
+    // eco multiplier scales it, like every other reward.
     if (this.round !== null && !this.round.hands[hitIndex].busted) {
-      this.run = addTokens(this.run, hitTokens(bustChance))
+      this.run = addTokens(this.run, Math.round(hitTokens(bustChance) * tokenMult))
     }
   }
 
@@ -273,6 +307,19 @@ export class Session {
     }
     this.round = null
     this.analysis = null
+    // A kill grants an upgrade pick: hold in choose-upgrade until the player picks
+    // (the walk-in ceremony plays over it), unless every path is already maxed.
+    this.phase = this.upgradePending && hasAvailableUpgrade(this.run) ? 'choosing-upgrade' : 'betting'
+    this.upgradePending = false
+  }
+
+  // Apply the chosen roguelite upgrade and release the held deal. No-op unless the
+  // player is actually on the choose-upgrade screen.
+  chooseUpgrade(path: UpgradePath): void {
+    if (this.phase !== 'choosing-upgrade') {
+      return
+    }
+    this.run = applyUpgrade(this.run, path)
     this.phase = 'betting'
   }
 
@@ -285,6 +332,7 @@ export class Session {
     this.peeked = false
     this.foresightCard = null
     this.analysis = null
+    this.upgradePending = false
     this.phase = 'betting'
   }
 
@@ -303,7 +351,13 @@ export class Session {
   }
 
   private settle(): void {
+    const beforeShift = this.run.shiftIndex
     this.run = applyRound(this.run, this.requireRound())
+    // A non-final kill (the dealer advanced but the run isn't won) earns an upgrade
+    // pick, taken after the player calls the next hand.
+    if (!this.run.over && this.run.shiftIndex > beforeShift) {
+      this.upgradePending = true
+    }
     this.phase = this.run.over ? 'over' : 'resolved'
   }
 
@@ -355,6 +409,29 @@ function forcePlayerPair(shoe: Card[], rank: Rank | null): void {
   for (let i = 2; i < shoe.length; i++) {
     if (shoe[i].rank === shoe[0].rank) {
       swap(shoe, 1, i)
+      return
+    }
+  }
+}
+
+// Dev aid: reorder the shoe so the dealer's opening two cards (shoe[2], shoe[3])
+// make a natural 21 — one Ace and one ten-value card. Pulls them from deeper in the
+// shoe (index 4+), so the player's opening cards (shoe[0..1]) are left untouched
+// and this composes with forcePlayerPair. A 6-deck shoe always has both to spare.
+function forceDealerNaturalCards(shoe: Card[]): void {
+  seatDealerCard(shoe, 2, (card) => card.rank === 'A')
+  seatDealerCard(shoe, 3, (card) => cardValue(card) === 10)
+}
+
+// Swap a card matching `pred` into dealer slot `pos` from deeper in the shoe (past
+// the four dealt cards), unless the slot already satisfies it.
+function seatDealerCard(shoe: Card[], pos: number, pred: (card: Card) => boolean): void {
+  if (pred(shoe[pos])) {
+    return
+  }
+  for (let i = 4; i < shoe.length; i++) {
+    if (pred(shoe[i])) {
+      swap(shoe, pos, i)
       return
     }
   }

@@ -10,6 +10,19 @@ export interface RoundRules {
   blackjackPayoutDenominator: number
   allowSplit: boolean
   doubleWinBonusRatio: number
+  // Roguelite upgrades (see game/upgrades.ts), folded in per-round at the deal.
+  // Player total that instantly resolves the hand as a natural blackjack — the
+  // dealer draws nothing (a dealt dealer natural pushes, else it's a win). null
+  // disables it. Chip eco T2 = 21, T3 = 20.
+  autoBlackjackAt: number | null
+  // Anti-dealer T3: the dealer's standing total counts as one lower when under 21.
+  dealerDowngrade: boolean
+  // Anti-dealer T2: a dealt dealer natural is stolen — the player takes the win.
+  hijackDealerNatural: boolean
+  // Anti-dealer T1: fraction of the bet refunded on a loss to a dealer natural.
+  dealerNaturalRefundRatio: number
+  // Token eco: multiplier applied to every token reward this round.
+  tokenMultiplier: number
 }
 
 export const DEFAULT_ROUND_RULES: RoundRules = {
@@ -18,6 +31,11 @@ export const DEFAULT_ROUND_RULES: RoundRules = {
   blackjackPayoutDenominator: 2,
   allowSplit: true,
   doubleWinBonusRatio: 0,
+  autoBlackjackAt: null,
+  dealerDowngrade: false,
+  hijackDealerNatural: false,
+  dealerNaturalRefundRatio: 0,
+  tokenMultiplier: 1,
 }
 
 export interface PlayerHand {
@@ -28,6 +46,9 @@ export interface PlayerHand {
   finished: boolean
   busted: boolean
   outcome: HandOutcome | null
+  // Set when this hand's loss was to a dealer natural, so the Anti-dealer T1
+  // refund (rules.dealerNaturalRefundRatio) can pay part of the bet back.
+  lostToDealerNatural?: boolean
 }
 
 export interface Round {
@@ -105,6 +126,9 @@ export function hit(round: Round): Round {
   if (isBust(cards)) {
     return advanceHand(bustActive(drawn))
   }
+  if (reachesAutoBlackjack(cards, round.rules)) {
+    return advanceHand(settlePlayerBlackjack(drawn, drawn.activeIndex))
+  }
   return drawn
 }
 
@@ -163,10 +187,12 @@ function applySplit(round: Round): Round {
   const handA = finalizeSplitHand(
     newHand([active.cards[0], round.shoe[round.drawIndex]], active.bet, splittingAces),
     splittingAces,
+    round,
   )
   const handB = finalizeSplitHand(
     newHand([active.cards[1], round.shoe[round.drawIndex + 1]], active.bet, splittingAces),
     splittingAces,
+    round,
   )
   const hands = round.hands.slice()
   hands.splice(round.activeIndex, 1, handA, handB)
@@ -250,10 +276,18 @@ function newHand(cards: Card[], bet: number, splitAce: boolean): PlayerHand {
   return { cards, bet, doubled: false, splitAce, finished: false, busted: false, outcome: null }
 }
 
-function finalizeSplitHand(hand: PlayerHand, splittingAces: boolean): PlayerHand {
+function finalizeSplitHand(hand: PlayerHand, splittingAces: boolean, round: Round): PlayerHand {
   const busted = isBust(hand.cards)
-  if (splittingAces || busted) {
-    return { ...hand, finished: true, busted, outcome: busted ? 'bust' : null }
+  if (busted) {
+    return { ...hand, finished: true, busted: true, outcome: 'bust' }
+  }
+  // A split half that lands on the auto-blackjack total locks as a natural right
+  // away (dealer natural pushes it), just like it would on the main hand.
+  if (reachesAutoBlackjack(hand.cards, round.rules)) {
+    return { ...hand, finished: true, outcome: playerBlackjackOutcome(round) }
+  }
+  if (splittingAces) {
+    return { ...hand, finished: true, busted: false, outcome: null }
   }
   return hand
 }
@@ -262,6 +296,13 @@ function applyDouble(round: Round): Round {
   const active = activeHand(round)
   const cards = [...active.cards, round.shoe[round.drawIndex]]
   const busted = isBust(cards)
+  // A double that lands on the auto-blackjack total resolves as a natural (on the
+  // doubled bet); otherwise it stands, finished, to be judged against the dealer.
+  const outcome: HandOutcome | null = busted
+    ? 'bust'
+    : reachesAutoBlackjack(cards, round.rules)
+      ? playerBlackjackOutcome(round)
+      : null
   const hand: PlayerHand = {
     ...active,
     cards,
@@ -269,7 +310,7 @@ function applyDouble(round: Round): Round {
     doubled: true,
     finished: true,
     busted,
-    outcome: busted ? 'bust' : null,
+    outcome,
   }
   return advanceHand({ ...replaceHand(round, round.activeIndex, hand), drawIndex: round.drawIndex + 1 })
 }
@@ -279,7 +320,11 @@ function hitWithSecondChance(round: Round): Round {
   const firstCard = round.shoe[round.drawIndex]
   const attempt = [...active.cards, firstCard]
   if (!isBust(attempt)) {
-    return { ...withActiveCards(round, attempt, round.drawIndex + 1), secondChanceArmed: false }
+    const survived: Round = { ...withActiveCards(round, attempt, round.drawIndex + 1), secondChanceArmed: false }
+    if (reachesAutoBlackjack(attempt, round.rules)) {
+      return advanceHand(settlePlayerBlackjack(survived, survived.activeIndex))
+    }
+    return survived
   }
   // The hit would bust, so the shield burns it and tries one replacement. If the
   // replacement keeps the hand alive you stand on it; if it would ALSO bust, the
@@ -322,8 +367,11 @@ function advanceHand(round: Round): Round {
 }
 
 function finishPlayerTurns(round: Round): Round {
-  const anyLive = round.hands.some((hand) => !hand.busted)
-  if (!anyLive) {
+  // The dealer only plays if some hand still needs judging against it. Hands that
+  // already carry an outcome — busts, and player-blackjack auto-wins that resolved
+  // against the dealer's dealt cards — take no dealer draw (the dealer stays put).
+  const needsDealer = round.hands.some((hand) => hand.outcome === null)
+  if (!needsDealer) {
     return settleAgainstDealer({ ...round, status: 'resolved' })
   }
   return settleAgainstDealer(playDealer({ ...round, status: 'dealer-turn' }))
@@ -351,8 +399,20 @@ function dealerShouldHit(dealer: Card[], rules: RoundRules): boolean {
   return value.total === DEALER_STANDS_AT && value.soft && rules.dealerHitsSoft17
 }
 
+// The dealer's total as it settles: normally the evaluated hand, but one lower
+// when the Anti-dealer downgrade is active and the dealer stood under 21. Drives
+// both the win/loss judgement and the reward tier (see rewards.ts), so beating a
+// downgraded dealer is more common but each win grades one notch weaker.
+export function dealerSettleTotal(round: Round): number {
+  const total = evaluateHand(round.dealer).total
+  if (round.rules.dealerDowngrade && total < 21) {
+    return total - 1
+  }
+  return total
+}
+
 function settleAgainstDealer(round: Round): Round {
-  const dealerTotal = evaluateHand(round.dealer).total
+  const dealerTotal = dealerSettleTotal(round)
   const dealerBust = dealerTotal > 21
   const hands = round.hands.map((hand) => {
     if (hand.outcome) {
@@ -379,13 +439,51 @@ function judgeHand(playerTotal: number, dealerTotal: number, dealerBust: boolean
 
 function resolveOpeningNaturals(round: Round): Round {
   const player = round.hands[0]
-  const playerNatural = isBlackjack(player.cards)
+  // A player natural is a dealt two-card 21; with the auto-blackjack upgrade, an
+  // opening 20/21 counts the same and resolves instantly against the dealer's cards.
+  const playerBlackjack = isBlackjack(player.cards) || reachesAutoBlackjack(player.cards, round.rules)
   const dealerNatural = isBlackjack(round.dealer)
-  if (!playerNatural && !dealerNatural) {
+  if (!playerBlackjack && !dealerNatural) {
     return round
   }
-  const outcome: HandOutcome = playerNatural && dealerNatural ? 'push' : playerNatural ? 'blackjack' : 'lose'
-  return { ...round, hands: [{ ...player, finished: true, outcome }], status: 'resolved' }
+  let outcome: HandOutcome
+  let lostToDealerNatural = false
+  if (playerBlackjack && dealerNatural) {
+    // Both dealt naturals normally push — unless hijack steals even that into a
+    // player blackjack win.
+    outcome = round.rules.hijackDealerNatural ? 'blackjack' : 'push'
+  } else if (playerBlackjack) {
+    outcome = 'blackjack'
+  } else if (round.rules.hijackDealerNatural) {
+    // Anti-dealer T2: steal the dealer's natural — the player takes it AS a natural
+    // blackjack, so it pays the blackjack rate (respecting the Payout 3:1 upgrade)
+    // and grades as the blackjack reward.
+    outcome = 'blackjack'
+  } else {
+    outcome = 'lose'
+    lostToDealerNatural = round.rules.dealerNaturalRefundRatio > 0
+  }
+  return { ...round, hands: [{ ...player, finished: true, outcome, lostToDealerNatural }], status: 'resolved' }
+}
+
+// Whether a hand has reached the player's auto-blackjack total (Chip eco T2/T3):
+// the moment the total hits the threshold, the hand wins as a natural without the
+// dealer drawing. Null threshold (no upgrade) never triggers.
+function reachesAutoBlackjack(cards: Card[], rules: RoundRules): boolean {
+  return rules.autoBlackjackAt !== null && !isBust(cards) && evaluateHand(cards).total >= rules.autoBlackjackAt
+}
+
+// The outcome for a player hand that hit the auto-blackjack total: a push if the
+// dealer holds a dealt natural (nothing beats that), otherwise a natural win.
+function playerBlackjackOutcome(round: Round): HandOutcome {
+  return isBlackjack(round.dealer) ? 'push' : 'blackjack'
+}
+
+// Lock a hand as a player blackjack (see reachesAutoBlackjack): finished, judged
+// against the dealer's dealt cards only — the dealer never draws for it.
+function settlePlayerBlackjack(round: Round, index: number): Round {
+  const hand: PlayerHand = { ...round.hands[index], finished: true, outcome: playerBlackjackOutcome(round) }
+  return replaceHand(round, index, hand)
 }
 
 function handPayout(hand: PlayerHand, rules: RoundRules): number {
@@ -401,6 +499,10 @@ function handPayout(hand: PlayerHand, rules: RoundRules): number {
   }
   if (outcome === 'push') {
     return 0
+  }
+  // Anti-dealer T1: part of the bet is refunded on a loss to a dealer natural.
+  if (outcome === 'lose' && hand.lostToDealerNatural && rules.dealerNaturalRefundRatio > 0) {
+    return -(hand.bet - Math.floor(hand.bet * rules.dealerNaturalRefundRatio))
   }
   return -hand.bet
 }

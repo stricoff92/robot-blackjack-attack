@@ -5,8 +5,9 @@ import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
-import { DESTROY_TOKEN, isLastCall, nextBet, TOTAL_DEALERS } from '../game/run'
+import { DESTROY_TOKEN, isLastCall, nextBet, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
 import { Session, type SessionState } from '../game/session'
+import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
 import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
@@ -36,6 +37,16 @@ import { createStage, type Stage } from './stage'
 // fetches it a single time on load; every <img> that references it (the token
 // counter + each powerup cost pill) then serves from cache.
 import powerUrl from '../assets/power.png'
+// The choose-upgrade path icons (replace the path name text on each big button).
+import detectiveUrl from '../assets/detective.png'
+import chipUrl from '../assets/poker-chip.png'
+
+// Path → icon: Sabotage a detective, Payout a chip, Tokens the token icon.
+const UPGRADE_ICONS: Record<UpgradePath, string> = {
+  antiDealer: detectiveUrl,
+  chipEco: chipUrl,
+  tokenEco: powerUrl,
+}
 
 // Canvas layers, bottom → top. The dealer figure sits between the room ('back')
 // and the felt/rail ('table') so the rail overlaps its lower body (and death
@@ -192,15 +203,28 @@ class GameView {
   private messageEl!: HTMLElement
   private hintEl!: HTMLElement
   private buttons!: Record<string, HTMLButtonElement>
+  // The powerup + action button columns, hidden while the choose-upgrade card is up.
+  private powersEl!: HTMLElement
+  private actionsEl!: HTMLElement
+  // The choose-upgrade card (shown after a non-final kill) and its three path buttons.
+  private upgradeEl!: HTMLElement
+  private upgradeButtons!: { info: UpgradePathInfo; btn: HTMLButtonElement; effectEl: HTMLElement }[]
 
   constructor(root: HTMLElement) {
     const debug = readDebugFlags()
+    // Any of the three upgrade-path flags seeds the run with those unlocked tiers.
+    const startUpgrades =
+      debug.sabotageUpgrade !== null || debug.chipUpgrade !== null || debug.tokenUpgrades !== null
+        ? { antiDealer: debug.sabotageUpgrade ?? 0, chipEco: debug.chipUpgrade ?? 0, tokenEco: debug.tokenUpgrades ?? 0 }
+        : null
     this.session = new Session(generateSeed(), {
       forcePairs: debug.forcePairs,
       forcePairRank: debug.forcePairRank,
       startTokens: debug.startTokens,
       dealerHealth: debug.dealerHealth,
       startDealer: debug.startDealer,
+      startUpgrades,
+      forceDealerNatural: debug.dealerBlackjack,
     })
     this.state = this.session.snapshot()
     // Show the opening balances immediately (no roll up from zero on load).
@@ -651,6 +675,9 @@ class GameView {
     // after the Next-hand click; only once that finishes do the next cards deal.
     if (this.dealAfter > 0 && timestamp >= this.dealAfter && this.state.phase === 'betting' && !sequenceAnimating) {
       this.dealAfter = 0
+      // Zero the raf first (like the settle block) so run() → ensureLoop reschedules
+      // the loop — the `return` below skips this frame's own reschedule.
+      this.raf = 0
       this.run(() => this.session.deal())
       return
     }
@@ -663,6 +690,13 @@ class GameView {
       this.syncOverlay(timestamp)
     }
     this.lastDealerBlocking = dealerBlocking
+
+    // While the choose-upgrade pick is pending, keep the overlay synced every frame
+    // so the card surfaces the instant the walk-in ceremony settles (and clears the
+    // moment a pick releases the deal). The loop is already running for the hover.
+    if (this.state.phase === 'choosing-upgrade') {
+      this.syncOverlay(timestamp)
+    }
 
     // The table nexus floats in a perpetual hover (render/nexus.ts), so its bob +
     // contact shadow always need repainting: the loop never fully parks. Every
@@ -818,6 +852,8 @@ class GameView {
     this.hintEl = element('div', 'hud-powerhint')
     const powers = element('div', 'hud-powerups')
     const actions = element('div', 'hud-actions')
+    this.powersEl = powers
+    this.actionsEl = actions
     powers.appendChild(this.hintEl) // hint sits atop the powerup stack
 
     this.buttons = {}
@@ -837,7 +873,36 @@ class GameView {
       ;(def.group === 'power' ? powers : actions).appendChild(button)
     }
 
-    this.stage.overlay.append(tokens, this.messageEl, powers, actions)
+    // The choose-upgrade card sits above the columns (appended last), shown only
+    // during the choosing-upgrade phase once the walk-in ceremony settles.
+    this.stage.overlay.append(tokens, this.messageEl, powers, actions, this.buildUpgradePanel())
+  }
+
+  // The choose-upgrade card: a title and one big coloured button per upgrade path,
+  // each showing the effect it would unlock next. A maxed path's button is hidden.
+  // Clicking picks the upgrade (session.chooseUpgrade) and releases the held deal.
+  private buildUpgradePanel(): HTMLElement {
+    const panel = element('div', 'upgrade-panel is-hidden')
+    const title = element('div', 'upgrade-panel__title')
+    title.textContent = 'Choose an upgrade'
+    const row = element('div', 'upgrade-panel__row')
+    this.upgradeButtons = UPGRADE_PATHS.map((info) => {
+      const btn = document.createElement('button')
+      btn.className = `upgrade-btn upgrade-btn--${info.path}`
+      btn.style.setProperty('--upgrade-color', info.color)
+      const icon = document.createElement('img')
+      icon.className = 'upgrade-btn__icon'
+      icon.src = UPGRADE_ICONS[info.path]
+      icon.alt = info.name // the path name still reaches screen readers
+      const effectEl = element('span', 'upgrade-btn__effect')
+      btn.append(icon, effectEl)
+      btn.addEventListener('click', () => this.run(() => this.session.chooseUpgrade(info.path)))
+      row.appendChild(btn)
+      return { info, btn, effectEl }
+    })
+    panel.append(title, row)
+    this.upgradeEl = panel
+    return panel
   }
 
   // The player's token counter (icon + count), pinned top-left. The icon <img>
@@ -1155,7 +1220,11 @@ class GameView {
       const canvas = this.stage.canvas
       const layout = computeLayout(canvas.width, canvas.height)
       const liftoff = startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS
-      this.tokens.emit(nexusYellowLight(layout, liftoff), DESTROY_TOKEN, liftoff)
+      // The kill bounty flies scaled by the Token eco multiplier, matching the
+      // credited amount (run.ts). The upgrade pick comes after this, so the current
+      // run's multiplier is the one that applied to this bounty.
+      const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
+      this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
       return startAfter + KILL_TOTAL_MS
     }
     return startAfter + HIT_TOTAL_MS
@@ -1179,6 +1248,7 @@ class GameView {
     this.updateTokenCounter(timestamp)
     this.messageEl.textContent = animating ? '' : this.buildMessage()
     this.hintEl.textContent = animating ? '' : this.buildHint()
+    this.syncUpgradePanel(s, animating)
 
     for (const def of this.defs) {
       const button = this.buttons[def.key]
@@ -1188,6 +1258,27 @@ class GameView {
       // the class here on the next sync and returns the button to normal.
       button.classList.toggle('is-active', visible && !!def.active?.(s))
       button.disabled = animating || (visible && !def.enabled(s))
+    }
+  }
+
+  // Show/hide the choose-upgrade card and swap the normal HUD columns out while it's
+  // up. The card appears only once the walk-in ceremony has settled (!animating);
+  // each path button shows the effect it would unlock next, and a maxed path's
+  // button is hidden. No indication of what's already been picked — by design.
+  private syncUpgradePanel(s: SessionState, animating: boolean): void {
+    const choosing = s.phase === 'choosing-upgrade'
+    this.upgradeEl.classList.toggle('is-hidden', !(choosing && !animating))
+    this.powersEl.classList.toggle('is-hidden', choosing)
+    this.actionsEl.classList.toggle('is-hidden', choosing)
+    if (!choosing) {
+      return
+    }
+    for (const { info, btn, effectEl } of this.upgradeButtons) {
+      const label = nextTierLabel(info, s.run.upgrades[info.path])
+      btn.classList.toggle('is-hidden', label === null)
+      if (label !== null) {
+        effectEl.textContent = label
+      }
     }
   }
 

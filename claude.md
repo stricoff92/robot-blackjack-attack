@@ -2,6 +2,8 @@
 
 game design: docs/blackjack-roguelike-rules.md
 
+dev/debug URL params (dev-server only): docs/dev-params.md
+
 ### Clean Code
  - Follow existing patterns.
  - Suggest changes to existing patterns when there is a big improvement to readability, or performance. Do not make performance improvements that hurt readability.

@@ -23,6 +23,9 @@ export class ChipAnimation implements ChipView {
   private resolveStart: number | null = null
   private clearStart: number | null = null
   private outcomes: (HandOutcome | null)[] = []
+  // Per hand: a loss the Anti-dealer refund partly hands back — after the bet flies
+  // to the dealer, a refund stack slides back to the bankroll (see clearPhase).
+  private refunded: boolean[] = []
   private end = 0
 
   get animEnd(): number {
@@ -39,6 +42,7 @@ export class ChipAnimation implements ChipView {
     this.resolveStart = null
     this.clearStart = null
     this.outcomes = []
+    this.refunded = []
     this.end = now + PLACE_MS
   }
 
@@ -62,9 +66,10 @@ export class ChipAnimation implements ChipView {
   clear(round: Round, startAfter: number): void {
     this.clearStart = startAfter
     this.outcomes = round.hands.map((hand) => hand.outcome)
+    this.refunded = round.hands.map((hand) => isRefundedLoss(hand, round))
     let maxDur = 0
     round.hands.forEach((hand, i) => {
-      maxDur = Math.max(maxDur, i * HAND_STAGGER + clearDuration(hand.outcome))
+      maxDur = Math.max(maxDur, i * HAND_STAGGER + clearDuration(hand.outcome, this.refunded[i]))
     })
     this.end = Math.max(this.end, startAfter + maxDur)
   }
@@ -75,7 +80,7 @@ export class ChipAnimation implements ChipView {
     if (this.clearStart !== null) {
       const elapsed = now - (this.clearStart + handIndex * HAND_STAGGER)
       if (elapsed >= 0) {
-        return clearPhase(outcome, elapsed)
+        return clearPhase(outcome, this.refunded[handIndex] ?? false, elapsed)
       }
       return restingState(outcome) // waiting its turn: hold the resolved rest
     }
@@ -110,10 +115,15 @@ function restingState(outcome: HandOutcome | null): BetChipState {
     : { phase: 'idle', progress: 1, outcome }
 }
 
-function clearPhase(outcome: HandOutcome | null, elapsed: number): BetChipState {
+function clearPhase(outcome: HandOutcome | null, refunded: boolean, elapsed: number): BetChipState {
   if (outcome === 'lose' || outcome === 'bust') {
     if (elapsed < FLY_MS) {
       return { phase: 'toDealer', progress: elapsed / FLY_MS, outcome }
+    }
+    // Anti-dealer refund: after the bet reaches the dealer, part of it slides back
+    // to the player's bankroll.
+    if (refunded && elapsed < FLY_MS + COLLECT_MS) {
+      return { phase: 'refundBack', progress: (elapsed - FLY_MS) / COLLECT_MS, outcome }
     }
     return { phase: 'done', progress: 1, outcome }
   }
@@ -124,8 +134,17 @@ function clearPhase(outcome: HandOutcome | null, elapsed: number): BetChipState 
   return { phase: 'done', progress: 1, outcome }
 }
 
-function clearDuration(outcome: HandOutcome | null): number {
-  return outcome === 'lose' || outcome === 'bust' ? FLY_MS : COLLECT_MS
+function clearDuration(outcome: HandOutcome | null, refunded: boolean): number {
+  if (outcome === 'lose' || outcome === 'bust') {
+    return refunded ? FLY_MS + COLLECT_MS : FLY_MS
+  }
+  return COLLECT_MS
+}
+
+// A loss the Anti-dealer T1 refund partly returns: a dealer-natural loss while the
+// refund rule is active. Only these get the second (refund-back) chip beat.
+function isRefundedLoss(hand: { outcome: HandOutcome | null; lostToDealerNatural?: boolean }, round: Round): boolean {
+  return hand.outcome === 'lose' && !!hand.lostToDealerNatural && round.rules.dealerNaturalRefundRatio > 0
 }
 
 function isWin(outcome: HandOutcome | null): boolean {

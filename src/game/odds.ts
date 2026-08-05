@@ -174,6 +174,11 @@ function dealerBeatsPlayer(
     remaining -= 1
   }
   const ranks: Rank[] = [upCard, hole]
+  // Anti-dealer T2 (hijack): a dealt dealer natural is stolen as a player win, so
+  // the dealer never beats you — mirror round.ts' resolveOpeningNaturals.
+  if (rules.hijackDealerNatural && evaluateRanks(ranks).total === 21) {
+    return false
+  }
   if (!frozen) {
     let usedNext = false
     while (dealerHits(evaluateRanks(ranks), rules)) {
@@ -189,7 +194,12 @@ function dealerBeatsPlayer(
       remaining -= 1
     }
   }
-  const dealerTotal = evaluateRanks(ranks).total
+  let dealerTotal = evaluateRanks(ranks).total
+  // Anti-dealer T3 (downgrade): the dealer's standing total counts as 1 lower when
+  // under 21 — mirror round.ts' dealerSettleTotal.
+  if (rules.dealerDowngrade && dealerTotal < 21) {
+    dealerTotal -= 1
+  }
   return dealerTotal <= 21 && dealerTotal > playerTotal
 }
 
