@@ -132,8 +132,34 @@ export function split(round: Round): Round {
   if (!canSplit(round)) {
     throw new Error('cannot split this hand')
   }
+  return applySplit(round)
+}
+
+// Forced split (paid powerup): splits the opening two cards even when they are
+// not a matching pair. Same gate as a normal split minus the equal-value
+// requirement, so an opening hand of two cards that hasn't been hit can always
+// be broken into two hands.
+export function canForcedSplit(round: Round): boolean {
+  if (round.status !== 'player-turn' || !round.rules.allowSplit) {
+    return false
+  }
+  const hand = activeHand(round)
+  return hand.cards.length === 2 && !hand.splitAce && round.hands.length < MAX_HANDS
+}
+
+export function forcedSplit(round: Round): Round {
+  requirePlayerTurn(round)
+  if (!canForcedSplit(round)) {
+    throw new Error('cannot force split this hand')
+  }
+  return applySplit(round)
+}
+
+function applySplit(round: Round): Round {
   const active = activeHand(round)
-  const splittingAces = active.cards[0].rank === 'A'
+  // The one-card-each ace rule only applies to a genuine pair of aces. A forced
+  // split of, say, A+7 makes two ordinary hands that each play on normally.
+  const splittingAces = active.cards[0].rank === 'A' && active.cards[1].rank === 'A'
   const handA = finalizeSplitHand(
     newHand([active.cards[0], round.shoe[round.drawIndex]], active.bet, splittingAces),
     splittingAces,

@@ -9,7 +9,6 @@ describe('NexusAnimation', () => {
     expect(nexus.isAnimating(0)).toBe(false)
     expect(nexus.redLight(0)).toBe(0)
     expect(nexus.yellowLight(0)).toBe(0)
-    expect(nexus.ventAge(0)).toBeNull()
     expect(nexus.chargeUp(0)).toBeNull()
   })
 
@@ -110,18 +109,15 @@ describe('NexusAnimation', () => {
     expect(nexus.redLight(2400)).toBeGreaterThan(0.9)
   })
 
-  it('vents cooling steam for ~1s after the laser, then goes idle', () => {
+  it('winds down to idle after the laser and token fades', () => {
     const nexus = new NexusAnimation()
     nexus.fire(2000, 2500, 3000, 2300)
 
-    expect(nexus.ventAge(2900)).toBeNull()
-    expect(nexus.ventAge(3000)).toBe(0)
-    expect(nexus.ventAge(3500)).toBeCloseTo(500)
-
-    expect(nexus.ventAge(4000)).toBeGreaterThan(0)
-    expect(nexus.isAnimating(4000)).toBe(true)
-    expect(nexus.ventAge(4300)).toBeNull()
-    expect(nexus.isAnimating(4300)).toBe(false)
+    // Both lights still fading just after the strike...
+    expect(nexus.isAnimating(3200)).toBe(true)
+    // ...then fully idle once the red fade (the longest window) completes.
+    expect(nexus.redLight(3500)).toBe(0)
+    expect(nexus.isAnimating(3500)).toBe(false)
   })
 
   it('pulses only the yellow light on a hit token, leaving the red light dim', () => {

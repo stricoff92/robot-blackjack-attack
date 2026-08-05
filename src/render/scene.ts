@@ -24,6 +24,29 @@ export interface Layout {
 // Small overlap so the rail seals over the felt's top edge with no seam.
 const RAIL_OVERLAP = 2
 
+// Dealer-figure sizing, kept here (not just in dealerBox) because computeLayout has
+// to reserve room for the whole figure ABOVE the felt before apexY even exists.
+// FIGURE_EXTENT is the figure's vertical reach below the top margin in head-radius
+// units: headCenterY sits one headR down, and the bowtie's lower tip a further
+// 1.72 headR (drawBowtie: cy = headCenterY + 1.5·headR, wingH/2 = 0.22·headR). Keep
+// in sync with render/dealer.ts if the bowtie moves.
+const FIGURE_EXTENT = 2.72
+// A touch of clearance (in head-radius units) so the bowtie's tip rests just above
+// the wood rail rather than flush against it.
+const BOWTIE_CLEARANCE = 0.15
+
+// Top gap above the head, and the head's natural radius — both a function of screen
+// size ALONE (not apexY), so computeLayout and dealerBox agree on the figure's size.
+function dealerTopMargin(h: number): number {
+  return clamp(h * 0.03, 10, 34)
+}
+function dealerHeadRadius(w: number, h: number): number {
+  return clamp(Math.min(w, h) * 0.065, 16, 96)
+}
+function railThickness(w: number, h: number): number {
+  return clamp(Math.min(w, h) * 0.03, 12, 40)
+}
+
 export class Scene {
   private felt: FeltCanvas | null = null
   private feltKey = ''
@@ -77,16 +100,29 @@ export function computeLayout(w: number, h: number): Layout {
   // felt's curve depth (edgeY − apexY) stays constant so the arch looks the same.
   const aspect = w / Math.max(1, h)
   const apexFrac = clamp(0.165 + Math.max(0, aspect - 0.9) * 0.12, 0.165, 0.28)
-  const apexY = h * apexFrac
-  const edgeY = h * (apexFrac + 0.07)
+  const curveDepth = h * 0.07
+  const rail = railThickness(w, h)
+
+  // Guarantee the room band is tall enough for the WHOLE dealer figure — head AND
+  // bowtie — to clear the rail's top edge at any aspect. The aspect ramp above only
+  // handles landscape; a tall portrait / near-square screen (e.g. 1200×1450) keeps
+  // the minimum band while the dealer is still drawn at full size (it's sized from
+  // the short edge, not apexY), so its bowtie would be swallowed by the rail. Size
+  // the figure the same way dealerBox does and push apexY down until it fits.
+  const topMargin = dealerTopMargin(h)
+  const headR = dealerHeadRadius(w, h)
+  const figureBottom = topMargin + FIGURE_EXTENT * headR
+  const apexY = Math.max(h * apexFrac, figureBottom + rail + headR * BOWTIE_CLEARANCE)
+
+  const edgeY = apexY + curveDepth
   return {
     width: w,
     height: h,
     edgeY,
     apexY,
     // Control point placed so the curve's midpoint lands exactly on apexY.
-    controlY: 2 * apexY - edgeY,
-    rail: clamp(Math.min(w, h) * 0.03, 12, 40),
+    controlY: apexY - curveDepth,
+    rail,
   }
 }
 
@@ -183,24 +219,24 @@ export interface DealerBox {
 
 export function dealerBox(l: Layout): DealerBox {
   const cx = l.width / 2
-  const scale = Math.min(l.width, l.height)
 
-  // Pin the head near the top margin (never touching the edge) and keep it
-  // small enough that the neck + shoulders show above the rail, so the dealer
-  // reads as standing behind the table rather than peeking over it.
-  const topMargin = clamp(l.height * 0.03, 10, 34)
+  // Pin the head near the top margin (never touching the edge) at its natural size.
+  // computeLayout already reserves room above the felt for the full figure (head +
+  // bowtie) to clear the rail, so the zone cap below is only a safety net for
+  // degenerate layouts and normally doesn't bind.
+  const topMargin = dealerTopMargin(l.height)
   const zone = Math.max(1, l.apexY - topMargin)
-  const headR = clamp(Math.min(scale * 0.065, zone * 0.36), 16, 96)
+  const headR = clamp(Math.min(dealerHeadRadius(l.width, l.height), zone * 0.36), 16, 96)
   const headCenterY = topMargin + headR
 
   const baseY = l.apexY + l.rail // tuck the body base behind the rail
-  const bodyW = headR * 3.6
+  const bodyW = headR * 2.5 // shoulders a little wider than the head (headR * 2)
 
   return {
     cx,
     headCenterY,
     headR,
-    bodyTop: headCenterY + headR * 0.7,
+    bodyTop: headCenterY + headR, // flush with the head's bottom edge, no overlap
     bodyLeft: cx - bodyW / 2,
     bodyRight: cx + bodyW / 2,
     baseY,
@@ -225,6 +261,15 @@ export function dealerEyes(l: Layout): DealerEyes {
     right: { x: d.cx + d.headR * 0.42, y },
     radius: d.headR * 0.16,
   }
+}
+
+// The centre of the dealer's mouth panel — matches drawFigure's mouth geometry in
+// render/dealer.ts. Anything the dealer swallows (a spawning dealer sucks the
+// previous dealer's cards in here to shred them) reads it, so the art and the
+// shred animation share one source of truth.
+export function dealerMouth(l: Layout): { x: number; y: number } {
+  const d = dealerBox(l)
+  return { x: d.cx, y: d.headCenterY + d.headR * 0.42 }
 }
 
 function clamp(value: number, min: number, max: number): number {

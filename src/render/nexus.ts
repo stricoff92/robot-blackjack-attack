@@ -9,7 +9,7 @@
 // brings them up when the nexus is about to act. The laser is a red additive beam
 // modelled on the Analyze eye-beam (cards.ts).
 
-import { arch2, smoothEnd2, smoothStart3 } from './easing'
+import { arch2, smoothEnd2, smoothEnd3, smoothStart3 } from './easing'
 import { dealerBox, type Layout } from './scene'
 import type { Point } from './tokens'
 
@@ -50,16 +50,35 @@ function nexusGeom(l: Layout): NexusGeom {
   }
 }
 
-// The RED emitter: the muzzle the damage laser fires from (left lens, dealer side).
-export function nexusRedLight(l: Layout): Point {
-  const g = nexusGeom(l)
-  return { x: g.a.x - g.dx, y: g.lensY }
+// The device never rests on the felt — it floats in a slow, perpetual hover.
+// `hoverLift` is how far (px) it sits above its base at `now`, oscillating gently
+// between HOVER_MIN and HOVER_MAX of its body height. Everything that reads the
+// device's position — the body, the two emitter lenses, the laser muzzle, the token
+// vent — subtracts this same lift, so they rise and fall as one and the laser always
+// fires from the muzzle wherever it currently floats (no separate beam-origin to
+// drift). The contact shadow (drawNexus) instead stays pinned to the felt, spreading
+// and fading as the device climbs.
+const HOVER_PERIOD_MS = 3400
+const HOVER_MIN = 0.4 // low point of the bob, as a fraction of body height h
+const HOVER_MAX = 0.72 // high point of the bob
+
+function hoverLift(g: NexusGeom, now: number): number {
+  const phase = (Math.sin((now / HOVER_PERIOD_MS) * Math.PI * 2) + 1) * 0.5 // 0..1
+  return g.h * (HOVER_MIN + (HOVER_MAX - HOVER_MIN) * phase)
 }
 
-// The YELLOW emitter: where the reward tokens lift off from (right lens).
-export function nexusYellowLight(l: Layout): Point {
+// The RED emitter: the muzzle the damage laser fires from (left lens, dealer side),
+// lifted to wherever the device is floating at `now`.
+export function nexusRedLight(l: Layout, now: number): Point {
   const g = nexusGeom(l)
-  return { x: g.a.x + g.dx, y: g.lensY }
+  return { x: g.a.x - g.dx, y: g.lensY - hoverLift(g, now) }
+}
+
+// The YELLOW emitter: where the reward tokens lift off from (right lens), floating
+// with the device at `now`.
+export function nexusYellowLight(l: Layout, now: number): Point {
+  const g = nexusGeom(l)
+  return { x: g.a.x + g.dx, y: g.lensY - hoverLift(g, now) }
 }
 
 // Where the laser lands on the dealer: the centre of its torso (a solid target
@@ -70,28 +89,49 @@ function impactPoint(l: Layout): Point {
   return { x: d.cx, y: d.bodyTop + (d.baseY - d.bodyTop) * 0.32 }
 }
 
-// --- the device body (static, on the table layer) ----------------------------
+// --- the floating device body (transient, on the fx layer) -------------------
+// The device hovers, so — unlike the felt/rail — it can't live on the static table
+// layer; it's repainted every frame on the fx layer (drawStrikeFx), bobbing with
+// `now`, beneath its own charge glow + laser.
 
-export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout): void {
+export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number): void {
   const g = nexusGeom(l)
   const { a, w, h, r } = g
+  const lift = hoverLift(g, now)
+  const cy = a.y - lift // the floating body's centre
 
   ctx.save()
 
-  // Soft contact shadow on the felt.
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)'
+  // A soft shadow blob on the felt, a little smaller than the body and pinned under
+  // its base. It's a radial gradient (not a hard disc) so the edge reads as a real,
+  // diffuse shadow. As the device climbs it spreads a touch and dims — the subtle
+  // "further from the surface" cue — but only gently, so the bob doesn't make the
+  // shadow visibly throb. `t` is the bob phase: 0 at the low point, 1 at the high.
+  const t = (lift / h - HOVER_MIN) / (HOVER_MAX - HOVER_MIN)
+  const rx = w * 0.4 * (1 + t * 0.16)
+  const ry = w * 0.12 * (1 + t * 0.16)
+  const alpha = 0.34 - t * 0.1 // 0.34 (low, tighter/darker) .. 0.24 (high, softer)
+  ctx.save()
+  ctx.translate(a.x, a.y + h * 0.46)
+  ctx.scale(1, ry / rx) // squash the circular gradient into a flat felt ellipse
+  const shadow = ctx.createRadialGradient(0, 0, 0, 0, 0, rx)
+  shadow.addColorStop(0, `rgba(0, 0, 0, ${alpha})`)
+  shadow.addColorStop(0.55, `rgba(0, 0, 0, ${alpha * 0.55})`)
+  shadow.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = shadow
   ctx.beginPath()
-  ctx.ellipse(a.x, a.y + h * 0.5, w * 0.55, h * 0.28, 0, 0, Math.PI * 2)
+  ctx.arc(0, 0, rx, 0, Math.PI * 2)
   ctx.fill()
+  ctx.restore()
 
-  // Body: a dark brushed-metal box.
-  const body = ctx.createLinearGradient(a.x, a.y - h / 2, a.x, a.y + h / 2)
+  // Body: a dark brushed-metal box, lifted to its floating height.
+  const body = ctx.createLinearGradient(a.x, cy - h / 2, a.x, cy + h / 2)
   body.addColorStop(0, '#3a4152')
   body.addColorStop(0.5, '#242833')
   body.addColorStop(1, '#15181f')
   ctx.fillStyle = body
   ctx.beginPath()
-  ctx.roundRect(a.x - w / 2, a.y - h / 2, w, h, r)
+  ctx.roundRect(a.x - w / 2, cy - h / 2, w, h, r)
   ctx.fill()
   ctx.lineWidth = Math.max(1, w * 0.02)
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
@@ -99,9 +139,9 @@ export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout): void {
 
   // The two emitter lenses, seated in dark sockets on the top face and idling dim
   // — the red laser muzzle and the yellow token vent. The charge glow (fx layer)
-  // brings them up to full when the nexus is about to act.
-  drawDimLens(ctx, a.x - g.dx, g.lensY, g.lensR, RED_LENS)
-  drawDimLens(ctx, a.x + g.dx, g.lensY, g.lensR, YELLOW_LENS)
+  // brings them up to full when the nexus is about to act. Lifted with the body.
+  drawDimLens(ctx, a.x - g.dx, g.lensY - lift, g.lensR, RED_LENS)
+  drawDimLens(ctx, a.x + g.dx, g.lensY - lift, g.lensR, YELLOW_LENS)
 
   ctx.restore()
 }
@@ -157,19 +197,16 @@ export function drawStrikeFx(
   ctx: CanvasRenderingContext2D,
   l: Layout,
   view: StrikeView,
-  charge: { red: number; yellow: number; vent: number | null; chargeUp: { start: number; cap: number } | null },
+  charge: { red: number; yellow: number; chargeUp: { start: number; cap: number } | null },
   now: number,
 ): void {
   ctx.clearRect(0, 0, l.width, l.height)
-  const from = nexusRedLight(l)
+  // The floating device body itself — it hovers, so it rides this per-frame layer
+  // rather than the static table, drawn under its charge glow + laser below.
+  drawNexus(ctx, l, now)
+  const from = nexusRedLight(l, now)
   const to = impactPoint(l)
   const scale = Math.min(l.width, l.height)
-
-  // Cooling steam venting from the two sides after the strike. Drawn first (plain
-  // vapour, below the additive lights) so a still-fading red glow reads over it.
-  if (charge.vent !== null) {
-    drawNexusVent(ctx, l, charge.vent, scale)
-  }
 
   // "Powering up": red energy balls drawn in from around the red light while it
   // charges an attack. Under the light glow so they read as being absorbed by it.
@@ -186,7 +223,7 @@ export function drawStrikeFx(
       drawLightCharge(ctx, from.x, from.y, g.lensR, charge.red, RED_GLOW)
     }
     if (charge.yellow > 0.001) {
-      const yellow = nexusYellowLight(l)
+      const yellow = nexusYellowLight(l, now)
       drawLightCharge(ctx, yellow.x, yellow.y, g.lensR, charge.yellow, YELLOW_GLOW)
     }
   }
@@ -202,7 +239,7 @@ export function drawStrikeFx(
   const spark = view.impactSpark(now)
   if (spark !== null && spark > 0.001) {
     drawGlow(ctx, to.x, to.y, scale * 0.06 * arch2(spark) + scale * 0.02, arch2(spark))
-    drawSparkSpray(ctx, to.x, to.y, spark, scale)
+    drawSparkBurst(ctx, to.x, to.y, spark, scale)
   }
 }
 
@@ -306,78 +343,18 @@ function drawLightCharge(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
   ctx.restore()
 }
 
-// --- the cooling vent (transient steam, on the fx layer) ---------------------
-
-// After the laser fires, the nexus vents cooling steam from its two sides for
-// VENT_MS. It's a deterministic puff system (like the impact spark spray): each
-// puff's spawn time, direction, speed and life are a fixed function of its index,
-// so it never jitters frame-to-frame. `age` is ms since venting began.
-const VENT_EMIT_MS = 1000 // keep spawning puffs across this window (matches the animator)
-const VENT_SPAWN_MS = 24 // a fresh puff every this-many ms, per side
-const PUFF_MIN_LIFE = 100 // each puff fades out within 100..200ms of spawning
-const PUFF_MAX_LIFE = 200
-
-function drawNexusVent(ctx: CanvasRenderingContext2D, l: Layout, age: number, scale: number): void {
-  const g = nexusGeom(l)
-  const ventY = g.a.y - g.h * 0.14
-  const reach = scale * 0.1 // decent velocity: puffs cover this in their short life
-  const puffR = scale * 0.014
-  ctx.save()
-  ventSide(ctx, g.a.x - g.w * 0.5, ventY, -1, age, reach, puffR)
-  ventSide(ctx, g.a.x + g.w * 0.5, ventY, 1, age, reach, puffR)
-  ctx.restore()
-}
-
-function ventSide(ctx: CanvasRenderingContext2D, ox: number, oy: number, dir: number, age: number, reach: number, puffR: number): void {
-  const seed = dir > 0 ? 17 : 4
-  const count = Math.ceil(VENT_EMIT_MS / VENT_SPAWN_MS)
-  for (let i = 0; i < count; i++) {
-    const spawn = i * VENT_SPAWN_MS
-    const local = age - spawn
-    if (local < 0) {
-      break // this puff (and all later ones) haven't spawned yet
-    }
-    const life = PUFF_MIN_LIFE + hash(i, seed) * (PUFF_MAX_LIFE - PUFF_MIN_LIFE)
-    if (local >= life) {
-      continue
-    }
-    const p = local / life
-    // Fan out and upward, outward from the vent side (dir), with per-puff spread.
-    const theta = (20 + hash(i, seed + 1) * 50) * (Math.PI / 180)
-    const speed = 0.7 + hash(i, seed + 2) * 0.6
-    const dist = reach * speed * smoothEndFast(p)
-    const x = ox + dir * Math.cos(theta) * dist
-    const y = oy - Math.sin(theta) * dist
-    const radius = puffR * (0.7 + 1.3 * p) // puffs swell as they disperse
-    // Quick appearance, then fade — a soft grey vapour blob.
-    const alpha = Math.min(1, p * 5) * (1 - p) * 0.5
-    const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
-    grad.addColorStop(0, `rgba(228, 236, 244, ${alpha})`)
-    grad.addColorStop(1, 'rgba(205, 220, 235, 0)')
-    ctx.fillStyle = grad
-    ctx.beginPath()
-    ctx.arc(x, y, radius, 0, Math.PI * 2)
-    ctx.fill()
-  }
-}
-
-// Cheap deterministic hash → [0, 1), so puff attributes are stable per index.
+// Cheap deterministic hash → [0, 1), so per-index attributes (energy balls, spark
+// flecks) are stable frame-to-frame.
 function hash(i: number, seed: number): number {
   const x = Math.sin(i * 127.1 + seed * 311.7) * 43758.5453
   return x - Math.floor(x)
-}
-
-// Ease-out for the puff distance (fast off the vent, then coasts).
-function smoothEndFast(t: number): number {
-  const u = 1 - t
-  return 1 - u * u
 }
 
 // --- the "powering up" charge (transient, on the fx layer) -------------------
 
 // While the red light charges an attack it draws in a stream of red energy balls
 // that spawn out around it and rush into its centre — the anime gun-charge look.
-// Deterministic per ball index (like the vent), so no frame-to-frame jitter. Balls
+// Deterministic per ball index (via hash()), so no frame-to-frame jitter. Balls
 // spawn every CHARGE_SPAWN_MS from `start` up to `cap` (which advances with `now`
 // while charging, then freezes at the Next-hand click so no new balls appear —
 // though in-flight ones still finish). Each lives CHARGE_*_LIFE_MS.
@@ -392,7 +369,7 @@ const CHARGE_POP_MAX_MS = 200
 const CHARGE_POP_SCALE = 2.5
 
 function drawChargeUp(ctx: CanvasRenderingContext2D, l: Layout, start: number, cap: number, now: number): void {
-  const c = nexusRedLight(l)
+  const c = nexusRedLight(l, now)
   const g = nexusGeom(l)
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
@@ -481,41 +458,62 @@ function drawGlow(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius:
   ctx.restore()
 }
 
-// A short-lived spray of flecks radiating from the impact point. Directions are
-// deterministic (golden-angle spread) so they don't jitter frame-to-frame;
-// distance + fade ride the burst progress.
-const SPARK_COUNT = 12
-const GOLDEN_ANGLE = 2.399963
+// A Power Rangers–style pyrotechnic spark shower bursting off the impact point:
+// a cloud of hot flecks thrown outward when the laser lands, each on its own
+// random heading to its own random distance, streaking out fast then raining down.
+//
+//   • outward travel rides smoothEnd3(p) — a hard burst that decelerates to rest;
+//   • the flecks fade out on smoothEnd2(p) (i.e. 1 − smoothEnd2, a fast dim then
+//     a faint tail), matching the "fade to 0" curve used elsewhere in this file;
+//   • a light gravity droop grows with p² so the shower arcs down as it dies.
+//
+// The per-spark "rand" for heading + distance comes from the deterministic hash()
+// (not Math.random), so — like the charge system — the whole burst is a pure
+// function of `p` and never jitters frame-to-frame.
+const SPARK_COUNT = 28
+const SPARK_GRAVITY = 0.06 // downward droop at full life, as a fraction of `scale`
 
-function drawSparkSpray(ctx: CanvasRenderingContext2D, cx: number, cy: number, p: number, scale: number): void {
-  const reach = scale * 0.14
-  const len = scale * 0.03
+function drawSparkBurst(ctx: CanvasRenderingContext2D, cx: number, cy: number, p: number, scale: number): void {
+  const fade = 1 - smoothEnd2(p) // brightness: fades out on smoothEnd2
+  if (fade <= 0.001) {
+    return
+  }
+  const reach = scale * 0.2
+  const travel = smoothEnd3(p) // outward distance: fast burst, eases to rest
+  const gy = scale * SPARK_GRAVITY * p * p // gravity droop, growing quadratically
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.lineCap = 'round'
-  ctx.lineWidth = Math.max(1.5, scale * 0.006)
+  ctx.lineWidth = Math.max(1.2, scale * 0.0045)
   for (let i = 0; i < SPARK_COUNT; i++) {
-    const angle = i * GOLDEN_ANGLE
-    const spread = 0.6 + 0.4 * ((i * 7) % 11) / 11 // varied reach per fleck
-    const dist = reach * spread * smoothEndDist(p)
-    const x = cx + Math.cos(angle) * dist
-    const y = cy + Math.sin(angle) * dist
-    const tx = cx + Math.cos(angle) * (dist + len)
-    const ty = cy + Math.sin(angle) * (dist + len)
-    ctx.strokeStyle = `rgba(255, ${170 + ((i * 13) % 60)}, 120, ${(1 - p) * 0.9})`
+    // Stable per-spark randomness: which way it flies, and how far it throws.
+    const angle = hash(i, 71) * Math.PI * 2
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    const dist = reach * (0.3 + hash(i, 83) * 0.7) * travel
+    const x = cx + cos * dist
+    const y = cy + sin * dist + gy
+    // A motion-blur streak trailing back toward the burst origin, shrinking as the
+    // spark slows and fades.
+    const len = scale * (0.018 + 0.022 * hash(i, 97)) * fade
+    const tx = x - cos * len
+    const ty = y - sin * len
+    // White-hot core shading per-spark toward yellow/orange, drawn additively.
+    const g = 205 + Math.floor(hash(i, 51) * 50) // 205..255
+    const b = 90 + Math.floor(hash(i, 29) * 95) //  90..185
+    const a = fade * (0.7 + 0.3 * hash(i, 41))
+    ctx.strokeStyle = `rgba(255, ${g}, ${b}, ${a})`
     ctx.beginPath()
-    ctx.moveTo(x, y)
-    ctx.lineTo(tx, ty)
+    ctx.moveTo(tx, ty)
+    ctx.lineTo(x, y)
     ctx.stroke()
+    // A bright pin-head at the leading tip.
+    ctx.fillStyle = `rgba(255, 246, 224, ${a})`
+    ctx.beginPath()
+    ctx.arc(x, y, Math.max(0.8, scale * 0.004) * (0.6 + 0.6 * fade), 0, Math.PI * 2)
+    ctx.fill()
   }
   ctx.restore()
-}
-
-// Ease-out for the fleck distance (fast burst then coast) without importing a
-// combinator — the spray is the one place we want a bespoke curve.
-function smoothEndDist(t: number): number {
-  const u = 1 - t
-  return 1 - u * u
 }
 
 function clamp(value: number, min: number, max: number): number {

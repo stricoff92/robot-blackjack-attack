@@ -5,10 +5,12 @@ import { createRng, type Rng } from './random'
 import {
   activeHand,
   armSecondChance,
+  canForcedSplit,
   canMulligan,
   canReturn,
   DEFAULT_ROUND_RULES,
   doubleDown,
+  forcedSplit,
   freezeDealer,
   hit,
   lateDouble,
@@ -19,7 +21,7 @@ import {
   startRound,
   type Round,
 } from './round'
-import { addTokens, applyRound, hitTokens, nextBet, spendTokens, startRun, type RunState } from './run'
+import { addTokens, applyRound, FULL_INTEGRITY, hitTokens, nextBet, spendTokens, startRun, type RunState } from './run'
 
 const SHOE_DECKS = 6
 
@@ -30,6 +32,12 @@ export interface SessionOptions {
   forcePairs?: boolean
   /** With forcePairs, an optional specific rank to pair; otherwise pairs the top card. */
   forcePairRank?: Rank | null
+  /** Dev switch: seed the run (and each New run) with this many tokens; null = default. */
+  startTokens?: number | null
+  /** Dev switch: start the first dealer of each run at this % health (1-100); null = full. */
+  dealerHealth?: number | null
+  /** Dev switch: start each run at this dealer (1-based); null = the first dealer. */
+  startDealer?: number | null
 }
 
 export interface SessionState {
@@ -58,13 +66,42 @@ export class Session {
   private analysis: Analysis | null = null
   private readonly forcePairs: boolean
   private readonly forcePairRank: Rank | null
+  private readonly startTokens: number | null
+  private readonly dealerHealth: number | null
+  private readonly startDealer: number | null
 
   constructor(seed: number, options: SessionOptions = {}) {
     this.nextRandom = createRng(seed)
     this.analysisRandom = createRng(seed ^ ANALYSIS_SEED_SALT)
-    this.run = startRun(seed)
     this.forcePairs = options.forcePairs ?? false
     this.forcePairRank = options.forcePairRank ?? null
+    this.startTokens = options.startTokens ?? null
+    this.dealerHealth = options.dealerHealth ?? null
+    this.startDealer = options.startDealer ?? null
+    this.run = this.freshRun(seed)
+  }
+
+  // A new run, with any dev overrides (starting tokens, opening dealer, opening
+  // dealer health) folded in.
+  private freshRun(seed: number): RunState {
+    let run = startRun(seed)
+    if (this.startTokens !== null) {
+      run = { ...run, tokens: this.startTokens }
+    }
+    if (this.startDealer !== null && this.startDealer > 1) {
+      // Jump to a later dealer: advance the shift index and seed the kills of the
+      // dealers we skipped, so the "dealers left" pips and the win-at-6 count stay
+      // consistent with having actually fought up to here.
+      const kills: number[] = []
+      for (let i = 1; i < this.startDealer; i += 1) {
+        kills.push(i)
+      }
+      run = { ...run, shiftIndex: this.startDealer, kills }
+    }
+    if (this.dealerHealth !== null) {
+      run = { ...run, integrity: Math.round((FULL_INTEGRITY * this.dealerHealth) / 100) }
+    }
+    return run
   }
 
   snapshot(): SessionState {
@@ -173,6 +210,14 @@ export class Session {
     this.act(() => lateDouble(this.requireRound()))
   }
 
+  buyForcedSplit(): void {
+    if (!this.canBuy('forced-split') || !canForcedSplit(this.requireRound()) || !this.canAffordSplitBet()) {
+      return
+    }
+    this.run = spendTokens(this.run, POWERUPS['forced-split'].cost)
+    this.act(() => forcedSplit(this.requireRound()))
+  }
+
   buySecondChance(): void {
     if (!this.canBuy('second-chance')) {
       return
@@ -235,7 +280,7 @@ export class Session {
     const seed = generateSeed()
     this.nextRandom = createRng(seed)
     this.analysisRandom = createRng(seed ^ ANALYSIS_SEED_SALT)
-    this.run = startRun(seed)
+    this.run = this.freshRun(seed)
     this.round = null
     this.peeked = false
     this.foresightCard = null
@@ -267,6 +312,14 @@ export class Session {
   }
 
   private canAffordLateDouble(): boolean {
+    const round = this.requireRound()
+    const exposure = round.hands.reduce((total, hand) => total + hand.bet, 0)
+    return this.run.chips >= exposure + activeHand(round).bet
+  }
+
+  // A split adds one more hand at the active hand's bet — same chip exposure test
+  // as a double-style extra bet.
+  private canAffordSplitBet(): boolean {
     const round = this.requireRound()
     const exposure = round.hands.reduce((total, hand) => total + hand.bet, 0)
     return this.run.chips >= exposure + activeHand(round).bet

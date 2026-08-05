@@ -3,26 +3,31 @@ import './game-view.css'
 import { readDebugFlags } from '../game/debug'
 import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
 import { DESTROY_TOKEN, isLastCall, nextBet, TOTAL_DEALERS } from '../game/run'
 import { Session, type SessionState } from '../game/session'
+import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
 import { drawHealthBar } from '../render/health'
-import { drawNexus, drawStrikeFx, nexusYellowLight } from '../render/nexus'
+import { drawStrikeFx, nexusYellowLight } from '../render/nexus'
+import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
+import { drawShred, drawSpawnDeck } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
 import { CountTicker } from './count-ticker'
 import { DealAnimation } from './deal-animator'
-import { DealerAnimation, HIT_TOTAL_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
+import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
 import { HealthAnimation } from './health-animator'
+import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
 import { NexusAnimation } from './nexus-animator'
+import { PeekFlipAnimation, PEEK_FLIP_MS } from './peek-animator'
 import { ReturnAnimation } from './return-animator'
 import { TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
@@ -61,6 +66,9 @@ const LASER_GAP = 180
 const GATHER_GAP = 220
 // Beat after the returned card merges into the deck before the dealer plays out.
 const RETURN_DEAL_DELAY = 220
+// How much the dealer-spawn shred overlaps the tail of the walk-in, so the cards
+// start being sucked in just as the new dealer arrives (no dead beat between).
+const SHRED_ARRIVE_OVERLAP = 140
 
 const SUIT_SYMBOLS: Record<Suit, string> = {
   hearts: '♥',
@@ -104,6 +112,10 @@ class GameView {
   private readonly tokens = new TokenAnimation()
   private readonly mulligan = new MulliganAnimation()
   private readonly returnAnim = new ReturnAnimation()
+  private readonly peekFlip = new PeekFlipAnimation()
+  // The dealer-spawn ceremony: shred the previous dealer's cards into the new
+  // dealer's mouth, then fly in a fresh shrink-wrapped deck + tear off the plastic.
+  private readonly spawn = new SpawnAnimation()
   // The table nexus's twin emitter lights: dim at rest, glowing while the nexus
   // pays out its reward tokens and fires its damage laser (see run()).
   private readonly nexus = new NexusAnimation()
@@ -121,6 +133,9 @@ class GameView {
   private lastDealerBlocking = false
   // The card being returned (flips + flies back to the deck) and where it set off.
   private returnCardData: { card: Card; from: Point } | null = null
+  // The Peek Deck card, retained so it can keep drawing through its flip-DOWN
+  // (which plays after `foresightCard` has already cleared on the next move).
+  private peekCard: Card | null = null
   // Damage/kill deferred from the resolve to the Next-hand click: the laser fires
   // AFTER the token reward flies, and the cards gather back into the deck only once
   // it's done. `dealAfter` is the timestamp the next deal waits for while the laser
@@ -144,6 +159,28 @@ class GameView {
   // While gathering + shuffling, the deck is drawn on the cards layer (so it can
   // split/move) and hidden on the static table layer.
   private deckOnCards = false
+  // Which dealer's colour the deck is currently painted in (marks progression). On a
+  // kill this stays the OUTGOING colour until the riffle finishes, then commits to
+  // `deckColorIncoming` — so the reshuffle IS the deck swap, cross-fading old → new.
+  private deckColorShift = 1
+  private deckColorIncoming: number | null = null
+  // Edge tracker for that commit: the riffle just ended (shuffle() went non-null → null).
+  private shufflingLast = false
+  // A dealer-spawn ceremony's incoming deck colour, committed to `deckColorShift`
+  // (and handed back to the static table) once the new wrapped deck lands + unwraps.
+  private spawnIncomingShift: number | null = null
+  // True only during the opening intro, before the very first deck has flown in —
+  // suppresses the static resting deck until the ceremony delivers it.
+  private deckHidden = false
+  // The opening walk-in is HELD (dealer parked off-screen, invisible) from construction
+  // until the render loop is producing steady frames — so the post-load settling stall
+  // (a single ~250ms first frame after the Vite dev module load, from JIT/GC/first
+  // composite) is spent during the invisible hold, not as a teleport across the visible
+  // slide-in. Released in frame() → startIntroNow once frames are steady.
+  private introHold = false
+  private introHoldStart = 0
+  private introPrevFrame = 0
+  private introSteadyFrames = 0
 
   private readonly defs: ButtonDef[]
   private tokensEl!: HTMLElement
@@ -161,13 +198,32 @@ class GameView {
     this.session = new Session(generateSeed(), {
       forcePairs: debug.forcePairs,
       forcePairRank: debug.forcePairRank,
+      startTokens: debug.startTokens,
+      dealerHealth: debug.dealerHealth,
+      startDealer: debug.startDealer,
     })
     this.state = this.session.snapshot()
     // Show the opening balances immediately (no roll up from zero on load).
     this.tokenTicker.set(this.displayedTokens(now()))
     this.bankrollTicker.set(this.displayedBankroll())
+    // Seed the health bar + dealer to the opening integrity so a dealer that starts
+    // partway damaged (the dealerHealth dev override) shows the right fill and eye
+    // flicker from the first frame — the first deal doesn't sync them (no damage yet).
+    this.health.set(this.state.run.integrity)
+    this.dealer.setLevel(this.state.run.integrity)
+    // Seed the dealer's colour identity + the deck colour to the opening dealer (which
+    // may be a later one via the `dealer` dev override), so the bowtie and card backs
+    // wear that dealer's colour from the first paint.
+    this.deckColorShift = this.state.run.shiftIndex
+    this.dealer.setShift(this.state.run.shiftIndex)
+    setCardBack(dealerColors(this.deckColorShift, now()).back)
+    // Arm the opening ceremony BEFORE createStage's first (synchronous) paint, so the
+    // very first frame already shows the dealer walking in + the deck hidden — never a
+    // settled figure that then pops off-screen to walk back.
+    this.armIntro()
     this.defs = this.makeButtons()
     this.stage = createStage(root, LAYERS, (canvas) => this.onResize(canvas))
+    this.prewarmDeckSprite() // so the deck's fly-in doesn't hitch mid walk-in
     this.buildOverlay()
     this.syncOverlay(now())
     // Repaint the chips once the shared chip image loads, so it swaps in over the
@@ -176,7 +232,38 @@ class GameView {
       const canvas = this.stage.canvas
       this.drawChips(canvas, computeLayout(canvas.width, canvas.height), now())
     })
-    this.run(() => this.session.deal()) // deal the first hand on load
+    this.ensureLoop() // drive the opening ceremony, then auto-deal the first hand
+  }
+
+  // Arm the opening ceremony but hold it: park the dealer off-screen (so the initial
+  // paint + the warm-up frames show it off-screen) and wait for steady frames before
+  // starting the visible slide-in (see the hold gate in frame() → startIntroNow). Runs
+  // before the stage exists: no paint.
+  private armIntro(): void {
+    this.deckHidden = true // no resting deck until the ceremony flies one in
+    const t = now()
+    this.dealer.spawn(t) // park the figure off-screen
+    this.introHold = true
+    this.introHoldStart = t
+    this.introPrevFrame = t
+  }
+
+  // Begin the opening ceremony on a warm frame `t`: base the walk-in + deck timeline
+  // here so the slide-in starts from off-screen on steady frames, never mid-jank.
+  private startIntroNow(t: number): void {
+    this.dealer.spawn(t)
+    this.spawnIncomingShift = this.state.run.shiftIndex
+    const shredStart = t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP
+    this.dealAfter = this.spawn.begin(shredStart, 0)
+    this.lastAnimating = true // so the settle edge fires when the ceremony ends
+  }
+
+  // Build the deck-back sprite up front so the deck's fly-in during the opening
+  // ceremony doesn't hitch while it's rendered (PCB pattern + all) for the first time.
+  private prewarmDeckSprite(): void {
+    const c = this.stage.canvas
+    const a = shoeAnchor(computeLayout(c.width, c.height))
+    getCardSprite(null, a.w, a.h, window.devicePixelRatio || 1)
   }
 
   // Repaint every layer. Static layers (back, table) only change here — on
@@ -186,7 +273,7 @@ class GameView {
     const t = now()
     this.anim.setNow(t)
     this.scene.drawBackground(canvas.layers.back.ctx, layout)
-    this.paintTable(canvas, layout, !this.deckOnCards)
+    this.paintTable(canvas, layout, this.tableHasDeck())
     // Repaint the dealer + strike fx at their CURRENT animated state, so a resize
     // mid-death/mid-strike doesn't blank the figure or the beam.
     this.drawDealerFigure(canvas, layout, t)
@@ -205,11 +292,33 @@ class GameView {
     ctx.clearRect(0, 0, layout.width, layout.height)
     this.scene.drawTable(ctx, layout)
     drawTableMarkings(ctx, layout)
-    drawNexus(ctx, layout) // the placeholder device damage + tokens originate from
+    // The nexus device (damage + tokens originate from it) floats in a hover, so it's
+    // NOT drawn here on the static table — it rides the per-frame fx layer (drawFx).
     if (withDeck) {
+      this.applyDeckColor(now()) // paint the shoe in the current dealer's colour
       const a = shoeAnchor(layout)
       drawShoe(ctx, a.x, a.y, a.w, a.h)
     }
+  }
+
+  // Point the shared card-back palette at the current dealer's deck colour, so every
+  // back drawn this frame (shoe, deal, discard/return/peek flips) matches. `now`
+  // advances the RGB dealer's hue.
+  private applyDeckColor(now: number): void {
+    setCardBack(dealerColors(this.deckColorShift, now).back)
+  }
+
+  // The RGB (final) dealer's deck shimmers, so its resting deck lives on the per-frame
+  // cards layer and the render loop is kept alive while it's in play.
+  private rgbActive(): boolean {
+    return isRgbDealer(this.deckColorShift)
+  }
+
+  // Whether the resting deck belongs on the static table layer this repaint. It moves
+  // to the cards layer while gathering/shuffling (deckOnCards) and while the RGB
+  // dealer is in play (so its colour can cycle) — in both cases the table omits it.
+  private tableHasDeck(): boolean {
+    return !this.deckOnCards && !this.deckHidden && !this.rgbActive()
   }
 
   // The dealer layer: the animated robot figure, below the rail so its lower body
@@ -218,13 +327,13 @@ class GameView {
     drawDealer(canvas.layers.dealer.ctx, layout, this.dealer, timestamp)
   }
 
-  // The fx layer: the nexus emitter-light charge glow + the laser strike (beam +
-  // muzzle flash + impact sparks).
+  // The fx layer: the floating nexus device body (hovering with the frame clock),
+  // its emitter-light charge glow, and the laser strike (beam + muzzle flash +
+  // impact sparks) — all drawn together since they share the device's bobbing muzzle.
   private drawFx(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const charge = {
       red: this.nexus.redLight(timestamp),
       yellow: this.nexus.yellowLight(timestamp),
-      vent: this.nexus.ventAge(timestamp),
       chargeUp: this.nexus.chargeUp(timestamp),
     }
     drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer, charge, timestamp)
@@ -234,26 +343,57 @@ class GameView {
   private drawCards(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.cards.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
+    // Every back drawn this frame uses the current dealer's deck colour.
+    this.applyDeckColor(timestamp)
 
-    // While gathering/shuffling, the deck lives on this layer so it can slide
-    // out to the centre (in front of the dealer) and split for the riffle.
-    if (this.deckOnCards) {
+    // A dealer-spawn ceremony: the fresh shrink-wrapped deck flies in from the
+    // dealer and unwraps here (in the incoming dealer's colour), instead of the
+    // same-dealer riffle below. The static table deck is untouched (kept as the old
+    // deck, or hidden on the opening intro) until this one lands + commits.
+    if (this.spawn.isAnimating(timestamp)) {
+      const shift = this.spawnIncomingShift ?? this.deckColorShift
+      drawSpawnDeck(ctx, layout, dealerColors(shift, timestamp).back, this.spawn, timestamp)
+    } else if (this.deckOnCards) {
+      // While gathering/shuffling, the deck lives on this layer so it can slide
+      // out to the centre (in front of the dealer) and split for the riffle.
       const rest = shoeAnchor(layout)
       const centerX = layout.width / 2 - rest.w / 2
       const x = rest.x + (centerX - rest.x) * this.anim.deckShift()
       const shuffle = this.anim.shuffle()
       if (shuffle !== null) {
-        drawShuffle(ctx, x, rest.y, rest.w, rest.h, shuffle)
+        // On a dealer change the riffle cross-fades the outgoing deck out and the
+        // new dealer's deck in; on a same-dealer reshuffle there's no incoming.
+        const incoming = this.deckColorIncoming !== null ? dealerColors(this.deckColorIncoming, timestamp).back : undefined
+        drawShuffle(ctx, x, rest.y, rest.w, rest.h, shuffle, incoming)
       } else {
         drawShoe(ctx, x, rest.y, rest.w, rest.h)
       }
+    } else if (this.rgbActive()) {
+      // The RGB dealer's resting deck stays on this per-frame layer so its colour
+      // keeps cycling (the static table layer would freeze it between repaints).
+      const rest = shoeAnchor(layout)
+      drawShoe(ctx, rest.x, rest.y, rest.w, rest.h)
     }
 
-    // Fall back to the retained ending round while its cards are gathering.
-    const round = this.state.round ?? this.collectRound
-    if (round) {
-      const revealHole = this.state.phase !== 'playing' || this.state.peeked
-      drawHands(ctx, layout, round, revealHole, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined)
+    // Peek Deck: the shoe's top card flipped up in place. It stays face-up while
+    // the peek is live (`foresightCard`), then flips back down on the next move —
+    // by which point `foresightCard` has cleared, so the retained `peekCard`
+    // carries it through the flip-down. Only over the static deck (never mid-shuffle).
+    if (!this.deckOnCards && this.peekCard && (this.state.foresightCard || this.peekFlip.isAnimating(timestamp))) {
+      drawPeekCard(ctx, layout, this.peekCard, this.peekFlip.progress(timestamp))
+    }
+
+    // During a dealer-spawn ceremony the ending round's cards are being sucked into
+    // the new dealer's mouth + shredded (drawn here), not laid out settled.
+    if (this.spawn.isAnimating(timestamp) && this.collectRound) {
+      drawShred(ctx, layout, this.collectRound, this.spawn, timestamp)
+    } else {
+      // Fall back to the retained ending round while its cards are gathering.
+      const round = this.state.round ?? this.collectRound
+      if (round) {
+        const revealHole = this.state.phase !== 'playing' || this.state.peeked
+        drawHands(ctx, layout, round, revealHole, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined)
+      }
     }
 
     // Mulligan: the tossed opening cards flip down and fly back to the deck while
@@ -416,6 +556,22 @@ class GameView {
   // cards layer is touched; the overlay is synced only on the animate→idle edge.
   private readonly frame = (timestamp: number): void => {
     this.anim.setNow(timestamp)
+    // Opening walk-in hold: keep the dealer parked off-screen until the loop settles
+    // into steady (~60fps) frames, THEN start the slide-in — so the one big post-load
+    // frame (JIT/GC/first composite) is absorbed by the invisible hold instead of
+    // teleporting the visible walk-in. Released after two consecutive steady frames,
+    // or a 600ms safety cap so it can't stall forever on a slow device.
+    if (this.introHold) {
+      const dt = timestamp - this.introPrevFrame
+      this.introPrevFrame = timestamp
+      this.introSteadyFrames = dt > 0 && dt < 40 ? this.introSteadyFrames + 1 : 0
+      if (this.introSteadyFrames >= 2 || timestamp - this.introHoldStart > 600) {
+        this.introHold = false
+        this.startIntroNow(timestamp)
+      } else {
+        this.dealer.spawn(timestamp) // hold the figure off-screen this frame
+      }
+    }
     // Release the frozen bankroll the moment the settling chips land (which is
     // well before the longer card gather + shuffle finishes), so the stack grows
     // or shrinks as the chips arrive.
@@ -423,6 +579,15 @@ class GameView {
       this.heldChips = null
       this.clearPending = false
     }
+    // Commit the deck's new colour the instant the riffle finishes reforming it
+    // (shuffle went non-null → null): the new deck is fully riffled in, so the rest
+    // of the choreography (slide-back, next deal) uses the incoming dealer's colour.
+    const shufflingNow = this.anim.shuffle() !== null
+    if (this.shufflingLast && !shufflingNow && this.deckColorIncoming !== null) {
+      this.deckColorShift = this.deckColorIncoming
+      this.deckColorIncoming = null
+    }
+    this.shufflingLast = shufflingNow
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
     this.drawCards(canvas, layout, timestamp)
@@ -435,7 +600,8 @@ class GameView {
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter(timestamp)
 
-    const sequenceAnimating = this.anim.isAnimating(timestamp) || this.chips.isAnimating(timestamp)
+    const sequenceAnimating =
+      this.anim.isAnimating(timestamp) || this.chips.isAnimating(timestamp) || this.spawn.isAnimating(timestamp)
 
     // The card + chip sequence just finished: run the one-time settle. The health
     // bar may keep animating past this point (its drop lands after the reveal) —
@@ -446,9 +612,19 @@ class GameView {
       this.lastAnimating = false
 
       if (this.deckOnCards) {
-        // Gather + shuffle finished: hand the deck back to the static table layer.
+        // Gather + shuffle finished: hand the deck back to the static table layer
+        // (unless the RGB dealer keeps it on the cards layer to keep shimmering).
         this.deckOnCards = false
-        this.paintTable(canvas, layout, true)
+        this.paintTable(canvas, layout, this.tableHasDeck())
+      }
+      if (this.spawnIncomingShift !== null) {
+        // Spawn ceremony finished: the fresh deck has landed + unwrapped. Commit its
+        // colour and hand it back to the static table layer (the old deck it flew in
+        // over is replaced right where they register, so the swap is unseen).
+        this.deckColorShift = this.spawnIncomingShift
+        this.spawnIncomingShift = null
+        this.deckHidden = false
+        this.paintTable(canvas, layout, this.tableHasDeck())
       }
       this.collectRound = null
       // Release the frozen bankroll only when a next-hand CLEAR just finished (the
@@ -488,30 +664,13 @@ class GameView {
     }
     this.lastDealerBlocking = dealerBlocking
 
-    // Keep the loop alive while the sequence, the health bar, a reward token, the
-    // dealer (its strike/death/walk-in or low-health ambient sparks), or a
-    // still-rolling counter is moving. Like the health bar, tokens fly on past
-    // the settle (they don't gate the buttons), and the counters keep rolling for
-    // a beat after their last burst lands — so all are checked here to finish
-    // smoothly.
-    if (
-      sequenceAnimating ||
-      this.health.isAnimating(timestamp) ||
-      this.dealer.isAnimating(timestamp) ||
-      this.tokens.isAnimating(timestamp) ||
-      this.tokenTicker.isAnimating(timestamp) ||
-      this.bankrollTicker.isAnimating(timestamp) ||
-      this.mulligan.isAnimating(timestamp) ||
-      this.returnAnim.isAnimating(timestamp) || // the returned card flying back to the deck
-      this.nexus.isAnimating(timestamp) || // the emitter lights glowing / fading back to dim
-      this.dealAfter > timestamp || // waiting to deal until the deferred laser/death finishes
-      this.showingAnalysis(timestamp) || // the Analyze projection shimmers until dismissed
-      this.analysisFade(timestamp) !== null // ...then flickers out
-    ) {
-      this.raf = requestAnimationFrame(this.frame)
-      return
-    }
-    this.raf = 0
+    // The table nexus floats in a perpetual hover (render/nexus.ts), so its bob +
+    // contact shadow always need repainting: the loop never fully parks. Every
+    // other system (sequence, health, tokens, counters, dealer, Analyze, the RGB
+    // dealer's shimmer…) still animates as before — it just no longer has to gate
+    // liveness here, since the hover keeps us running regardless. The one-shot
+    // settle/edge handling above has already consumed what it needs this frame.
+    this.raf = requestAnimationFrame(this.frame)
   }
 
   private ensureLoop(): void {
@@ -569,14 +728,34 @@ class GameView {
         enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.peek.cost && !s.peeked,
       },
       {
+        key: 'forced-split',
+        label: 'Forced split',
+        group: 'power',
+        cost: POWERUPS['forced-split'].cost,
+        act: () => this.session.buyForcedSplit(),
+        // Shares one slot with Late double to save space: shown only in the pre-hit
+        // phase (while a free Double is still on the table), hidden the moment the
+        // player hits. Disabled — but still shown — when the hand can already be
+        // split for free, since paying to force it would be pointless.
+        visible: (s) => !!s.round && canDouble(s.round),
+        enabled: (s) =>
+          playing(s) &&
+          s.run.tokens >= POWERUPS['forced-split'].cost &&
+          !!s.round &&
+          canForcedSplit(s.round) &&
+          !canSplit(s.round) &&
+          affordsExtra(s),
+      },
+      {
         key: 'late-double',
         label: 'Late double',
         group: 'power',
         cost: POWERUPS['late-double'].cost,
         act: () => this.session.buyLateDouble(),
-        visible: yes,
-        // Redundant while a free Double is still on the table (first two cards) —
-        // only worth buying once the player has hit and canDouble has lapsed.
+        // Hidden while a free Double is still on the table (first two cards) — that
+        // slot shows Forced split instead. Appears once the player has hit and the
+        // free Double has lapsed.
+        visible: (s) => !(s.round && canDouble(s.round)),
         enabled: (s) =>
           playing(s) && s.run.tokens >= POWERUPS['late-double'].cost && !!s.round && !canDouble(s.round) && affordsExtra(s),
       },
@@ -680,11 +859,22 @@ class GameView {
     const prevIntegrity = this.state.run.integrity
     const prevShift = this.state.run.shiftIndex
     const prevAnalysis = this.state.analysis
+    const prevForesight = this.state.foresightCard
     mutate()
     this.state = this.session.snapshot()
     const { integrity, shiftIndex } = this.state.run
 
     const t = now()
+    // Peek Deck's top-card flip: face-up when the peek is bought, face-down when it
+    // clears on the next move. A peek that was showing leads the deal by the
+    // flip-down so the card visibly flips down BEFORE it's drawn (see `dealLead`).
+    if (this.state.foresightCard && !prevForesight) {
+      this.peekCard = this.state.foresightCard
+      this.peekFlip.flip(t, true)
+    } else if (!this.state.foresightCard && prevForesight) {
+      this.peekFlip.flip(t, false)
+    }
+    const dealLead = prevForesight && !this.state.foresightCard ? PEEK_FLIP_MS : 0
     // Stamp when a fresh reading appears (flicker ramps in from here), or start the
     // flicker-out when one is dismissed (retain it so it can die gracefully).
     if (this.state.analysis && !prevAnalysis) {
@@ -695,47 +885,77 @@ class GameView {
       this.analysisFadeStart = t
     }
     if (prevRound && !this.state.round) {
-      // Next hand called: settle the deferred chips now (winners collect, losers
-      // pay the house) and, once the choreography lets it, gather the cards back
-      // into the deck + shuffle. Move the deck onto the cards layer so the shuffle
-      // can split it; it rests there until the gather actually begins.
+      // Next hand called: settle the deferred chips now (winners collect, losers pay
+      // the house). What follows depends on whether the DEALER CHANGES. A same-dealer
+      // hand gathers the spent cards back into the deck + riffles; a dealer SPAWN — a
+      // kill, or a New run's reset — instead shreds the old cards into the new
+      // dealer's mouth and flies in a fresh shrink-wrapped deck (the ceremony).
       this.collectRound = prevRound
       this.chips.clear(prevRound, t)
       this.clearEnd = this.chips.animEnd
       this.clearPending = true
-      this.deckOnCards = true
-      const canvas = this.stage.canvas
-      this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
       // The win tokens were already awarded on the resolve (they flew in behind the
       // won chips). A New run (from 'over') just drops the withheld final reward.
       this.heldTokens = 0
-      // A New run zeroes the count: snap it rather than dramatically rolling the
-      // whole balance down (a full reset isn't a "spend").
-      if (prevPhase === 'over') {
+
+      const isKill =
+        !!this.pendingAttack && prevPhase === 'resolved' && this.pendingAttack.toShift > this.pendingAttack.fromShift
+      const newRun = prevPhase === 'over'
+      const ceremony = isKill || newRun
+
+      if (!ceremony) {
+        // Same dealer: move the deck onto the cards layer so the gather + riffle can
+        // slide + split it. A ceremony instead keeps the old deck on the static table
+        // until the fresh one lands over it, so its colour swap stays hidden.
+        this.deckOnCards = true
+        const canvas = this.stage.canvas
+        this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
+      }
+      // A New run zeroes the count: snap it rather than dramatically rolling the whole
+      // balance down (a full reset isn't a "spend").
+      if (newRun) {
         this.tokenTicker.set(this.displayedTokens(t))
       }
+
       if (this.pendingAttack && prevPhase === 'resolved') {
-        // A win: the won chips first collect from the bet area into the player's
-        // stack (chips.clear, above), THEN the laser fires, THEN (on a kill) the
-        // dealer dies and the next walks in — and only after ALL of that do the spent
-        // cards gather back into the deck. Each beat follows the last, so the payout
-        // never animates during the attack.
+        // A win: the won chips first collect from the bet area into the player's stack
+        // (chips.clear, above), THEN the laser fires — and only after that does the
+        // deck reset play, so the payout never animates during the attack.
         const pa = this.pendingAttack
         this.pendingAttack = null
         const attackStart = this.chips.animEnd + LASER_GAP
         const attackEnd = this.playAttack(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
-        this.anim.collect(prevRound, attackEnd + GATHER_GAP)
-        this.dealAfter = this.anim.animEnd
-        // The red muzzle blasts for the laser, then fades + vents steam. No yellow
-        // flare — the tokens already flew on the resolve; the yellow just eases out
-        // of its anticipation glow (fire's null tokensEnd).
+        if (isKill) {
+          // The blow destroyed the dealer: as the replacement walks in (part of
+          // playAttack), its mouth shreds the old cards while a fresh wrapped deck
+          // flies in — no riffle. The next hand waits for the whole ceremony.
+          this.deckColorIncoming = null
+          this.dealAfter = this.beginSpawn(prevRound, pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
+        } else {
+          // Same dealer, just damaged: gather the cards back + riffle after the laser.
+          this.deckColorIncoming = null
+          this.anim.collect(prevRound, attackEnd + GATHER_GAP)
+          this.dealAfter = this.anim.animEnd
+        }
+        // The red muzzle blasts for the laser, then fades. No yellow flare — the
+        // tokens already flew on the resolve; the yellow just eases out of its glow.
         this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+      } else if (newRun) {
+        // A New run: the fresh run's opening dealer walks in and presents a new deck,
+        // shredding whatever cards the old run left on the table. No laser (no attack).
+        this.pendingAttack = null
+        this.deckColorIncoming = null
+        this.health.set(integrity)
+        this.dealer.setLevel(integrity)
+        this.dealer.setShift(shiftIndex)
+        this.dealer.spawn(t) // a standalone walk-in (no preceding death)
+        this.dealAfter = this.beginSpawn(prevRound, shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
       } else {
-        // No deferred damage (a losing/pushing hand) or a New run: nothing attacks,
-        // so gather the cards right away and refresh the health + dealer state now
-        // (only a New run actually changes them here).
+        // No deferred damage (a losing/pushing hand): gather the cards right away and
+        // refresh the health + dealer state now.
         this.anim.collect(prevRound, t)
         this.pendingAttack = null
+        this.deckColorIncoming = null
         this.dealAfter = 0
         this.health.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
         this.dealer.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
@@ -789,7 +1009,9 @@ class GameView {
           this.anim.sync(prevPhase, this.state, this.anim.animEnd)
         }
       } else {
-        this.anim.sync(prevPhase, this.state, t)
+        // A hit/stand/double: if a Peek Deck card was showing, hold the deal back
+        // by the flip-down so the top card flips face-down before it's drawn.
+        this.anim.sync(prevPhase, this.state, t + dealLead)
       }
       // A winning hand damages the dealer, but the nexus LASER doesn't fire yet:
       // it's deferred to the Next-hand click, after the token reward (see the
@@ -801,7 +1023,7 @@ class GameView {
           const attackStart = this.anim.animEnd
           this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, attackStart)
           // No Next hand (and no reward tokens) on the final blow: the red muzzle
-          // blasts for the laser, then fades + vents steam. No yellow flare.
+          // blasts for the laser, then fades. No yellow flare.
           this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
         } else {
           this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
@@ -834,7 +1056,7 @@ class GameView {
     }
 
     this.syncOverlay(t) // reflect the new state immediately (disable while animating)
-    this.lastAnimating = this.anim.isAnimating(t) || this.chips.isAnimating(t)
+    this.lastAnimating = this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t)
     this.ensureLoop()
   }
 
@@ -878,7 +1100,8 @@ class GameView {
       const layout = computeLayout(canvas.width, canvas.height)
       const amount = this.state.run.tokens - prevTokens
       const liftoff = this.anim.animEnd + TOKEN_SPAWN_DELAY
-      this.tokens.emit(nexusYellowLight(layout), amount, liftoff)
+      // Launch from where the vent floats at liftoff (the device is always bobbing).
+      this.tokens.emit(nexusYellowLight(layout, liftoff), amount, liftoff)
       // Pulse the yellow vent as the reward token shoots out of it.
       this.nexus.pulseYellow(liftoff)
       return
@@ -898,16 +1121,26 @@ class GameView {
   private awardWinTokens(round: Round, startAfter: number): void {
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
-    const from = nexusYellowLight(layout)
     round.hands.forEach((hand, hi) => {
       const amount = winTokenFor(hand, round)
       if (amount > 0) {
         const liftoff = startAfter + hi * TOKEN_HAND_STAGGER
-        this.tokens.emit(from, amount, liftoff)
+        // From where the vent floats at liftoff (the device bobs continuously).
+        this.tokens.emit(nexusYellowLight(layout, liftoff), amount, liftoff)
         // Pulse the yellow vent as the reward shoots out of it.
         this.nexus.pulseYellow(liftoff)
       }
     })
+  }
+
+  // Kick off the dealer-spawn ceremony: shred `prevRound`'s table cards into the new
+  // dealer's mouth starting at `shredStart`, then fly in a fresh wrapped deck in the
+  // incoming dealer's colour (committed to the static table when it lands — see the
+  // frame loop). Returns the timestamp the deck is ready, so the next deal can wait.
+  private beginSpawn(prevRound: Round, incomingShift: number, shredStart: number): number {
+    this.spawnIncomingShift = incomingShift
+    const cardCount = prevRound.dealer.length + prevRound.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
+    return this.spawn.begin(shredStart, cardCount)
   }
 
   // Fire the nexus laser at the dealer for a damage/kill, starting at `startAfter`.
@@ -921,7 +1154,8 @@ class GameView {
     if (toS > fromS) {
       const canvas = this.stage.canvas
       const layout = computeLayout(canvas.width, canvas.height)
-      this.tokens.emit(nexusYellowLight(layout), DESTROY_TOKEN, startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS)
+      const liftoff = startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS
+      this.tokens.emit(nexusYellowLight(layout, liftoff), DESTROY_TOKEN, liftoff)
       return startAfter + KILL_TOTAL_MS
     }
     return startAfter + HIT_TOTAL_MS
@@ -931,9 +1165,14 @@ class GameView {
   // disabled and the result message is withheld until the sequence settles.
   private syncOverlay(timestamp: number): void {
     const s = this.state
-    // The dealer-death pause blocks input the same way card motion does: all
-    // buttons disabled and the result message withheld until the sequence ends.
-    const animating = this.anim.isAnimating(timestamp) || this.dealer.isBlocking(timestamp)
+    // The dealer-death pause + spawn ceremony (walk-in, shred, fresh deck) block
+    // input the same way card motion does: all buttons disabled and the result
+    // message withheld until the sequence ends.
+    const animating =
+      this.anim.isAnimating(timestamp) ||
+      this.dealer.isBlocking(timestamp) ||
+      this.dealer.isArriving(timestamp) ||
+      this.spawn.isAnimating(timestamp)
 
     // Point the counter at its current value (tokens still flying are withheld);
     // the frame loop rolls it up as they land.

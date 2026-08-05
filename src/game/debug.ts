@@ -5,19 +5,41 @@
 //
 //   ?forcePairs      — every deal gives the player a splittable pair
 //   ?forcePairs=8    — ...specifically a pair of that rank (2-10, J, Q, K, A)
+//   ?tokens=200      — start the run with this many tokens (test powerups without grinding)
+//   ?dealerHealth=50 — start the first dealer at this % health (1-100), e.g. to see the
+//                      low-health eye flicker without playing a dealer down
+//   ?dealer=6        — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
+//                      to a dealer's colour: 1 blue, 2 purple, 3 green, 4 yellow, 5 red,
+//                      6 the RGB-cycling final dealer
 //
-// Handy for exercising split (and re-split) without waiting for a natural pair.
+// Handy for exercising split (and re-split) without waiting for a natural pair,
+// buying a pricey powerup (Peek Deck, Mulligan) straight off the first deal,
+// dropping the opening dealer near death to check the damage animation, or checking
+// a later dealer's colours without grinding up to it.
 
 import { RANKS, type Rank } from './deck'
+import { TOTAL_DEALERS } from './run'
 
 export interface DebugFlags {
   /** Force the player's opening two cards to be a pair. */
   forcePairs: boolean
   /** When forcing pairs, a specific rank to pair; null = pair whatever's dealt. */
   forcePairRank: Rank | null
+  /** Start the run with this many tokens; null = the normal starting balance (0). */
+  startTokens: number | null
+  /** Start the first dealer at this % health (1-100); null = full. */
+  dealerHealth: number | null
+  /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
+  startDealer: number | null
 }
 
-const OFF: DebugFlags = { forcePairs: false, forcePairRank: null }
+const OFF: DebugFlags = {
+  forcePairs: false,
+  forcePairRank: null,
+  startTokens: null,
+  dealerHealth: null,
+  startDealer: null,
+}
 
 export function readDebugFlags(): DebugFlags {
   // Never honor debug flags outside the dev server (deployed prod build, tests).
@@ -30,5 +52,37 @@ export function readDebugFlags(): DebugFlags {
   return {
     forcePairs: params.has('forcePairs'),
     forcePairRank,
+    startTokens: parseStartTokens(params.get('tokens')),
+    dealerHealth: parseDealerHealth(params.get('dealerHealth')),
+    startDealer: parseStartDealer(params.get('dealer')),
   }
+}
+
+// A non-negative integer token count, or null if the param is absent/empty/invalid.
+function parseStartTokens(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
+// A health percentage clamped to 1..100, or null if absent/empty/invalid. Clamped
+// so the opening dealer never starts already-dead (0) or over-full (>100).
+function parseDealerHealth(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(100, Math.max(1, Math.floor(n))) : null
+}
+
+// A dealer index clamped to 1..TOTAL_DEALERS, or null if absent/empty/invalid — so
+// the run always starts on a real dealer within the roster.
+function parseStartDealer(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(TOTAL_DEALERS, Math.max(1, Math.floor(n))) : null
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
-import { canSplit } from './round'
+import { canForcedSplit, canSplit } from './round'
 import { hitTokens } from './run'
 import { Session } from './session'
 
@@ -240,3 +240,77 @@ function playingSessionWithTokens(min: number): Session {
   }
   throw new Error('no funded playing session found in the seed range')
 }
+
+describe('Session.buyForcedSplit', () => {
+  it('splits a non-pair opening hand into two hands and spends the cost', () => {
+    const cost = POWERUPS['forced-split'].cost
+    for (let seed = 1; seed < 3000; seed += 1) {
+      const session = new Session(seed, { startTokens: cost + 5 })
+      session.deal()
+      const snap = session.snapshot()
+      if (snap.phase !== 'playing') continue
+      const round = snap.round!
+      // The pre-hit phase on a single non-pair hand: force-splittable, but not a
+      // free split — exactly when the Forced split button is enabled.
+      if (round.hands.length !== 1 || !canForcedSplit(round) || canSplit(round)) continue
+      const tokensBefore = snap.run.tokens
+
+      session.buyForcedSplit()
+
+      const after = session.snapshot()
+      expect(after.round!.hands.length).toBe(2)
+      expect(after.run.tokens).toBe(tokensBefore - cost)
+      return
+    }
+    throw new Error('no seed produced a non-pair opening hand')
+  })
+
+  it('refuses (no split, no spend) once the hand has taken a hit', () => {
+    const cost = POWERUPS['forced-split'].cost
+    for (let seed = 1; seed < 3000; seed += 1) {
+      const session = new Session(seed, { startTokens: cost + 5 })
+      session.deal()
+      if (session.snapshot().phase !== 'playing') continue
+      session.hit()
+      const snap = session.snapshot()
+      // Need a single live hand that has grown past two cards (a survived hit).
+      if (snap.phase !== 'playing') continue
+      const round = snap.round!
+      if (round.hands.length !== 1 || round.hands[0].cards.length <= 2) continue
+      expect(canForcedSplit(round)).toBe(false)
+      const tokensBefore = snap.run.tokens
+
+      session.buyForcedSplit()
+
+      const after = session.snapshot()
+      expect(after.round!.hands.length).toBe(1) // no split happened
+      expect(after.run.tokens).toBe(tokensBefore) // and nothing was charged
+      return
+    }
+    throw new Error('no seed produced a post-hit single hand')
+  })
+})
+
+describe('Session startDealer dev override', () => {
+  it('defaults to the first dealer with no kills', () => {
+    const run = new Session(1).snapshot().run
+    expect(run.shiftIndex).toBe(1)
+    expect(run.kills).toEqual([])
+  })
+
+  it('jumps to a later dealer, seeding the skipped dealers as kills', () => {
+    // Starting at dealer 4 means 3 dealers were already beaten — so the win-at-6
+    // count and the "dealers left" pips stay consistent with fighting up to here.
+    const run = new Session(1, { startDealer: 4 }).snapshot().run
+    expect(run.shiftIndex).toBe(4)
+    expect(run.kills).toEqual([1, 2, 3])
+  })
+
+  it('re-applies the override on a New run', () => {
+    const session = new Session(1, { startDealer: 3 })
+    session.restart()
+    const run = session.snapshot().run
+    expect(run.shiftIndex).toBe(3)
+    expect(run.kills).toEqual([1, 2])
+  })
+})

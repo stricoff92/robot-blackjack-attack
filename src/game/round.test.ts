@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest'
 import type { Card, Rank, Suit } from './deck'
 import {
   armSecondChance,
+  canForcedSplit,
   canMulligan,
   canReturn,
   canSplit,
   DEFAULT_ROUND_RULES,
   doubleDown,
+  forcedSplit,
   freezeDealer,
   handNet,
   hit,
@@ -188,6 +190,42 @@ describe('split', () => {
     expect(round.hands.map((hand) => hand.outcome)).toEqual(['win', 'win'])
     expect(round.hands.some((hand) => hand.outcome === 'blackjack')).toBe(false)
     expect(payout(round)).toBe(100) // 50 + 50 even money, NOT 75 + 75 at 3:2
+  })
+})
+
+describe('forcedSplit', () => {
+  it('allows splitting an opening hand that is not a natural pair', () => {
+    const nonPair = startRound([card('9'), card('7'), card('10'), card('6')], 50)
+    expect(canSplit(nonPair)).toBe(false)
+    expect(canForcedSplit(nonPair)).toBe(true)
+  })
+
+  it('cannot force split after a hit or on a hand that is not two cards', () => {
+    const round = hit(startRound([card('9'), card('7'), card('10'), card('6'), card('2')], 50))
+    expect(round.hands[0].cards).toHaveLength(3)
+    expect(canForcedSplit(round)).toBe(false)
+    expect(() => forcedSplit(round)).toThrow()
+  })
+
+  it('splits a non-pair into two playable hands, each keeping the original bet', () => {
+    const shoe = [card('9'), card('7'), card('10'), card('6'), card('K'), card('Q')]
+    const round = forcedSplit(startRound(shoe, 50))
+
+    expect(round.status).toBe('player-turn')
+    expect(round.hands).toHaveLength(2)
+    expect(round.hands.map((hand) => hand.cards.length)).toEqual([2, 2])
+    expect(round.hands.every((hand) => hand.bet === 50 && !hand.finished)).toBe(true)
+    expect(round.drawIndex).toBe(6)
+  })
+
+  it('does not apply the one-card ace rule when only one split card is an ace', () => {
+    // A+7 is not a pair of aces, so both hands play on normally — unlike a genuine
+    // ace split, which locks each hand to a single card.
+    const shoe = [card('A'), card('7'), card('10'), card('6'), card('9'), card('8')]
+    const round = forcedSplit(startRound(shoe, 50))
+
+    expect(round.status).toBe('player-turn')
+    expect(round.hands.every((hand) => !hand.splitAce && !hand.finished)).toBe(true)
   })
 })
 

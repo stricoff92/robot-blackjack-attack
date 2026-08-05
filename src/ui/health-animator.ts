@@ -125,6 +125,13 @@ export class HealthAnimation implements HealthView {
     return null
   }
 
+  // Snap the settled fill to a given integrity without animating — used on load so a
+  // dealer that starts partway damaged (the dealerHealth dev override) shows the
+  // right bar from the first frame.
+  set(integrity: number): void {
+    this.settle(frac(integrity))
+  }
+
   private settle(level: number): void {
     this.mode = 'none'
     this.from = level

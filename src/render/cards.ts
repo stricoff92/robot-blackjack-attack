@@ -8,8 +8,9 @@
 import type { Card } from '../game/deck'
 import { evaluateHand } from '../game/hand'
 import type { Round } from '../game/round'
-import { blitCard, getCardSprite } from './card-sprite'
+import { activeCardBack, blitCard, getCardSprite } from './card-sprite'
 import { smoothEnd3, smoothStart2, smoothStep } from './easing'
+import type { CardBack } from './palette'
 import { dealerBox, dealerEyes, type DealerEyes, type Layout } from './scene'
 
 const CARD_RATIO = 0.7 // width / height, roughly a real playing card
@@ -18,6 +19,13 @@ const CARD_RATIO = 0.7 // width / height, roughly a real playing card
 const SHOE_LAYERS = 6
 const SHOE_DX = 0.025 // horizontal offset per stacked card, × card width
 const SHOE_DY = 0.02 // vertical offset per stacked card, × card height
+
+// How far the shoe's offset stack steps beyond its top card's (x, y): the layers fan
+// down-right, so the deck's full footprint is (w + dx) wide × (h + dy) tall. The spawn
+// wrap reads this so the plastic covers the whole stack, not just the top card.
+export function shoeStackExtent(w: number, h: number): { dx: number; dy: number } {
+  return { dx: w * SHOE_DX * SHOE_LAYERS, dy: h * SHOE_DY * SHOE_LAYERS }
+}
 
 // Player cards' top edge, as a fraction of felt height below the felt top. Kept
 // with room above (for the big count + result) and below (for the betting circle).
@@ -116,6 +124,46 @@ export function playerHandCenter(l: Layout, round: Round, handIndex: number): { 
   const h = cardH * handCardScale(l, count)
   const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
   return { x: handCenterX(l, handIndex, count), y: playerY + h / 2 }
+}
+
+// One card resting on the felt, with its slot centre + size — the layout drawHands
+// paints them at.
+export interface TableCard {
+  card: Card
+  cx: number // slot centre x
+  cy: number // slot centre y
+  w: number
+  h: number
+}
+
+// Every card currently on the table (dealer row, then each player hand), at the
+// exact centres + sizes drawHands lays them out at. Shared with the dealer-spawn
+// shred, so a card gets sucked into the mouth from precisely where it sat.
+export function tableCards(l: Layout, round: Round): TableCard[] {
+  const feltTop = l.edgeY
+  const feltHeight = l.height - feltTop
+  const { w: cardW, h: cardH } = cardSize(l)
+  const out: TableCard[] = []
+
+  const dealerY = feltTop + feltHeight * 0.05
+  const dealerXs = rowXs(l.width / 2, round.dealer.length, cardW)
+  round.dealer.forEach((card, i) => {
+    out.push({ card, cx: dealerXs[i] + cardW / 2, cy: dealerY + cardH / 2, w: cardW, h: cardH })
+  })
+
+  const playerY = feltTop + feltHeight * PLAYER_ROW
+  const count = round.hands.length
+  const scale = handCardScale(l, count)
+  const w = cardW * scale
+  const h = cardH * scale
+  round.hands.forEach((hand, hi) => {
+    const centerX = handCenterX(l, hi, count)
+    const xs = rowXs(centerX, hand.cards.length, w)
+    hand.cards.forEach((card, ci) => {
+      out.push({ card, cx: xs[ci] + w / 2, cy: playerY + h / 2, w, h })
+    })
+  })
+  return out
 }
 
 export function drawHands(
@@ -678,6 +726,16 @@ export function drawReturnCard(
   drawFlipCard(ctx, card, x, y, w, h, flip, alpha, dpr)
 }
 
+// Peek Deck: the shoe's top card flipped up in place so the player can read the
+// next card. Drawn on the cards layer directly over the static deck's top-card
+// back — same anchor + size as `drawShoe`'s top card, so it registers exactly.
+// `flip` 0→1 = back → face.
+export function drawPeekCard(ctx: CanvasRenderingContext2D, l: Layout, card: Card, flip: number): void {
+  const dpr = window.devicePixelRatio || 1
+  const shoe = shoeAnchor(l)
+  drawFlipCard(ctx, card, shoe.x, shoe.y, shoe.w, shoe.h, flip, 1, dpr)
+}
+
 // Draw a single card at (x, y) at a given flip (1 = face, 0 = back) and alpha —
 // the shared flip render used by the deal and the mulligan discard.
 function drawFlipCard(
@@ -744,6 +802,9 @@ export function drawShoe(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   const radius = w * 0.09
   const dx = w * SHOE_DX
   const dy = h * SHOE_DY
+  // The stack layers take the current dealer's deck colour so the shoe matches the
+  // card backs; the top card is the back sprite (same palette via the sprite cache).
+  const back = activeCardBack()
 
   ctx.save()
   ctx.shadowColor = 'rgba(0, 0, 0, 0.45)'
@@ -751,14 +812,14 @@ export function drawShoe(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   ctx.shadowOffsetY = h * 0.05
   ctx.beginPath()
   ctx.roundRect(x + dx * SHOE_LAYERS, y + dy * SHOE_LAYERS, w, h, radius)
-  ctx.fillStyle = '#22345f'
+  ctx.fillStyle = back.deckBase
   ctx.fill()
   ctx.restore()
 
   for (let i = SHOE_LAYERS; i >= 1; i--) {
     ctx.beginPath()
     ctx.roundRect(x + dx * i, y + dy * i, w, h, radius)
-    ctx.fillStyle = i % 2 === 0 ? '#243a70' : '#2c4d92'
+    ctx.fillStyle = i % 2 === 0 ? back.deckDark : back.deckLight
     ctx.fill()
     ctx.lineWidth = 1
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.22)'
@@ -776,28 +837,41 @@ const SHUFFLE_PASSES = 1
 const SPLIT_FRACTION = 0.3 // portion of each pass spent splitting apart
 const FLYERS = 8 // cards riffling across per pass
 
-export function drawShuffle(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, t: number): void {
+export function drawShuffle(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  t: number,
+  incoming?: CardBack,
+): void {
   const dpr = window.devicePixelRatio || 1
-  const back = getCardSprite(null, w, h, dpr)
+  // On a dealer change the riffle is the deck swap: the outgoing deck (current
+  // palette) splits and fades out while the incoming deck (the new dealer's colour)
+  // riffles in, so the colour cross-fades right where the cards are already flying.
+  // Without an `incoming` it's a plain same-colour reshuffle between hands.
+  const outBack = getCardSprite(null, w, h, dpr)
+  const inBack = incoming ? getCardSprite(null, w, h, dpr, incoming) : outBack
   const offset = w * 0.9 // how far the two piles sit from centre
 
   const pass = Math.min(SHUFFLE_PASSES - 1, Math.floor(t * SHUFFLE_PASSES))
   const ct = t * SHUFFLE_PASSES - pass // 0..1 within this pass
 
   if (ct < SPLIT_FRACTION) {
-    // Split: the centre deck divides into two piles sliding apart.
+    // Split: the centre (outgoing) deck divides into two piles sliding apart.
     const p = smoothEnd3(ct / SPLIT_FRACTION)
-    drawStack(ctx, back, x - offset * p, y, 1)
-    drawStack(ctx, back, x + offset * p, y, 1)
+    drawStack(ctx, outBack, x - offset * p, y, 1)
+    drawStack(ctx, outBack, x + offset * p, y, 1)
     return
   }
 
-  // Riffle: the two piles deplete as a single deck reforms between them.
+  // Riffle: the two outgoing piles deplete as a single incoming deck reforms between them.
   const mt = (ct - SPLIT_FRACTION) / (1 - SPLIT_FRACTION)
   const sideAlpha = 1 - smoothStart2(mt)
-  drawStack(ctx, back, x - offset, y, sideAlpha)
-  drawStack(ctx, back, x + offset, y, sideAlpha)
-  drawStack(ctx, back, x, y, smoothEnd3(mt)) // the merged deck growing in
+  drawStack(ctx, outBack, x - offset, y, sideAlpha)
+  drawStack(ctx, outBack, x + offset, y, sideAlpha)
+  drawStack(ctx, inBack, x, y, smoothEnd3(mt)) // the merged deck growing in
 
   for (let i = 0; i < FLYERS; i++) {
     const delay = (i / FLYERS) * 0.6
@@ -810,7 +884,7 @@ export function drawShuffle(ctx: CanvasRenderingContext2D, x: number, y: number,
     const cx = startX + (x - startX) * smoothEnd3(ft)
     const cy = y - h * 0.4 * Math.sin(ft * Math.PI) // arc up and back down
     const rot = (fromLeft ? 1 : -1) * 0.35 * (1 - ft)
-    drawRotatedSprite(ctx, back, cx, cy, w, h, rot)
+    drawRotatedSprite(ctx, inBack, cx, cy, w, h, rot)
   }
 }
 

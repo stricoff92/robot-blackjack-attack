@@ -6,6 +6,8 @@
 // the finished bitmap horizontally rather than re-laying-out text every frame.
 
 import type { Card, Suit } from '../game/deck'
+import { dealerColors, type CardBack } from './palette'
+import { drawPcb } from './pcb'
 
 type SpriteCanvas = HTMLCanvasElement | OffscreenCanvas
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
@@ -27,16 +29,34 @@ const SUIT_SYMBOLS: Record<Suit, string> = {
 
 const cache = new Map<string, CardSprite>()
 
-// Fetch (or build) the sprite for a card face, or the back when card is null.
-export function getCardSprite(card: Card | null, cw: number, ch: number, dpr: number): CardSprite {
-  const face = card ? `${card.rank}${card.suit}` : 'back'
+// The card-back colour every back is drawn with, unless a call passes an explicit
+// override. Dealer progression recolours the deck by pointing this at the current
+// dealer's palette (see game-view). Callers that draw a back — the deal, the shoe,
+// the discard/return/peek flips — need no changes: they pick this up automatically.
+let activeBack: CardBack = dealerColors(1, 0).back
+
+export function setCardBack(back: CardBack): void {
+  activeBack = back
+}
+
+export function activeCardBack(): CardBack {
+  return activeBack
+}
+
+// Fetch (or build) the sprite for a card face, or the back when card is null. A
+// back may be drawn with an explicit palette (`back`) — the cross-fade riffles the
+// outgoing deck out and the incoming deck in at once — otherwise it uses the active
+// palette. The palette id is folded into the cache key so recolours don't collide.
+export function getCardSprite(card: Card | null, cw: number, ch: number, dpr: number, back?: CardBack): CardSprite {
+  const palette = back ?? activeBack
+  const face = card ? `${card.rank}${card.suit}` : `back:${palette.id}`
   const key = `${face}:${Math.round(cw)}x${Math.round(ch)}@${dpr}`
   let sprite = cache.get(key)
   if (!sprite) {
     if (cache.size > 256) {
       cache.clear() // bound memory across many resizes
     }
-    sprite = renderSprite(card, cw, ch, dpr)
+    sprite = renderSprite(card, cw, ch, dpr, palette)
     cache.set(key, sprite)
   }
   return sprite
@@ -64,7 +84,7 @@ export function blitCard(ctx: CanvasRenderingContext2D, sprite: CardSprite, x: n
   ctx.restore()
 }
 
-function renderSprite(card: Card | null, cw: number, ch: number, dpr: number): CardSprite {
+function renderSprite(card: Card | null, cw: number, ch: number, dpr: number, back: CardBack): CardSprite {
   const padX = cw * 0.14
   const padY = ch * 0.14
   const w = cw + padX * 2
@@ -75,7 +95,7 @@ function renderSprite(card: Card | null, cw: number, ch: number, dpr: number): C
   if (card) {
     drawFace(ctx, padX, padY, cw, ch, card)
   } else {
-    drawBack(ctx, padX, padY, cw, ch)
+    drawBack(ctx, padX, padY, cw, ch, back)
   }
 
   return { canvas, cw, ch, padX, padY }
@@ -115,7 +135,7 @@ function drawFace(ctx: Ctx2D, x: number, y: number, w: number, h: number, card: 
   ctx.fillText(suit, x + w * 0.5, y + h * 0.56)
 }
 
-function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number): void {
+function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number, back: CardBack): void {
   const radius = w * 0.09
 
   ctx.save()
@@ -123,7 +143,7 @@ function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number): void 
   ctx.shadowBlur = h * 0.07
   ctx.shadowOffsetY = h * 0.03
   roundRectPath(ctx, x, y, w, h, radius)
-  ctx.fillStyle = '#1f356b'
+  ctx.fillStyle = back.outer
   ctx.fill()
   ctx.restore()
 
@@ -139,26 +159,19 @@ function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number): void 
   const bh = h - inset * 2
 
   roundRectPath(ctx, bx, by, bw, bh, radius * 0.7)
-  ctx.fillStyle = '#2c4d92'
+  ctx.fillStyle = back.panel
   ctx.fill()
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)'
   ctx.lineWidth = 1
   ctx.stroke()
 
+  // A printed-circuit-board pattern fills the panel — its complexity rises with the
+  // dealer's `tech`, seeded so every back of a deck is identical. Clipped to the
+  // panel so traces/pads don't spill past the rounded inner border.
   ctx.save()
   roundRectPath(ctx, bx, by, bw, bh, radius * 0.7)
   ctx.clip()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)'
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  const step = w * 0.2
-  for (let i = -bh; i < bw + bh; i += step) {
-    ctx.moveTo(bx + i, by)
-    ctx.lineTo(bx + i + bh, by + bh)
-    ctx.moveTo(bx + i, by + bh)
-    ctx.lineTo(bx + i + bh, by)
-  }
-  ctx.stroke()
+  drawPcb(ctx, bx, by, bw, bh, { tech: back.tech, seed: back.seed })
   ctx.restore()
 }
 
