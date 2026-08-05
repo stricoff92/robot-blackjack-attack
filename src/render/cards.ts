@@ -1062,7 +1062,9 @@ export function drawDepletingShoe(ctx: CanvasRenderingContext2D, l: Layout, rema
 // centre. Drawn on the cards layer (the static table-layer deck is hidden while
 // this plays, so the split leaves no ghost deck behind).
 const SHUFFLE_PASSES = 1
-const SPLIT_FRACTION = 0.3 // portion of each pass spent splitting apart
+// Portion of each riffle pass spent splitting apart (before the piles merge back
+// together). Exported so the shuffle sfx can fire exactly when the merge begins.
+export const SHUFFLE_SPLIT_FRACTION = 0.3
 const FLYERS = 8 // cards riffling across per pass
 
 export function drawShuffle(
@@ -1086,16 +1088,16 @@ export function drawShuffle(
   const pass = Math.min(SHUFFLE_PASSES - 1, Math.floor(t * SHUFFLE_PASSES))
   const ct = t * SHUFFLE_PASSES - pass // 0..1 within this pass
 
-  if (ct < SPLIT_FRACTION) {
+  if (ct < SHUFFLE_SPLIT_FRACTION) {
     // Split: the centre (outgoing) deck divides into two piles sliding apart.
-    const p = smoothEnd3(ct / SPLIT_FRACTION)
+    const p = smoothEnd3(ct / SHUFFLE_SPLIT_FRACTION)
     drawStack(ctx, outBack, x - offset * p, y, 1)
     drawStack(ctx, outBack, x + offset * p, y, 1)
     return
   }
 
   // Riffle: the two outgoing piles deplete as a single incoming deck reforms between them.
-  const mt = (ct - SPLIT_FRACTION) / (1 - SPLIT_FRACTION)
+  const mt = (ct - SHUFFLE_SPLIT_FRACTION) / (1 - SHUFFLE_SPLIT_FRACTION)
   const sideAlpha = 1 - smoothStart2(mt)
   drawStack(ctx, outBack, x - offset, y, sideAlpha)
   drawStack(ctx, outBack, x + offset, y, sideAlpha)

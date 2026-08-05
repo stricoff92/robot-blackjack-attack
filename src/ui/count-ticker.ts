@@ -30,6 +30,13 @@ export class CountTicker {
     this.target = initial
   }
 
+  // The roll length (ms) for a given jump — exposed so a caller can time other
+  // effects to finish exactly when the counter does (the token-land sfx spreads
+  // its per-token pings across this window so the last lands as the number settles).
+  static rollDurationMs(jump: number): number {
+    return clamp(MIN_MS + Math.abs(jump) * MS_PER_UNIT, MIN_MS, MAX_MS)
+  }
+
   // Jump straight to `value`, no roll — for the initial sync and resets (a New
   // run zeroing the count shouldn't dramatically count down).
   set(value: number): void {
@@ -42,8 +49,9 @@ export class CountTicker {
   // Aim at `value`, rolling from whatever shows right now. By default a decrease
   // snaps — instant is the right feedback for a cost (a bet placed, the house paid);
   // a `rollDown` ticker instead counts DOWN, ticking + swelling just like a rise.
-  // A no-op when already headed there.
-  retarget(value: number, now: number): void {
+  // A no-op when already headed there. Pass `durationMs` to override the auto length
+  // — e.g. to match the roll to a sfx cascade so the number lands with the last tone.
+  retarget(value: number, now: number, durationMs?: number): void {
     if (value === this.target) {
       return
     }
@@ -54,8 +62,7 @@ export class CountTicker {
     this.from = this.value(now)
     this.target = value
     this.start = now
-    const jump = Math.abs(value - this.from)
-    this.end = now + clamp(MIN_MS + jump * MS_PER_UNIT, MIN_MS, MAX_MS)
+    this.end = now + (durationMs ?? CountTicker.rollDurationMs(value - this.from))
   }
 
   isAnimating(now: number): boolean {

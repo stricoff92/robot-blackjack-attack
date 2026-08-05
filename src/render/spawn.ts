@@ -225,6 +225,9 @@ function drawPaperCone(ctx: CanvasRenderingContext2D, mx: number, my: number, li
 // right; and ONLY THEN does the big sheet (which never flips) SLIDE LEFT off the cards
 // (revealing them), then get flicked off the page to the RIGHT.
 const SHEET_SPIN = 0.7 // radians the big sheet tumbles through as it flicks off right (~40°)
+// Unwrap fraction at which the big sheet starts sliding LEFT off the deck (after the
+// edge strip has peeled + tossed). Exported so the rustling sfx fires in sync with it.
+export const SHEET_SLIDE_START = 0.54
 
 function drawPlastic(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, unwrap: number, l: Layout): void {
   // Size the wrap to the deck's FULL footprint — the offset stack fans down-right, so
@@ -253,7 +256,7 @@ function drawPlastic(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   // Sheet motion: SLIDE LEFT off the cards (smoothEnd — eases to a stop just clear of the
   // deck), hold a beat, then FLICK off the page to the RIGHT (smoothStart — accelerates
   // away) while fading. slideDist = sheetW so it fully clears the deck to the left.
-  const slideLeft = smoothEnd2(clamp01((unwrap - 0.54) / 0.18))
+  const slideLeft = smoothEnd2(clamp01((unwrap - SHEET_SLIDE_START) / 0.18))
   const flick = smoothStart2(clamp01((unwrap - 0.78) / 0.22))
   const sheetX = -sheetW * slideLeft + (clear + sheetW) * flick
   const tearY = by + peel * bh

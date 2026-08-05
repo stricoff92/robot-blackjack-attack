@@ -11,7 +11,7 @@
 
 import { FULL_INTEGRITY } from '../game/run'
 import { arch2, smoothEnd2, smoothStart2 } from '../render/easing'
-import type { DealerView } from '../render/dealer'
+import { WALK_STEPS, type DealerView } from '../render/dealer'
 import type { StrikeView } from '../render/nexus'
 
 // --- laser strike + take-damage (both a plain hit and the lead-in to a kill) ---
@@ -35,8 +35,8 @@ const BROW_FEAR_TOTAL_MS = BROW_FEAR_RISE_MS + BROW_FEAR_HOLD_MS + BROW_FEAR_FAL
 export const KILL_DEATH_LEAD_MS = 260 // strike + hit reaction before the body breaks
 export const KILL_DYING_MS = 640 // the figure blows apart and falls
 export const KILL_GONE_MS = 150 // empty beat before the replacement appears
-export const KILL_ARRIVE_MS = 1000 // the new dealer walks in + eyes re-ignite (also the page-load / new-run spawn walk-in)
-export const KILL_TOTAL_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS + KILL_ARRIVE_MS // 2050
+export const KILL_ARRIVE_MS = 1300 // the new dealer walks in (WALK_STEPS strides) + eyes re-ignite (also the page-load / new-run spawn walk-in)
+export const KILL_TOTAL_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS + KILL_ARRIVE_MS // 2350
 // A death-only kill (the replacement's walk-in is deferred while the upgrade selector
 // shows): by here the figure is fully broken apart and gone. Ends the block/sequence
 // early, before the walk-in that a bundled kill would run next.
@@ -68,6 +68,12 @@ export class DealerAnimation implements DealerView, StrikeView {
   // colour to the replacement exactly when it walks in.
   private shift = 1
   private killFromShift = 1
+  // Walk-in footstep tracking (edge-detected, mirrors the token launch/land sfx):
+  // the absolute start of the walk-in we're currently reporting steps for, and how
+  // many of its WALK_STEPS footfalls have been reported. Reset when a new walk-in
+  // begins (a different start).
+  private walkStart = -1
+  private stepsFired = 0
 
   // Register the integrity change this action produced. A rising shift index is a
   // kill (old dealer destroyed); a fall in integrity with the same shift is a
@@ -140,6 +146,30 @@ export class DealerAnimation implements DealerView, StrikeView {
   // True while a standalone spawn walk-in is still sliding in (page load / new run).
   isArriving(now: number): boolean {
     return this.arriving(now) !== null
+  }
+
+  // Footfalls that have occurred since the last call, for the walk-in step sfx: each
+  // of the WALK_STEPS bob-down beats is reported once, the frame `now` first reaches
+  // it, so the caller fires one boot-thud per step. Returns how many landed this frame
+  // (0 outside a walk-in). Resets when a fresh walk-in begins. Mirrors the token
+  // launch/land edge-tracking — call it exactly once per frame.
+  footsteps(now: number): number {
+    const start = this.walkInStart()
+    if (start === null) {
+      return 0
+    }
+    if (start !== this.walkStart) {
+      this.walkStart = start
+      this.stepsFired = 0
+    }
+    let fired = 0
+    // Footfall i (0-based) lands at (i + 0.5)/WALK_STEPS of the arrival — the same
+    // fractions the |sin| walk bob dips down at (render/dealer.ts).
+    while (this.stepsFired < WALK_STEPS && now >= start + ((this.stepsFired + 0.5) / WALK_STEPS) * KILL_ARRIVE_MS) {
+      this.stepsFired += 1
+      fired += 1
+    }
+    return fired
   }
 
   // True while any strike/hit/kill sequence is playing OR the eyes are flickering
@@ -256,20 +286,25 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   arriving(now: number): number | null {
-    if (this.mode === 'spawn') {
-      if (now < this.spawnStart || now >= this.spawnStart + KILL_ARRIVE_MS) {
-        return null
-      }
-      return (now - this.spawnStart) / KILL_ARRIVE_MS
-    }
-    if (this.mode !== 'kill' || this.final || !this.killWalkIn) {
-      return null
-    }
-    const start = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
-    if (now < start || now >= start + KILL_ARRIVE_MS) {
+    const start = this.walkInStart()
+    if (start === null || now < start || now >= start + KILL_ARRIVE_MS) {
       return null
     }
     return (now - start) / KILL_ARRIVE_MS
+  }
+
+  // The absolute timestamp the current walk-in slide begins — a standalone spawn, or
+  // a kill's replacement arrival — or null when no walk-in is in play (final / death-
+  // only kills have none). Shared by arriving() and the footstep tracker so the bob
+  // and its step sfx key off one clock.
+  private walkInStart(): number | null {
+    if (this.mode === 'spawn') {
+      return this.spawnStart
+    }
+    if (this.mode === 'kill' && !this.final && this.killWalkIn) {
+      return this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
+    }
+    return null
   }
 
   // Bright red LED brightness (0..1) for the eye cores on the figure: 1 when

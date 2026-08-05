@@ -10,7 +10,7 @@ import { Session, type SessionState } from '../game/session'
 import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
@@ -18,13 +18,13 @@ import { drawHealthBar } from '../render/health'
 import { drawStrikeFx, nexusYellowLight } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
-import { drawOldDeckShred, drawShred, drawSpawnDeck } from '../render/spawn'
+import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
 import { CountTicker } from './count-ticker'
 import { BustBlockAnimation } from './bust-block-animator'
 import { DealAnimation } from './deal-animator'
-import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
+import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS, STRIKE_TRAVEL_MS } from './dealer-animator'
 import { HealthAnimation } from './health-animator'
 import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
@@ -33,6 +33,7 @@ import { PeekFlipAnimation, PEEK_FLIP_MS } from './peek-animator'
 import { ReturnAnimation } from './return-animator'
 import { TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
+import { sfx } from '../audio/sfx'
 
 // The token icon, imported once so Vite fingerprints the URL and the browser
 // fetches it a single time on load; every <img> that references it (the token
@@ -66,6 +67,14 @@ const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'hud', 'fx', 'token
 // resolve's winning hands stagger their bursts so splits cascade.
 const TOKEN_SPAWN_DELAY = 90
 const TOKEN_HAND_STAGGER = 120
+// How fast the shredder bed (sample + vacuum) fades once the last card is drawn in —
+// kept short so the sound doesn't trail past the visual shred.
+const SHRED_FADE_MS = 130
+// Spacing between a burst's per-token blips (both the launch shower from the nexus
+// and the land shower at the counter) — tight, so several sprites read as a quick
+// coin shower rather than a sparse trickle. The counter's roll is matched to the
+// land shower's length so the number lands with the last ping (see frame()).
+const TOKEN_TONE_STAGGER_MS = 45
 
 // How long a dismissed Analyze reading takes to flicker out.
 const ANALYSIS_FADE_MS = 300
@@ -182,6 +191,9 @@ class GameView {
   // True while a picked upgrade's dismiss animation plays (before the pick commits);
   // syncUpgradePanel yields the panel to the animation during this window.
   private upgradeDismissing = false
+  // Edge tracker: fire the upgrade-menu sfx the frame the choose-upgrade buttons
+  // first surface (hidden → shown), then again only after they've hidden.
+  private upgradeShown = false
   // When the current Analyze reading first appeared, so its flicker can ramp in
   // from that moment (the projection stutters on over the first few hundred ms).
   private analysisStart = 0
@@ -206,6 +218,19 @@ class GameView {
   private deckColorIncoming: number | null = null
   // Edge tracker for that commit: the riffle just ended (shuffle() went non-null → null).
   private shufflingLast = false
+  // Edge tracker for the shuffle sfx: true once the riffle passes its split phase
+  // and the piles start merging (where the clip's cascade actually sounds).
+  private shuffleMergingLast = false
+  // Previous frame's deck-unwrap progress (0..1), for firing the packaging sfx as
+  // the wrap tears open (unwrap leaves 0) and the sheet slides off left (crosses
+  // SHEET_SLIDE_START).
+  private prevUnwrap = 0
+  // Edge tracker for the shredder bed: true while the dealer is shredding cards, so
+  // the loop starts on the leading edge and fast-fades on the trailing one.
+  private shreddingLast = false
+  // Edge tracker: play the win/loss sting once, the frame the resolved hand's
+  // cards settle and the result is revealed. Reset when the round leaves resolved/over.
+  private resultRevealed = false
   // A dealer-spawn ceremony's incoming deck colour, committed to `deckColorShift`
   // (and handed back to the static table) once the new wrapped deck lands + unwraps.
   private spawnIncomingShift: number | null = null
@@ -549,6 +574,25 @@ class GameView {
     return round.hands.map((hand) => handResultLabel(hand, round.rules))
   }
 
+  // The win/loss reveal sting. A finished run ('over') keys off run.won; a normal
+  // resolve sums the hands' net chips so a split reports its overall outcome — a
+  // net gain wins, a net loss loses, an exact push stays silent.
+  private playResultSting(): void {
+    const { phase, run, round } = this.state
+    if (phase === 'over') {
+      sfx.play(run.won ? 'player-won' : 'player-lost')
+      return
+    }
+    if (phase === 'resolved' && round) {
+      const net = round.hands.reduce((sum, hand) => sum + handNet(hand, round.rules), 0)
+      if (net > 0) {
+        sfx.play('player-won')
+      } else if (net < 0) {
+        sfx.play('player-lost')
+      }
+    }
+  }
+
   // The chips layer: house + player bankroll stacks (always) plus the current
   // hand's bet chips and any in-flight payout. Uses the retained ending round
   // while the table is settling, and the frozen bankroll while a payout waits.
@@ -630,6 +674,51 @@ class GameView {
   // cards layer is touched; the overlay is synced only on the animate→idle edge.
   private readonly frame = (timestamp: number): void => {
     this.anim.setNow(timestamp)
+    // A card just launched from the shoe (one entry per fresh flight this frame) —
+    // fire the draw sfx for each. Glides (split originals) are excluded upstream.
+    const drawn = this.anim.drawnCards(timestamp).length
+    for (let i = 0; i < drawn; i += 1) {
+      sfx.play('draw-card')
+    }
+    // Reward tokens just shot out of the nexus vent — one rising tone per visible
+    // token sprite, staggered into a quick cascade (a kill's 5-sprite burst reads
+    // as a coin shower, not a single stacked blip).
+    const launched = this.tokens.launched(timestamp)
+    for (let i = 0; i < launched; i += 1) {
+      sfx.playTone('token-launch', (i * TOKEN_TONE_STAGGER_MS) / 1000)
+    }
+    // ...and the answering shower as each burst reaches the counter: one ping per
+    // visible token, tight like the launch (so it reads as a dense shower, not a
+    // sparse trickle). The counter then rolls the number up over that SAME window,
+    // so it finishes climbing exactly as the last ping lands — audio and number in
+    // step, both a quick punch rather than a long tail.
+    for (const icons of this.tokens.landed(timestamp)) {
+      for (let i = 0; i < icons; i += 1) {
+        sfx.playTone('token-land', (i * TOKEN_TONE_STAGGER_MS) / 1000)
+      }
+      const showerMs = Math.max(1, icons - 1) * TOKEN_TONE_STAGGER_MS
+      this.tokenTicker.retarget(this.displayedTokens(timestamp), timestamp, showerMs)
+    }
+    // The fresh deck's shrink-wrap: read the same unwrap fraction the renderer uses
+    // and fire the tear-open sfx as it begins peeling (unwrap leaves 0), then the
+    // rustling sfx as the big sheet starts sliding off to the left.
+    const unwrap = this.spawn.deckState(timestamp)?.unwrap ?? 0
+    if (unwrap > 0 && this.prevUnwrap <= 0) {
+      sfx.play('packaging-opening')
+    }
+    if (unwrap >= SHEET_SLIDE_START && this.prevUnwrap < SHEET_SLIDE_START) {
+      sfx.play('packaging-rustling')
+    }
+    this.prevUnwrap = unwrap
+    // The dealer's shredder: start the looping bed (shredder + vacuum) as the first
+    // card is sucked in, fast-fade it once the last is gone.
+    const shredding = this.spawn.isShredding(timestamp)
+    if (shredding && !this.shreddingLast) {
+      sfx.startShredding()
+    } else if (!shredding && this.shreddingLast) {
+      sfx.stopShredding(SHRED_FADE_MS)
+    }
+    this.shreddingLast = shredding
     // Opening walk-in hold: keep the dealer parked off-screen until the loop settles
     // into steady (~60fps) frames, THEN start the slide-in — so the one big post-load
     // frame (JIT/GC/first composite) is absorbed by the invisible hold instead of
@@ -646,6 +735,14 @@ class GameView {
         this.dealer.spawn(timestamp) // hold the figure off-screen this frame
       }
     }
+    // The dealer's walk-in footsteps: one boot-thud per bob-down beat as the figure
+    // strides to its spot (page load, New run, or a replacement after a kill). Fired
+    // off the animator's step tracker so each thud lands exactly on a visible dip;
+    // the sfx is rate-jittered per play so the strides don't sound stamped identical.
+    const steps = this.dealer.footsteps(timestamp)
+    for (let i = 0; i < steps; i += 1) {
+      sfx.play('footstep')
+    }
     // Release the frozen bankroll the moment the settling chips land (which is
     // well before the longer card gather + shuffle finishes), so the stack grows
     // or shrinks as the chips arrive.
@@ -656,12 +753,33 @@ class GameView {
     // Commit the deck's new colour the instant the riffle finishes reforming it
     // (shuffle went non-null → null): the new deck is fully riffled in, so the rest
     // of the choreography (slide-back, next deal) uses the incoming dealer's colour.
-    const shufflingNow = this.anim.shuffle() !== null
+    const shuffleT = this.anim.shuffle()
+    const shufflingNow = shuffleT !== null
+    // Fire the shuffle sfx the frame the riffle passes its split phase and the
+    // piles start merging — that's where the clip's cascade sound sits (it has no
+    // silent lead-in), and the merge is sized to the clip so they end together.
+    const merging = shuffleT !== null && shuffleT >= SHUFFLE_SPLIT_FRACTION
+    if (merging && !this.shuffleMergingLast) {
+      sfx.play('shuffle')
+    }
+    this.shuffleMergingLast = merging
     if (this.shufflingLast && !shufflingNow && this.deckColorIncoming !== null) {
       this.deckColorShift = this.deckColorIncoming
       this.deckColorIncoming = null
     }
     this.shufflingLast = shufflingNow
+    // The result just became visible — the resolved/over hand's cards have
+    // settled (same gate the Win/Lose label uses). Play the win or loss sting
+    // once; the flag resets when the round leaves the resolved/over phases.
+    const resolved = this.state.phase === 'resolved' || this.state.phase === 'over'
+    const revealed = resolved && !this.anim.isAnimating(timestamp)
+    if (revealed && !this.resultRevealed) {
+      this.resultRevealed = true
+      this.playResultSting()
+    }
+    if (!resolved) {
+      this.resultRevealed = false
+    }
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
     this.drawCards(canvas, layout, timestamp)
@@ -927,7 +1045,15 @@ class GameView {
         label.textContent = def.label
         button.append(label, costPill(def.cost))
       }
-      button.addEventListener('click', () => this.run(def.act))
+      button.addEventListener('click', () => {
+        // A powerup click fires the ability cue (and, as the first user gesture,
+        // resumes the audio context). Move buttons make no sound — it's masked by
+        // the card-draw sfx anyway.
+        if (def.group === 'power') {
+          sfx.play('ability')
+        }
+        this.run(def.act)
+      })
       this.buttons[def.key] = button
       ;(def.group === 'power' ? powers : actions).appendChild(button)
     }
@@ -972,6 +1098,7 @@ class GameView {
     if (this.upgradeDismissing) {
       return
     }
+    sfx.play('upgrade-selected')
     this.upgradeDismissing = true
     btn.classList.add('is-chosen')
     this.upgradeEl.classList.add('is-dismissing')
@@ -1106,7 +1233,7 @@ class GameView {
         }
         // The red muzzle blasts for the laser, then fades. No yellow flare — the
         // tokens already flew on the resolve; the yellow just eases out of its glow.
-        this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+        this.fireLaser(t, attackStart, isKill)
       } else if (newRun) {
         // A New run: the fresh run's opening dealer walks in and presents a new deck,
         // shredding whatever cards the old run left on the table. No laser (no attack).
@@ -1204,8 +1331,9 @@ class GameView {
           const attackStart = this.anim.animEnd
           this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, attackStart)
           // No Next hand (and no reward tokens) on the final blow: the red muzzle
-          // blasts for the laser, then fades. No yellow flare.
-          this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+          // blasts for the laser, then fades. No yellow flare. The last dealer dies,
+          // so this is always a kill (shift advanced) — the explosion sound plays.
+          this.fireLaser(t, attackStart, shiftIndex > prevShift)
         } else {
           this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
           // The nexus now holds a reward + strike to deliver: light both emitters in
@@ -1362,6 +1490,20 @@ class GameView {
     this.dealAfter = this.beginSpawn(c.prevRound, c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
 
+  // Blast the nexus's red muzzle for the laser beam at `attackStart` (from `t`, the
+  // action) and fire the attack sounds at their true moments: the laser as it fires,
+  // the impact as the beam reaches the dealer (STRIKE_TRAVEL_MS later, damage dealt),
+  // and — on a kill — the explosion as the figure blows apart (KILL_DEATH_LEAD_MS in).
+  // Centralised so every laser — deferred damage/kill and the final blow — is in step.
+  private fireLaser(t: number, attackStart: number, kill: boolean): void {
+    this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+    sfx.play('laser-prepare', Math.max(0, attackStart - t) / 1000)
+    sfx.play('laser-impact', Math.max(0, attackStart + STRIKE_TRAVEL_MS - t) / 1000)
+    if (kill) {
+      sfx.play('dealer-death', Math.max(0, attackStart + KILL_DEATH_LEAD_MS - t) / 1000)
+    }
+  }
+
   // Fire the nexus laser at the dealer for a damage/kill, starting at `startAfter`.
   // Returns when the sequence finishes — a plain hit, or the full death → walk-in
   // → recharge on a kill — so the next deal can wait for it. The +40 kill token
@@ -1431,6 +1573,10 @@ class GameView {
     // The card surfaces only once the death has finished AND a beat has passed
     // (upgradeRevealAt) — so it doesn't pop up over the dealer breaking apart.
     const reveal = choosing && !animating && timestamp >= this.upgradeRevealAt
+    if (reveal && !this.upgradeShown) {
+      sfx.play('upgrade-menu')
+    }
+    this.upgradeShown = reveal
     this.upgradeEl.classList.toggle('is-hidden', !reveal)
     this.powersEl.classList.toggle('is-hidden', choosing)
     this.actionsEl.classList.toggle('is-hidden', choosing)

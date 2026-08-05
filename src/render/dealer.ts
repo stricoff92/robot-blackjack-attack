@@ -31,6 +31,15 @@ const BROW = '#232838'
 const HOOD = '#070a10'
 const GRILLE = '#0b0e15'
 
+// The walk-in gait: the figure takes this many steps crossing from the edge to its
+// spot, dipping (bobbing DOWN) once per footfall. The footfalls are evenly spaced in
+// the walk-in progress, centred in each step's slice — footfall i (0-based) lands at
+// (i + 0.5) / WALK_STEPS. The dealer animator fires the step sfx off those SAME
+// fractions (see footsteps()), so each boot-thud lands exactly on a visible dip.
+export const WALK_STEPS = 3
+// Bob depth at a footfall, in headR-fraction units (the renderer scales by headR).
+const WALK_BOB = 0.06
+
 // What the animator exposes to this renderer. All queries take `now`.
 export interface DealerView {
   // False during the brief gap between the old dealer's death and the new one's
@@ -80,11 +89,14 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
 
   ctx.save()
   if (arriving !== null) {
-    // Slide in from off-screen RIGHT, with a subtle walk bob, fading in over the
-    // first third so it doesn't pop.
+    // Slide in from off-screen RIGHT, taking WALK_STEPS steps, fading in over the
+    // first third so it doesn't pop. Each step dips the figure DOWN then back to
+    // baseline: |sin| gives WALK_STEPS positive lobes peaking at (i + 0.5)/WALK_STEPS
+    // — the footfalls the step sfx is fired on — and rests at 0 at both ends, so the
+    // walk-in settles onto its mark with no snap.
     const slide = smoothEnd3(arriving)
     const travel = layout.width * 0.6
-    const bob = Math.sin(arriving * Math.PI * 3) * d.headR * 0.05
+    const bob = Math.abs(Math.sin(arriving * Math.PI * WALK_STEPS)) * d.headR * WALK_BOB
     ctx.translate(travel * (1 - slide), bob)
     ctx.globalAlpha = smoothEnd2(Math.min(1, arriving / 0.3))
   }

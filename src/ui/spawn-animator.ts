@@ -14,6 +14,9 @@ const SHRED_STAGGER_MS = 70 // between successive cards starting their suck
 const SHRED_SUCK_MS = 300 // one card: slot → mouth (shrinking to nothing)
 const CHUNK_LEAD_MS = SHRED_SUCK_MS * 0.5 // chunks begin halfway through the suck
 const SHRED_CHUNK_MS = 850 // one card's paper-chunk spray lifetime (bits fly far + linger)
+// A short tail on the shred window (sfx only) so the shredder keeps chewing a beat past
+// the last card before it fades — otherwise the fade-out starts feeling a touch early.
+const SHRED_SFX_TAIL_MS = 200
 
 // The previous dealer's whole DECK is shredded too — not as one lump, but card-by-card:
 // 40 backs peel off the top in rapid sequence (the resting stack shrinking as each
@@ -33,6 +36,13 @@ const DECK_SPAWN_DELAY_MS = 400 // beat held on the empty shoe after the old dec
 const DECK_FLY_MS = 400 // dealer → shoe
 const DECK_SETTLE_MS = 70 // beat on the shoe before the wrap tears
 const UNWRAP_MS = 860 // plastic opens in beats: edge strip peels + tosses → sheet slides off left → sheet flicks off right
+// A beat held partway through the unwrap — after the edge strip has torn + tossed
+// away (unwrap = UNWRAP_HOLD_AT), before the big sheet slides off left — so that
+// beat (and its rustling sfx) lands a clear UNWRAP_HOLD_MS after the tear-open,
+// instead of running straight into it. It stretches the unwrap's real duration by
+// UNWRAP_HOLD_MS but leaves the visual beats themselves unchanged.
+const UNWRAP_HOLD_AT = 0.5
+const UNWRAP_HOLD_MS = 300
 
 export interface DeckState {
   fly: number // 0..1 dealer → shoe (0 = at the dealer, 1 = landed)
@@ -46,6 +56,8 @@ export class SpawnAnimation {
   private hasOldDeck = false // whether the previous dealer's deck gets shredded too
   private deckShredStart = 0 // old deck: first card peels off the top
   private deckShredEnd = 0 // old deck: last card fully drawn in (shoe clear)
+  private shredStartAt = 0 // first card begins being sucked into the mouth
+  private shredEndAt = 0 // last card drawn in + a short sfx tail; 0 = nothing to shred
   private deckFlyStart = 0 // fresh deck: dealer → shoe
   private deckFlyEnd = 0
   private unwrapStart = 0
@@ -72,6 +84,14 @@ export class SpawnAnimation {
     const lastDeckCardStart = this.deckShredStart + (DECK_SHRED_CARDS - 1) * DECK_CARD_STAGGER_MS
     this.deckShredEnd = lastDeckCardStart + DECK_CARD_SUCK_MS
 
+    // The shred window (for the shredder sfx): the cards being sucked into the mouth,
+    // ending a short tail past the last one being fully drawn in — the lingering paper
+    // chunks aren't part of it. Empty on the opening intro (nothing to shred).
+    const hasCards = this.n > 0 || this.hasOldDeck
+    this.shredStartAt = hasCards ? now : 0
+    const lastCardIn = this.hasOldDeck ? this.deckShredEnd : now + lastCardSuckEnd
+    this.shredEndAt = hasCards ? lastCardIn + SHRED_SFX_TAIL_MS : 0
+
     // The fresh deck flies out once the shoe is clear. With an old deck shredded, hold a
     // DECK_SPAWN_DELAY_MS beat on the empty shoe first (a clear gap between the old deck
     // vanishing and the new one arriving); on the intro (no old deck) it instead leaves the
@@ -82,7 +102,7 @@ export class SpawnAnimation {
     this.deckFlyStart = Math.max(now, deckFlyBase)
     this.deckFlyEnd = this.deckFlyStart + DECK_FLY_MS
     this.unwrapStart = this.deckFlyEnd + DECK_SETTLE_MS
-    this.unwrapEnd = this.unwrapStart + UNWRAP_MS
+    this.unwrapEnd = this.unwrapStart + UNWRAP_MS + UNWRAP_HOLD_MS
 
     const lastCardChunkEnd =
       this.n > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
@@ -95,6 +115,13 @@ export class SpawnAnimation {
 
   isAnimating(now: number): boolean {
     return this.begun && now < this.endAt
+  }
+
+  // True while cards are being sucked into the mouth + shredded — drives the shredder
+  // sfx. False before it starts, once the last card is in, and on the intro (nothing
+  // to shred).
+  isShredding(now: number): boolean {
+    return this.begun && this.shredEndAt > this.shredStartAt && now >= this.shredStartAt && now < this.shredEndAt
   }
 
   // Card `i`'s suck-in progress: null while it's still resting on the felt (draw it
@@ -180,9 +207,24 @@ export class SpawnAnimation {
       return { fly: 1, unwrap: 0 }
     }
     if (now < this.unwrapEnd) {
-      return { fly: 1, unwrap: (now - this.unwrapStart) / UNWRAP_MS }
+      return { fly: 1, unwrap: this.unwrapProgress(now - this.unwrapStart) }
     }
     return { fly: 1, unwrap: 1 }
+  }
+
+  // Real elapsed unwrap time → unwrap fraction (0..1), with a plateau at
+  // UNWRAP_HOLD_AT: the fraction climbs at the base rate, freezes there for
+  // UNWRAP_HOLD_MS (the strip is gone, the sheet not yet sliding), then resumes —
+  // so the slide-left beat is pushed UNWRAP_HOLD_MS later without altering its shape.
+  private unwrapProgress(elapsed: number): number {
+    const holdStart = UNWRAP_HOLD_AT * UNWRAP_MS
+    if (elapsed < holdStart) {
+      return elapsed / UNWRAP_MS
+    }
+    if (elapsed < holdStart + UNWRAP_HOLD_MS) {
+      return UNWRAP_HOLD_AT
+    }
+    return (elapsed - UNWRAP_HOLD_MS) / UNWRAP_MS
   }
 }
 

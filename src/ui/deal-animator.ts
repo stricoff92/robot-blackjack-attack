@@ -26,7 +26,10 @@ const COLLECT_MS = 380 // per card: flip face-down in place, then fly to the dec
 const COLLECT_STAGGER = 55 // between cards being gathered
 const SHUFFLE_GAP = 130 // pause between the last card landing and the riffle
 const SLIDE_MS = 220 // deck slides out to centre (and back) for the shuffle
-const SHUFFLE_MS = 450 // riffle shuffle (one pass)
+// Riffle shuffle (one pass). Sized so its MERGE phase — the 0.7 of the pass after
+// the 0.3 split (SHUFFLE_SPLIT_FRACTION) — lasts the 0.43s of the shuffle clip, which
+// fires when the merge begins: 430 / 0.7 ≈ 614. The split before it is silent.
+const SHUFFLE_MS = 614
 
 type Phase = SessionState['phase']
 
@@ -38,6 +41,10 @@ interface CardTiming {
 export class DealAnimation implements CardAnim {
   private readonly cards = new Map<string, CardTiming>()
   private readonly collectStart = new Map<string, number>()
+  // Card keys whose shoe-draw is already accounted for (a draw sfx has fired,
+  // or it's a glide that shouldn't make one). Lets drawnCards() report each
+  // fresh flight exactly once. Cleared on reset; a re-placed key re-fires.
+  private readonly firedFlights = new Set<string>()
   // End-of-hand deck sequence: slide out to centre → shuffle → slide back.
   private slideOutStart: number | null = null
   private shuffleStart: number | null = null
@@ -124,6 +131,8 @@ export class DealAnimation implements CardAnim {
       // Flight runs now → now + FLIGHT_MS; flipStart in the past pins flip at 1 so
       // the card stays face-up through the glide (no re-flip).
       this.cards.set(key, { flightStart: now, flipStart: now - FLIP_MS })
+      // A glide of an already-dealt card, not a shoe draw — suppress its draw sfx.
+      this.firedFlights.add(key)
       this.end = Math.max(this.end, now + FLIGHT_MS)
     }
     let cursor = now + FLIGHT_MS + ACTION_GAP
@@ -185,6 +194,20 @@ export class DealAnimation implements CardAnim {
     return { flight, flip, collect }
   }
 
+  // Card keys whose flight has just begun since the last call — one entry per
+  // card newly launched from the shoe, for firing the draw sfx. Glides (split
+  // originals) are pre-marked, so only genuine shoe draws are reported.
+  drawnCards(now: number): string[] {
+    const started: string[] = []
+    for (const [key, timing] of this.cards) {
+      if (!this.firedFlights.has(key) && now >= timing.flightStart) {
+        this.firedFlights.add(key)
+        started.push(key)
+      }
+    }
+    return started
+  }
+
   // 0..1 progress of the deck riffle, or null when not shuffling.
   shuffle(): number | null {
     if (this.shuffleStart === null || this.shuffleStop === null) {
@@ -201,6 +224,7 @@ export class DealAnimation implements CardAnim {
   private reset(now: number): void {
     this.cards.clear()
     this.collectStart.clear()
+    this.firedFlights.clear()
     this.slideOutStart = null
     this.shuffleStart = null
     this.shuffleStop = null
@@ -212,6 +236,9 @@ export class DealAnimation implements CardAnim {
   private place(key: string, flightStart: number, autoFlip: boolean): number {
     const flipStart = autoFlip ? flightStart + FLIGHT_MS + LAND_DELAY : null
     this.cards.set(key, { flightStart, flipStart })
+    // A freshly placed card is a new shoe draw — clear any prior fire so its
+    // flight re-triggers the draw sfx (re-deals: split, mulligan).
+    this.firedFlights.delete(key)
     const finish = flipStart !== null ? flipStart + FLIP_MS : flightStart + FLIGHT_MS
     this.end = Math.max(this.end, finish)
     return finish

@@ -40,6 +40,8 @@ interface Flight {
   start: number
   end: number
   spin: number
+  launchReported: boolean // its lift-off sfx has been reported (see launched())
+  landReported: boolean // its arrival sfx has been reported (see landed())
 }
 
 export class TokenAnimation implements TokenView {
@@ -64,8 +66,40 @@ export class TokenAnimation implements TokenView {
       start: startAfter,
       end,
       spin: Math.random(),
+      launchReported: false,
+      landReported: false,
     })
     this.end = Math.max(this.end, end)
+  }
+
+  // How many token SPRITES have lifted off from the nexus since the last call —
+  // summed across newly-launched bursts (a burst shows `icons` sprites), so the
+  // launch sfx fires once per visible token, not once per burst. Reports each
+  // burst exactly once, the frame `now` first reaches its lift-off.
+  launched(now: number): number {
+    let sprites = 0
+    for (const flight of this.flights) {
+      if (!flight.launchReported && now >= flight.start) {
+        flight.launchReported = true
+        sprites += flight.icons
+      }
+    }
+    return sprites
+  }
+
+  // The bursts that reached the counter since the last call — each as its sprite
+  // count, so the caller can fire one increment ping per visible token and size the
+  // counter's roll to that shower. Reports each burst once; a landed flight is held
+  // (prune) until reported so a click can't drop it unheard.
+  landed(now: number): number[] {
+    const arrived: number[] = []
+    for (const flight of this.flights) {
+      if (!flight.landReported && now >= flight.end) {
+        flight.landReported = true
+        arrived.push(flight.icons)
+      }
+    }
+    return arrived
   }
 
   // Tokens still on their way to the counter (started or not) — the amount the
@@ -97,10 +131,11 @@ export class TokenAnimation implements TokenView {
     return out
   }
 
-  // Drop flights that have already landed, so the list can't grow without bound.
+  // Drop flights that have already landed AND had their arrival reported, so the
+  // list can't grow without bound but no landing sfx is pruned before it fires.
   private prune(now: number): void {
     if (this.flights.length > 0) {
-      this.flights = this.flights.filter((flight) => now < flight.end)
+      this.flights = this.flights.filter((flight) => now < flight.end || !flight.landReported)
     }
   }
 }
