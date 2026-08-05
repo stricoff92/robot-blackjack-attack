@@ -10,7 +10,7 @@ import { Session, type SessionState } from '../game/session'
 import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
@@ -22,6 +22,7 @@ import { drawOldDeckShred, drawShred, drawSpawnDeck } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
 import { CountTicker } from './count-ticker'
+import { BustBlockAnimation } from './bust-block-animator'
 import { DealAnimation } from './deal-animator'
 import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS } from './dealer-animator'
 import { HealthAnimation } from './health-animator'
@@ -134,6 +135,9 @@ class GameView {
   private readonly tokens = new TokenAnimation()
   private readonly mulligan = new MulliganAnimation()
   private readonly returnAnim = new ReturnAnimation()
+  // The Bust Block shield's reveal: the caught busting card is shown, then swept
+  // off, before any replacement is dealt.
+  private readonly bustBlock = new BustBlockAnimation()
   private readonly peekFlip = new PeekFlipAnimation()
   // The dealer-spawn ceremony: shred the previous dealer's cards into the new
   // dealer's mouth, then fly in a fresh shrink-wrapped deck + tear off the plastic.
@@ -155,6 +159,9 @@ class GameView {
   private lastDealerBlocking = false
   // The card being returned (flips + flies back to the deck) and where it set off.
   private returnCardData: { card: Card; from: Point } | null = null
+  // The busting card the Bust Block shield caught, with the hand + slot it's shown
+  // on. Drawn (over the settled hand) while `bustBlock` animates.
+  private bustBlockData: { handIndex: number; cardIndex: number; card: Card } | null = null
   // The Peek Deck card, retained so it can keep drawing through its flip-DOWN
   // (which plays after `foresightCard` has already cleared on the next move).
   private peekCard: Card | null = null
@@ -466,6 +473,17 @@ class GameView {
       drawReturnCard(ctx, layout, card, from.x, from.y, f.flip, f.fly)
     }
 
+    // Bust Block: the shield caught a busting draw — reveal that card (the bust the
+    // player hit) on its slot, catch it in the gold ring, then sweep it off. The
+    // replacement, if any, is held back until this finishes (scheduled in run()).
+    if (this.bustBlockData && this.bustBlock.isAnimating(timestamp)) {
+      const round = this.state.round ?? this.collectRound
+      if (round) {
+        const { handIndex, cardIndex, card } = this.bustBlockData
+        drawBustBlock(ctx, layout, round, handIndex, cardIndex, card, this.bustBlock.frame(timestamp))
+      }
+    }
+
     // The Analyze readout sits in the band between the two hands. Only while a
     // reading is live and the table is settled — never over cards in flight. It
     // shimmers, so `timestamp` drives it and the loop is kept alive below.
@@ -657,7 +675,10 @@ class GameView {
     this.updateTokenCounter(timestamp)
 
     const sequenceAnimating =
-      this.anim.isAnimating(timestamp) || this.chips.isAnimating(timestamp) || this.spawn.isAnimating(timestamp)
+      this.anim.isAnimating(timestamp) ||
+      this.chips.isAnimating(timestamp) ||
+      this.spawn.isAnimating(timestamp) ||
+      this.bustBlock.isAnimating(timestamp)
 
     // The card + chip sequence just finished: run the one-time settle. The health
     // bar may keep animating past this point (its drop lands after the reveal) —
@@ -1125,8 +1146,13 @@ class GameView {
       const mulliganed = !!prevRound && !prevRound.mulliganed && !!round && round.mulliganed
       const split =
         prevPhase === 'playing' && !!prevRound && prevRound.hands.length === 1 && !!round && round.hands.length === 2
+      // Bust Block fired: the shield spends by recording the busting draw it caught
+      // in `round.burned`, which is null until then — so a freshly-set `burned` is
+      // the shield triggering on this hit.
+      const bustBlocked = prevPhase === 'playing' && !!prevRound && !!round && !prevRound.burned && !!round.burned
       this.splitPrev = null // stale after any action; the split branch re-sets it
       this.returnCardData = null
+      this.bustBlockData = null
       if (returned && prevRound && round) {
         // Flip the returned card face-down + fly it back onto the deck, THEN a
         // short beat, THEN the dealer reveals its hole and plays out.
@@ -1154,6 +1180,15 @@ class GameView {
         if (this.state.phase !== 'playing') {
           this.anim.sync(prevPhase, this.state, this.anim.animEnd)
         }
+      } else if (bustBlocked && prevRound && round && round.burned) {
+        // Reveal the busting card on the active hand's next slot, catch it in the
+        // shield, then sweep it off — and only THEN deal any replacement + play the
+        // dealer out (anim.sync scheduled from the reveal's end). A Peek Deck card
+        // showing (the very card that busted) flips down first, so lead by dealLead.
+        const cardIndex = prevRound.hands[ai].cards.length
+        this.bustBlockData = { handIndex: ai, cardIndex, card: round.burned }
+        const ejectEnd = this.bustBlock.begin(t + dealLead)
+        this.anim.sync(prevPhase, this.state, ejectEnd)
       } else {
         // A hit/stand/double: if a Peek Deck card was showing, hold the deal back
         // by the flip-down so the top card flips face-down before it's drawn.
@@ -1202,7 +1237,8 @@ class GameView {
     }
 
     this.syncOverlay(t) // reflect the new state immediately (disable while animating)
-    this.lastAnimating = this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t)
+    this.lastAnimating =
+      this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t) || this.bustBlock.isAnimating(t)
     this.ensureLoop()
   }
 
@@ -1359,7 +1395,8 @@ class GameView {
       this.anim.isAnimating(timestamp) ||
       this.dealer.isBlocking(timestamp) ||
       this.dealer.isArriving(timestamp) ||
-      this.spawn.isAnimating(timestamp)
+      this.spawn.isAnimating(timestamp) ||
+      this.bustBlock.isAnimating(timestamp)
 
     // Point the counter at its current value (tokens still flying are withheld);
     // the frame loop rolls it up as they land.

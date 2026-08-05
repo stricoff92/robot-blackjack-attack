@@ -13,11 +13,15 @@ import {
   freezeDealer,
   handNet,
   hit,
+  isDealerDowngraded,
+  isDealerHijacked,
+  isHandUpgraded,
   lateDouble,
   mulligan,
   payout,
   type PlayerHand,
   returnCard,
+  type RoundRules,
   split,
   stand,
   startRound,
@@ -349,5 +353,60 @@ describe('mulligan', () => {
 
     expect(outcomeOf(round)).toBe('blackjack')
     expect(payout(round)).toBe(75)
+  })
+})
+
+// Display predicates used to badge the score with the roguelite upgrade that
+// altered it (see render/cards.ts). They mirror the resolution logic, not new
+// behaviour.
+describe('upgrade score badges', () => {
+  function rules(patch: Partial<RoundRules>): RoundRules {
+    return { ...DEFAULT_ROUND_RULES, ...patch }
+  }
+
+  it('isDealerDowngraded marks a dealer that stood under 21 only with the T3 rule', () => {
+    // Player 19 stands; dealer K,Q = 20 stands. Downgraded to 19 → push.
+    const shoe = [card('K'), card('9'), card('K', 'hearts'), card('Q')]
+    const downgraded = stand(startRound(shoe, 50, rules({ dealerDowngrade: true })))
+    expect(isDealerDowngraded(downgraded)).toBe(true)
+    expect(outcomeOf(downgraded)).toBe('push') // 19 vs downgraded 19
+
+    const normal = stand(startRound(shoe, 50))
+    expect(isDealerDowngraded(normal)).toBe(false) // rule off
+    expect(outcomeOf(normal)).toBe('lose') // 19 vs 20
+  })
+
+  it('isDealerDowngraded never marks a dealer natural (21 is not under 21)', () => {
+    // Dealer A,K = 21 natural; the round resolves at the deal.
+    const shoe = [card('9'), card('7'), card('A'), card('K')]
+    const round = startRound(shoe, 50, rules({ dealerDowngrade: true }))
+    expect(isDealerDowngraded(round)).toBe(false)
+  })
+
+  it('isDealerHijacked marks a hijacked dealt natural only with the T2 rule', () => {
+    // Dealer A,K natural; player 16. Hijack steals it into a player blackjack.
+    const shoe = [card('9'), card('7'), card('A'), card('K')]
+    const hijacked = startRound(shoe, 50, rules({ hijackDealerNatural: true }))
+    expect(isDealerHijacked(hijacked)).toBe(true)
+    expect(outcomeOf(hijacked)).toBe('blackjack')
+
+    const normal = startRound(shoe, 50)
+    expect(isDealerHijacked(normal)).toBe(false)
+    expect(outcomeOf(normal)).toBe('lose')
+  })
+
+  it('isHandUpgraded marks an auto-blackjack lift but not a genuine natural', () => {
+    // Chip eco T3: a dealt 20 is lifted to a natural blackjack.
+    const lifted = startRound([card('K'), card('Q'), card('9'), card('7')], 50, rules({ autoBlackjackAt: 20 }))
+    expect(isHandUpgraded(lifted.hands[0], lifted.rules)).toBe(true)
+    expect(outcomeOf(lifted)).toBe('blackjack')
+
+    // A real two-card 21 is a natural, not an upgrade — even with the rule on.
+    const natural = startRound([card('A'), card('K'), card('9'), card('7')], 50, rules({ autoBlackjackAt: 20 }))
+    expect(isHandUpgraded(natural.hands[0], natural.rules)).toBe(false)
+
+    // Same dealt 20 without the upgrade rule is just a 20 — never a natural.
+    const plain = startRound([card('K'), card('Q'), card('9'), card('7')], 50)
+    expect(isHandUpgraded(plain.hands[0], plain.rules)).toBe(false)
   })
 })

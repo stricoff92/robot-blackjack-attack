@@ -7,13 +7,27 @@
 
 import type { Card } from '../game/deck'
 import { evaluateHand } from '../game/hand'
-import type { Round } from '../game/round'
+import { isDealerDowngraded, isDealerHijacked, isHandUpgraded, type Round } from '../game/round'
 import { activeCardBack, blitCard, getCardSprite } from './card-sprite'
 import { smoothEnd3, smoothStart2, smoothStep } from './easing'
 import type { CardBack } from './palette'
 import { dealerBox, dealerEyes, type DealerEyes, type Layout } from './scene'
 
 const CARD_RATIO = 0.7 // width / height, roughly a real playing card
+
+// Score-note colours, keyed to the upgrade path that produced the effect (see
+// game/upgrades.ts UPGRADE_PATHS): sabotage red for the dealer's hijack/downgrade
+// notes, payout blue for a player hand upgraded to a natural. Brightened from the
+// button hues so they read over the felt.
+const NOTE_SABOTAGE = '#ff6a6a'
+const NOTE_PAYOUT = '#6aa8ff'
+
+// Bust Block reveal (drawBustBlock): the "BUST" tag is danger-red; the shield
+// ring that catches the card is gold — the same hue the armed Bust Block button
+// pulses (game-view.css .is-active), so the block reads as that shield firing.
+const BUST_BLOCK_RED = '#ff5a4a'
+const SHIELD_GOLD = '#ffd76e'
+const SHIELD_GLOW = 'rgba(255, 196, 74, 0.95)'
 
 // Shoe (deck) stack geometry — also the origin point for deal animations.
 const SHOE_LAYERS = 6
@@ -49,6 +63,17 @@ export interface CardAnim {
 export interface RoundResult {
   label: string // e.g. "Win +50", "Lose -50", "Push", "Bust -50"
   tone: 'win' | 'lose' | 'push'
+}
+
+// A small status tag drawn by a hand's count when a roguelite upgrade altered it —
+// the dealer's total was hijacked/downgraded, or a player hand was upgraded to a
+// natural. `'right'` sits it just right of the (centred) count; `'above'` stacks it
+// over the count, left-aligned with it — used for the player so it clears the
+// bottom-left ability buttons on a narrow screen.
+interface ScoreNote {
+  text: string
+  color: string
+  side: 'above' | 'right'
 }
 
 // Stable identity for a card slot, shared by the renderer and the animator.
@@ -192,7 +217,7 @@ export function drawHands(
   const countPx = clamp(cardH * 0.32, 18, 40)
   const shownDealer = faceUpDealer(round, revealHole, anim)
   if (shownDealer.length > 0) {
-    drawCount(ctx, evaluateHand(shownDealer).total, l.width / 2, dealerY + cardH + cardH * 0.22, countPx)
+    drawCount(ctx, evaluateHand(shownDealer).total, l.width / 2, dealerY + cardH + cardH * 0.22, countPx, undefined, dealerNote(round, shownDealer))
   }
 
   // Player hand(s): the cards rest on top of the bet chips, so the total goes
@@ -222,8 +247,14 @@ export function drawHands(
       drawDealt(ctx, key, xs[ci], playerY, w, h, card, false, true, anim, from, dpr)
     })
     if (laneSettled(hand.cards.length, (ci) => playerKey(hi, ci), anim)) {
-      // Each hand shows its own win/loss/push — both halves of a split settle.
-      drawCount(ctx, evaluateHand(hand.cards).total, centerX, playerY - cardH * 0.34, countPx, results?.[hi])
+      // Each hand shows its own win/loss/push — both halves of a split settle. A
+      // hand lifted to a natural by the auto-blackjack upgrade is badged "Upgraded"
+      // above the count (clear of the result on the right and the ability buttons
+      // to the left).
+      const note: ScoreNote | undefined = isHandUpgraded(hand, round.rules)
+        ? { text: 'Upgraded', color: NOTE_PAYOUT, side: 'above' }
+        : undefined
+      drawCount(ctx, evaluateHand(hand.cards).total, centerX, playerY - cardH * 0.34, countPx, results?.[hi], note)
     }
   })
 }
@@ -402,9 +433,29 @@ function laneSettled(count: number, key: (index: number) => string, anim?: CardA
   return true
 }
 
+// The sabotage tag beside the dealer's total, or undefined. Shown only once the
+// hand is fully revealed at settle: a hijacked dealt natural, or a standing total
+// counted one lower. Gated on `resolved` so a mid-play Peek Dealer (which reveals
+// the hole early) never shows a downgrade the settle hasn't applied; the downgrade
+// tag further waits until a hand was actually judged against the dealer, so an
+// all-bust round (dealer never plays) doesn't badge its untouched dealt cards.
+function dealerNote(round: Round, shownDealer: readonly Card[]): ScoreNote | undefined {
+  if (round.status !== 'resolved' || shownDealer.length !== round.dealer.length) {
+    return undefined
+  }
+  if (isDealerHijacked(round)) {
+    return { text: 'Hijacked', color: NOTE_SABOTAGE, side: 'right' }
+  }
+  const judged = round.hands.some((h) => h.outcome === 'win' || h.outcome === 'lose' || h.outcome === 'push')
+  if (isDealerDowngraded(round) && judged) {
+    return { text: '(-1)', color: NOTE_SABOTAGE, side: 'right' }
+  }
+  return undefined
+}
+
 // A hand's total, big and centered on `centerX` (so the two hands' counts line
 // up vertically). A result, when present, is drawn to the RIGHT of the count
-// without moving it — the count stays put.
+// without moving it — the count stays put. An upgrade `note` sits on its own side.
 function drawCount(
   ctx: CanvasRenderingContext2D,
   total: number,
@@ -412,6 +463,7 @@ function drawCount(
   y: number,
   countPx: number,
   result?: RoundResult,
+  note?: ScoreNote,
 ): void {
   const text = String(total)
   ctx.save()
@@ -420,12 +472,24 @@ function drawCount(
   ctx.textAlign = 'center'
   ctx.font = `bold ${countPx}px system-ui, sans-serif`
   shadowText(ctx, text, centerX, y, '#f3e9d2')
+  const countW = ctx.measureText(text).width // measured with the count font
+  const gap = countPx * 0.35
 
   if (result) {
-    const countW = ctx.measureText(text).width // measured with the count font
     ctx.textAlign = 'left'
     ctx.font = `bold ${Math.round(countPx * 0.78)}px system-ui, sans-serif`
-    shadowText(ctx, result.label, centerX + countW / 2 + countPx * 0.35, y, resultColor(result.tone))
+    shadowText(ctx, result.label, centerX + countW / 2 + gap, y, resultColor(result.tone))
+  }
+
+  if (note) {
+    ctx.font = `bold ${Math.round(countPx * 0.6)}px system-ui, sans-serif`
+    ctx.textAlign = 'left'
+    if (note.side === 'above') {
+      // Stacked over the count, its left edge on the count's left edge.
+      shadowText(ctx, note.text, centerX - countW / 2, y - countPx * 0.75, note.color)
+    } else {
+      shadowText(ctx, note.text, centerX + countW / 2 + gap, y, note.color)
+    }
   }
   ctx.restore()
 }
@@ -665,6 +729,16 @@ export interface DiscardFrame {
   fly: number // 0 = resting in its slot, 1 = merged into the deck
 }
 
+// The Bust Block reveal's progress at a moment; produced by the bust-block
+// animator (ui) and consumed by drawBustBlock. Same render-owns-the-shape
+// arrangement as DiscardFrame.
+export interface BustBlockFrame {
+  flight: number // 0→1 shoe → slot
+  flip: number // 1 = face-up, 0 = face-down
+  fly: number // 0→1 slot → dealer muck (0 until the eject)
+  shield: number // 0→1 shield-catch intensity (the ring + "BUST" tag)
+}
+
 // The mulligan discard: the tossed opening cards (frames from the mulligan
 // animator) flip face-down and are swept up to the DEALER, who mucks them. Their
 // slots use the same hand-0 geometry as drawHands, so they set off from where the
@@ -724,6 +798,105 @@ export function drawReturnCard(
   // Fade out over the back half so it dissolves into the deck rather than stopping.
   const alpha = fly < 0.6 ? 1 : Math.max(0, 1 - (fly - 0.6) / 0.4)
   drawFlipCard(ctx, card, x, y, w, h, flip, alpha, dpr)
+}
+
+// The Bust Block reveal: the busting draw the shield caught, shown on the active
+// hand's next slot so the player sees the bust they hit. It flies in from the
+// shoe, flips up inside a gold shield ring (with a red "BUST" tag), then flips
+// down and is swept off to the dealer's muck. Drawn ON TOP of the settled hand
+// (after drawHands); GameView holds any replacement card back until this ends, so
+// the slot stays free while the busting card occupies it. `cardIndex` may be one
+// past the hand's last card (a replacement that also busted leaves it shorter).
+export function drawBustBlock(
+  ctx: CanvasRenderingContext2D,
+  l: Layout,
+  round: Round,
+  handIndex: number,
+  cardIndex: number,
+  card: Card,
+  frame: BustBlockFrame,
+): void {
+  const dpr = window.devicePixelRatio || 1
+  const count = round.hands.length
+  const { w: cardW, h: cardH } = cardSize(l)
+  const scale = handCardScale(l, count)
+  const w = cardW * scale
+  const h = cardH * scale
+  const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const centerX = handCenterX(l, handIndex, count)
+  // Slot it among the hand's cards, matching rowXs' overlap — but extended so the
+  // index can sit one past the last card (rowXs itself stops at the hand's end).
+  const handLen = round.hands[handIndex].cards.length
+  const step = w * 0.5
+  const spread = w + step * Math.max(0, handLen - 1)
+  const slotX = centerX - spread / 2 + step * cardIndex
+
+  const shoe = shoeAnchor(l)
+  let x = slotX
+  let y = playerY
+  let alpha = 1
+  if (frame.fly > 0) {
+    // Ejecting: sweep to the dealer's muck (same target as the mulligan discard),
+    // fading into it over the back half of the trip.
+    const d = dealerBox(l)
+    const targetX = d.cx - w / 2
+    const targetY = (d.bodyTop + d.baseY) / 2 - h / 2
+    const e = smoothStep(frame.fly)
+    x = slotX + (targetX - slotX) * e
+    y = playerY + (targetY - playerY) * e
+    alpha = frame.fly < 0.6 ? 1 : Math.max(0, 1 - (frame.fly - 0.6) / 0.4)
+  } else if (frame.flight < 1) {
+    // Flying in from the shoe.
+    const e = smoothEnd3(frame.flight)
+    x = shoe.x + (slotX - shoe.x) * e
+    y = shoe.y + (playerY - shoe.y) * e
+  }
+
+  // The gold shield ring catching the card, drawn behind it so the card sits
+  // inside. Only while the card rests on the slot (not in flight, not ejecting).
+  if (frame.shield > 0 && frame.fly <= 0) {
+    drawShieldCatch(ctx, x, y, w, h, frame.shield)
+  }
+  drawFlipCard(ctx, card, x, y, w, h, frame.flip, alpha, dpr)
+
+  // "BUST" over the card once its face has turned up, so the blocked bust reads
+  // at a glance. Tied to the card (not the hand's count line, which a second
+  // split hand or a surviving replacement may be using).
+  if (frame.shield > 0 && frame.fly <= 0 && frame.flip >= 0.5) {
+    ctx.save()
+    ctx.globalAlpha = Math.min(1, frame.shield)
+    ctx.textBaseline = 'alphabetic'
+    ctx.textAlign = 'center'
+    ctx.font = `bold ${Math.round(clamp(cardH * 0.32, 18, 40) * 0.9)}px system-ui, sans-serif`
+    shadowText(ctx, 'BUST', x + w / 2, y - h * 0.14, BUST_BLOCK_RED)
+    ctx.restore()
+  }
+}
+
+// The gold ring (themed to the armed Bust Block button's glow) that snaps around
+// the busting card as the shield catches it; `intensity` 0→1 drives its presence.
+function drawShieldCatch(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  intensity: number,
+): void {
+  const pad = h * 0.08
+  const radius = h * 0.12
+  ctx.save()
+  ctx.globalAlpha = Math.min(1, intensity)
+  ctx.beginPath()
+  ctx.roundRect(x - pad, y - pad, w + pad * 2, h + pad * 2, radius)
+  ctx.fillStyle = 'rgba(255, 214, 110, 0.12)'
+  ctx.fill()
+  ctx.lineWidth = Math.max(2.5, h * 0.05)
+  ctx.strokeStyle = SHIELD_GOLD
+  ctx.shadowColor = SHIELD_GLOW
+  ctx.shadowBlur = h * 0.22
+  ctx.stroke()
+  ctx.restore()
 }
 
 // Peek Deck: the shoe's top card flipped up in place so the player can read the

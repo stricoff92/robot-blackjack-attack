@@ -272,6 +272,13 @@ export function handNet(hand: PlayerHand, rules: RoundRules): number {
   return handPayout(hand, rules)
 }
 
+// Chip eco T2/T3 (see reachesAutoBlackjack): whether this hand was lifted to a
+// natural blackjack by reaching the auto-blackjack total — as opposed to being
+// dealt a genuine two-card 21, which needs no upgrade. Used to badge the score.
+export function isHandUpgraded(hand: PlayerHand, rules: RoundRules): boolean {
+  return reachesAutoBlackjack(hand.cards, rules) && !isBlackjack(hand.cards)
+}
+
 function newHand(cards: Card[], bet: number, splitAce: boolean): PlayerHand {
   return { cards, bet, doubled: false, splitAce, finished: false, busted: false, outcome: null }
 }
@@ -409,6 +416,22 @@ export function dealerSettleTotal(round: Round): number {
     return total - 1
   }
   return total
+}
+
+// Anti-dealer T3 (rules.dealerDowngrade): whether the dealer's standing total is
+// currently being counted one lower — true exactly when dealerSettleTotal applies
+// the −1 (the dealer stood under 21). A natural or a bust is never marked. Callers
+// showing this should also confirm the round resolved, since during play the hole
+// is hidden (or a Peek reveals it early) before the downgrade actually bites.
+export function isDealerDowngraded(round: Round): boolean {
+  return round.rules.dealerDowngrade && evaluateHand(round.dealer).total < 21
+}
+
+// Anti-dealer T2 (rules.hijackDealerNatural): whether the dealer's dealt natural
+// blackjack was hijacked into a player win. A natural is the only 21 isBlackjack
+// recognises (two cards), so this is exactly the hijacked-hand case.
+export function isDealerHijacked(round: Round): boolean {
+  return round.rules.hijackDealerNatural && isBlackjack(round.dealer)
 }
 
 function settleAgainstDealer(round: Round): Round {
