@@ -6,6 +6,7 @@
 //   ?forcePairs        — every deal gives the player a splittable pair
 //   ?forcePairs=8      — ...specifically a pair of that rank (2-10, J, Q, K, A)
 //   ?tokens=200        — start the run with this many tokens (test powerups without grinding)
+//   ?chips=5000        — start the run with this many chips (test the wealth-floor bet)
 //   ?dealerHealth=50   — start the first dealer at this % health (1-100), e.g. to see the
 //                        low-health eye flicker without playing a dealer down
 //   ?dealer=6          — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
@@ -32,6 +33,8 @@ export interface DebugFlags {
   forcePairRank: Rank | null
   /** Start the run with this many tokens; null = the normal starting balance (0). */
   startTokens: number | null
+  /** Start the run with this many chips; null = the normal starting balance (300). */
+  startChips: number | null
   /** Start the first dealer at this % health (1-100); null = full. */
   dealerHealth: number | null
   /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
@@ -50,6 +53,7 @@ const OFF: DebugFlags = {
   forcePairs: false,
   forcePairRank: null,
   startTokens: null,
+  startChips: null,
   dealerHealth: null,
   startDealer: null,
   sabotageUpgrade: null,
@@ -70,6 +74,7 @@ export function readDebugFlags(): DebugFlags {
     forcePairs: params.has('forcePairs'),
     forcePairRank,
     startTokens: parseStartTokens(params.get('tokens')),
+    startChips: parseStartChips(params.get('chips')),
     dealerHealth: parseDealerHealth(params.get('dealerHealth')),
     startDealer: parseStartDealer(params.get('dealer')),
     sabotageUpgrade: parseUpgradeTier(params.get('sabotageUpgrade')),
@@ -86,6 +91,16 @@ function parseStartTokens(raw: string | null): number | null {
   }
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
+}
+
+// A positive integer chip count (>= 1, since 0 chips ends the run), or null if the
+// param is absent/empty/invalid.
+function parseStartChips(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null
 }
 
 // A health percentage clamped to 1..100, or null if absent/empty/invalid. Clamped

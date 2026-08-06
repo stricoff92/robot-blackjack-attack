@@ -5,7 +5,7 @@ import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
-import { DESTROY_TOKEN, isLastCall, nextBet, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
+import { DESTROY_TOKEN, isLastCall, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
 import { Session, type SessionState } from '../game/session'
 import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
@@ -82,6 +82,9 @@ const ANALYSIS_FADE_MS = 300
 // Beat after the won chips collect into the player's stack before the nexus fires
 // its damage laser — so the payout finishes landing before the attack, never during.
 const LASER_GAP = 180
+// Beat after a lost hand's cards settle before the yellow heal beam lifts off (a
+// late dealer repairing itself on a win) — so the repair reads as its own moment.
+const HEAL_GAP = 220
 // Beat after the nexus attack (and any death → walk-in) finishes before the spent
 // cards gather back into the deck — the winning hand's final beat.
 const GATHER_GAP = 220
@@ -120,6 +123,9 @@ interface ButtonDef {
   enabled: (s: SessionState) => boolean
   /** When true, the button glows to show the powerup is currently armed. */
   active?: (s: SessionState) => boolean
+  /** When true, the move is legal but disabled purely for lack of chips to cover
+   *  the extra bet — flags a red "not enough chips" badge (Double/Split only). */
+  shortFunds?: (s: SessionState) => boolean
 }
 
 export function mountGameView(root: HTMLElement): void {
@@ -261,6 +267,12 @@ class GameView {
   private messageEl!: HTMLElement
   private hintEl!: HTMLElement
   private buttons!: Record<string, HTMLButtonElement>
+  // Per-button "not enough chips" badges (Double/Split), toggled in syncOverlay.
+  private nsfBadges!: Record<string, HTMLElement>
+  // Per-powerup cost-pill number spans, rewritten each frame to the inflated price.
+  private costPills!: Record<string, HTMLElement>
+  // The "prices +X%" token-inflation readout (hidden while inflation is 0).
+  private inflationEl!: HTMLElement
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
   private powersEl!: HTMLElement
   private actionsEl!: HTMLElement
@@ -279,6 +291,7 @@ class GameView {
       forcePairs: debug.forcePairs,
       forcePairRank: debug.forcePairRank,
       startTokens: debug.startTokens,
+      startChips: debug.startChips,
       dealerHealth: debug.dealerHealth,
       startDealer: debug.startDealer,
       startUpgrades,
@@ -291,8 +304,8 @@ class GameView {
     // Seed the health bar + dealer to the opening integrity so a dealer that starts
     // partway damaged (the dealerHealth dev override) shows the right fill and eye
     // flicker from the first frame — the first deal doesn't sync them (no damage yet).
-    this.health.set(this.state.run.integrity)
-    this.dealer.setLevel(this.state.run.integrity)
+    this.health.set(this.state.run.integrity, this.state.run.shiftIndex)
+    this.dealer.setLevel(this.state.run.integrity, this.state.run.shiftIndex)
     // Seed the dealer's colour identity + the deck colour to the opening dealer (which
     // may be a later one via the `dealer` dev override), so the bowtie and card backs
     // wear that dealer's colour from the first paint.
@@ -417,6 +430,7 @@ class GameView {
       red: this.nexus.redLight(timestamp),
       yellow: this.nexus.yellowLight(timestamp),
       chargeUp: this.nexus.chargeUp(timestamp),
+      healBeam: this.nexus.healBeam(timestamp),
     }
     drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer, charge, timestamp)
   }
@@ -796,7 +810,10 @@ class GameView {
       this.anim.isAnimating(timestamp) ||
       this.chips.isAnimating(timestamp) ||
       this.spawn.isAnimating(timestamp) ||
-      this.bustBlock.isAnimating(timestamp)
+      this.bustBlock.isAnimating(timestamp) ||
+      // A dealer's heal beam holds the settle (buttons + result) until it finishes,
+      // so the repair always reads in full before the player can call the next hand.
+      this.nexus.isHealing(timestamp)
 
     // The card + chip sequence just finished: run the one-time settle. The health
     // bar may keep animating past this point (its drop lands after the reveal) —
@@ -906,6 +923,7 @@ class GameView {
         act: () => this.session.double(),
         visible: playing,
         enabled: (s) => !!s.round && canDouble(s.round) && affordsExtra(s),
+        shortFunds: (s) => !!s.round && canDouble(s.round) && !affordsExtra(s),
       },
       {
         key: 'split',
@@ -914,6 +932,7 @@ class GameView {
         act: () => this.session.split(),
         visible: playing,
         enabled: (s) => !!s.round && canSplit(s.round) && affordsExtra(s),
+        shortFunds: (s) => !!s.round && canSplit(s.round) && !affordsExtra(s),
       },
       { key: 'next', label: 'Next hand', group: 'action', act: () => this.session.nextHand(), visible: (s) => s.phase === 'resolved', enabled: yes },
       { key: 'restart', label: 'New run', group: 'action', act: () => this.session.restart(), visible: (s) => s.phase === 'over', enabled: yes },
@@ -926,7 +945,7 @@ class GameView {
         visible: yes,
         // Disabled while a reading is already up (it can't be paid for twice); the
         // button glows via `active` until the player acts and the reading clears.
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.analyze.cost && s.analysis === null,
+        enabled: (s) => playing(s) && affords(POWERUPS.analyze.cost, s) && s.analysis === null,
         active: (s) => playing(s) && s.analysis !== null,
       },
       {
@@ -936,7 +955,7 @@ class GameView {
         cost: POWERUPS.peek.cost,
         act: () => this.session.buyPeek(),
         visible: yes,
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.peek.cost && !s.peeked,
+        enabled: (s) => playing(s) && affords(POWERUPS.peek.cost, s) && !s.peeked,
       },
       {
         key: 'forced-split',
@@ -951,7 +970,7 @@ class GameView {
         visible: (s) => !!s.round && canDouble(s.round),
         enabled: (s) =>
           playing(s) &&
-          s.run.tokens >= POWERUPS['forced-split'].cost &&
+          affords(POWERUPS['forced-split'].cost, s) &&
           !!s.round &&
           canForcedSplit(s.round) &&
           !canSplit(s.round) &&
@@ -968,7 +987,7 @@ class GameView {
         // free Double has lapsed.
         visible: (s) => !(s.round && canDouble(s.round)),
         enabled: (s) =>
-          playing(s) && s.run.tokens >= POWERUPS['late-double'].cost && !!s.round && !canDouble(s.round) && affordsExtra(s),
+          playing(s) && affords(POWERUPS['late-double'].cost, s) && !!s.round && !canDouble(s.round) && affordsExtra(s),
       },
       {
         key: 'return',
@@ -979,7 +998,7 @@ class GameView {
         visible: yes,
         // Only once the hand has taken a hit (more than two cards) is there a
         // drawn card to push back. Auto-stands, so it also ends the turn.
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.return.cost && !!s.round && canReturn(s.round),
+        enabled: (s) => playing(s) && affords(POWERUPS.return.cost, s) && !!s.round && canReturn(s.round),
       },
       {
         key: 'freeze',
@@ -988,7 +1007,7 @@ class GameView {
         cost: POWERUPS.freeze.cost,
         act: () => this.session.buyFreezeDealer(),
         visible: yes,
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.freeze.cost && !!s.round && !s.round.dealerFrozen,
+        enabled: (s) => playing(s) && affords(POWERUPS.freeze.cost, s) && !!s.round && !s.round.dealerFrozen,
         active: (s) => playing(s) && !!s.round && s.round.dealerFrozen,
       },
       {
@@ -999,7 +1018,7 @@ class GameView {
         act: () => this.session.buySecondChance(),
         visible: yes,
         enabled: (s) =>
-          playing(s) && s.run.tokens >= POWERUPS['second-chance'].cost && !!s.round && !s.round.secondChanceArmed,
+          playing(s) && affords(POWERUPS['second-chance'].cost, s) && !!s.round && !s.round.secondChanceArmed,
         active: (s) => playing(s) && !!s.round && s.round.secondChanceArmed,
       },
       {
@@ -1009,7 +1028,7 @@ class GameView {
         cost: POWERUPS.mulligan.cost,
         act: () => this.session.buyMulligan(),
         visible: yes,
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.mulligan.cost && !!s.round && canMulligan(s.round),
+        enabled: (s) => playing(s) && affords(POWERUPS.mulligan.cost, s) && !!s.round && canMulligan(s.round),
       },
       {
         key: 'foresight',
@@ -1018,13 +1037,14 @@ class GameView {
         cost: POWERUPS.foresight.cost,
         act: () => this.session.buyForesight(),
         visible: yes,
-        enabled: (s) => playing(s) && s.run.tokens >= POWERUPS.foresight.cost && s.foresightCard === null,
+        enabled: (s) => playing(s) && affords(POWERUPS.foresight.cost, s) && s.foresightCard === null,
       },
     ]
   }
 
   private buildOverlay(): void {
     const tokens = this.buildTokenCounter()
+    this.inflationEl = element('div', 'hud-inflation is-hidden')
     this.messageEl = element('div', 'hud-message')
     this.hintEl = element('div', 'hud-powerhint')
     const powers = element('div', 'hud-powerups')
@@ -1034,16 +1054,34 @@ class GameView {
     powers.appendChild(this.hintEl) // hint sits atop the powerup stack
 
     this.buttons = {}
+    this.nsfBadges = {}
+    this.costPills = {}
     for (const def of this.defs) {
       const button = document.createElement('button')
+      button.classList.add(`hud-btn-${def.key}`) // per-button hook for CSS (e.g. a wide Next hand)
       if (def.cost === undefined) {
         button.textContent = def.label
       } else {
         // Powerups: the name on the button, the token cost in a pill pinned to
-        // the bottom-right corner.
+        // the bottom-right corner. Track the number span so syncOverlay can rewrite
+        // it to the inflated price each frame.
         const label = element('span', 'power-label')
         label.textContent = def.label
-        button.append(label, costPill(def.cost))
+        const pill = costPill(def.cost)
+        // A lock pill (red ✕) sits in the same corner, hidden until the Dealer 6 duel
+        // locks abilities — CSS swaps it in for the cost pill via the button's is-locked.
+        button.append(label, pill, lockPill())
+        const num = pill.querySelector('.cost-pill__num')
+        if (num) {
+          this.costPills[def.key] = num as HTMLElement
+        }
+      }
+      // A move that can be priced out (Double/Split) carries a hidden "not enough
+      // chips" badge in the opposite (bottom-left) corner, revealed in syncOverlay.
+      if (def.shortFunds) {
+        const badge = nsfBadge()
+        button.appendChild(badge)
+        this.nsfBadges[def.key] = badge
       }
       button.addEventListener('click', () => {
         // A powerup click fires the ability cue (and, as the first user gesture,
@@ -1060,7 +1098,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage.overlay.append(tokens, this.messageEl, powers, actions, this.buildUpgradePanel())
+    this.stage.overlay.append(tokens, this.inflationEl, this.messageEl, powers, actions, this.buildUpgradePanel())
   }
 
   // The choose-upgrade card: a title and one big coloured button per upgrade path,
@@ -1239,8 +1277,8 @@ class GameView {
         // shredding whatever cards the old run left on the table. No laser (no attack).
         this.pendingAttack = null
         this.deckColorIncoming = null
-        this.health.set(integrity)
-        this.dealer.setLevel(integrity)
+        this.health.set(integrity, shiftIndex)
+        this.dealer.setLevel(integrity, shiftIndex)
         this.dealer.setShift(shiftIndex)
         this.dealer.spawn(t) // a standalone walk-in (no preceding death)
         this.dealAfter = this.beginSpawn(prevRound, shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
@@ -1344,6 +1382,20 @@ class GameView {
           this.nexus.anticipate(this.anim.animEnd)
         }
       }
+      // A late dealer that BEAT the player repairs itself (heal-on-win): integrity
+      // rose with no shift change. The YELLOW emitter fires a heal beam and the bar
+      // climbs under it, timed just after the lost hand's cards settle — the gentle
+      // counterpart to the player's red laser. Skipped on the final hand ('over'):
+      // the run is ending, so there's no repair to show.
+      const healed = integrity > prevIntegrity && shiftIndex === prevShift
+      if (healed && this.state.phase === 'resolved') {
+        const healStart = this.anim.animEnd + HEAL_GAP
+        this.nexus.heal(healStart)
+        this.health.heal(prevIntegrity, prevShift, integrity, shiftIndex, healStart)
+        // Steady the eye-flicker to the repaired level (a no-op unless it was low).
+        this.dealer.setLevel(integrity, shiftIndex)
+        sfx.playHeal(Math.max(0, healStart - t) / 1000)
+      }
       // Reward tokens for a surviving hit fly up right away; the win reward is
       // handled below, timed to the chips.
       this.scheduleTokens(prevPhase, prevTokens)
@@ -1366,7 +1418,11 @@ class GameView {
 
     this.syncOverlay(t) // reflect the new state immediately (disable while animating)
     this.lastAnimating =
-      this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t) || this.bustBlock.isAnimating(t)
+      this.anim.isAnimating(t) ||
+      this.chips.isAnimating(t) ||
+      this.spawn.isAnimating(t) ||
+      this.bustBlock.isAnimating(t) ||
+      this.nexus.isHealing(t)
     this.ensureLoop()
   }
 
@@ -1457,7 +1513,8 @@ class GameView {
     const canvas = this.stage.canvas
     this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
     const cardCount = prevRound.dealer.length + prevRound.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
-    return this.spawn.begin(shredStart, cardCount, true)
+    // The final dealer gets the grander, slower deck ceremony.
+    return this.spawn.begin(shredStart, cardCount, true, incomingShift >= TOTAL_DEALERS)
   }
 
   // The front half of an upgrade-granting kill: the laser fires, the dealer breaks
@@ -1482,10 +1539,10 @@ class GameView {
     this.pendingCeremony = null
     this.collectRound = c.prevRound // re-anchor the cards to shred (kept resting till now)
     const walkInStart = t + CEREMONY_LEAD
-    this.dealer.setLevel(c.incomingIntegrity)
+    this.dealer.setLevel(c.incomingIntegrity, c.incomingShift)
     this.dealer.setShift(c.incomingShift)
     this.dealer.spawn(walkInStart)
-    this.health.refill(c.incomingIntegrity, walkInStart)
+    this.health.refill(c.incomingIntegrity, c.incomingShift, walkInStart)
     this.deckColorIncoming = null
     this.dealAfter = this.beginSpawn(c.prevRound, c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
@@ -1538,7 +1595,8 @@ class GameView {
       this.dealer.isBlocking(timestamp) ||
       this.dealer.isArriving(timestamp) ||
       this.spawn.isAnimating(timestamp) ||
-      this.bustBlock.isAnimating(timestamp)
+      this.bustBlock.isAnimating(timestamp) ||
+      this.nexus.isHealing(timestamp)
 
     // Point the counter at its current value (tokens still flying are withheld);
     // the frame loop rolls it up as they land.
@@ -1547,6 +1605,12 @@ class GameView {
     this.hintEl.textContent = animating ? '' : this.buildHint()
     this.syncUpgradePanel(s, animating, timestamp)
 
+    // Token inflation: show the running "prices +X%" (only once it has risen), and
+    // let the cost pills below reflect it.
+    const inflationPct = Math.round(s.run.tokenInflation * 100)
+    this.inflationEl.textContent = `prices +${inflationPct}%`
+    this.inflationEl.classList.toggle('is-hidden', inflationPct <= 0)
+
     for (const def of this.defs) {
       const button = this.buttons[def.key]
       const visible = def.visible(s)
@@ -1554,7 +1618,22 @@ class GameView {
       // Armed powerups glow; using the shield clears the armed flag, which drops
       // the class here on the next sync and returns the button to normal.
       button.classList.toggle('is-active', visible && !!def.active?.(s))
-      button.disabled = animating || (visible && !def.enabled(s))
+      // Powerups are locked during the Dealer 6 duel (< 20% health): disable them and
+      // swap the cost pill for a red ✕ (via the is-locked class, styled in CSS).
+      const duelLocked = def.group === 'power' && s.abilitiesLocked
+      button.classList.toggle('is-locked', duelLocked)
+      button.disabled = animating || duelLocked || (visible && !def.enabled(s))
+      // Flag a priced-out move (Double/Split disabled only for lack of chips). Hidden
+      // while animating, or when the move is illegal for any other reason.
+      const badge = this.nsfBadges[def.key]
+      if (badge) {
+        badge.classList.toggle('is-hidden', animating || !visible || !def.shortFunds?.(s))
+      }
+      // Powerup cost pills show the live (inflated) price the spend path will charge.
+      const pill = this.costPills[def.key]
+      if (pill && def.cost !== undefined) {
+        pill.textContent = String(powerupCost(def.cost, s.run))
+      }
     }
   }
 
@@ -1696,13 +1775,39 @@ function powerIcon(className: string): HTMLImageElement {
   return img
 }
 
-// A powerup's cost pill: "<cost> <icon>", pinned to the button's bottom-right.
+// Whether the player can afford a powerup at its current (inflated) price.
+function affords(baseCost: number, s: SessionState): boolean {
+  return s.run.tokens >= powerupCost(baseCost, s.run)
+}
+
+// A powerup's "locked" pill: a red ✕ in the same bottom-right corner as the cost pill,
+// hidden until the Dealer 6 duel (< 20% health) locks abilities. CSS shows it — and
+// hides the cost pill — while the button carries the is-locked class.
+function lockPill(): HTMLElement {
+  const pill = element('span', 'lock-pill')
+  pill.textContent = '✕'
+  pill.title = 'Locked — final duel'
+  return pill
+}
+
+// A powerup's cost pill: "<cost> <icon>", pinned to the button's bottom-right. The
+// number starts at the base price and is rewritten to the inflated price each frame.
 function costPill(cost: number): HTMLElement {
   const pill = element('span', 'cost-pill')
   const num = element('span', 'cost-pill__num')
   num.textContent = String(cost)
   pill.append(num, powerIcon('cost-pill__icon'))
   return pill
+}
+
+// A "not enough chips" badge: a white ✕ on red, tucked into a move button's
+// bottom-left corner. Starts hidden; syncOverlay reveals it when Double/Split is
+// disabled purely because the bankroll can't cover the extra bet.
+function nsfBadge(): HTMLElement {
+  const badge = element('span', 'nsf-badge is-hidden')
+  badge.textContent = '✕'
+  badge.title = 'Not enough chips'
+  return badge
 }
 
 function generateSeed(): number {

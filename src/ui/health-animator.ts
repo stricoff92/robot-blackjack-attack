@@ -10,10 +10,11 @@
 // geometry + paint. The change is scheduled `startAfter` a timestamp so the drop
 // can wait for the card sequence to settle — damage lands with the payout.
 
-import { FULL_INTEGRITY } from '../game/run'
+import { maxIntegrityFor } from '../game/run'
 import { smoothEnd3, smoothStep } from '../render/easing'
 import type { Ghost, HealthView } from '../render/health'
 import { KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DYING_MS, KILL_GONE_MS } from './dealer-animator'
+import { HEAL_FADE_MS, HEAL_RISE_MS, HEAL_TRAVEL_MS } from './nexus-animator'
 
 const DROP_MS = 640 // removed slice flashes then fades (a normal hit)
 // Kill timing is locked to the dealer death choreography (dealer-animator.ts) so
@@ -24,7 +25,7 @@ const DRAIN_MS = KILL_DEATH_LEAD_MS + KILL_DYING_MS * 0.6 // empty by the time i
 const KILL_PAUSE = KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS - DRAIN_MS // drainEnd → arrival
 const REFILL_MS = KILL_ARRIVE_MS // fills as the new dealer walks in
 
-type Mode = 'none' | 'drop' | 'kill' | 'refill' | 'drain'
+type Mode = 'none' | 'drop' | 'kill' | 'refill' | 'drain' | 'heal'
 
 export class HealthAnimation implements HealthView {
   private mode: Mode = 'none'
@@ -37,6 +38,10 @@ export class HealthAnimation implements HealthView {
   private refillStart = 0
 
   isAnimating(now: number): boolean {
+    if (this.mode === 'heal') {
+      // The fill lands at `end`, but the green heal wash lingers a beat longer.
+      return now < this.end + HEAL_FADE_MS
+    }
     return this.mode !== 'none' && now < this.end
   }
 
@@ -49,8 +54,8 @@ export class HealthAnimation implements HealthView {
     nextShift: number,
     startAfter: number,
   ): void {
-    const from = frac(prevIntegrity)
-    const to = frac(nextIntegrity)
+    const from = frac(prevIntegrity, prevShift)
+    const to = frac(nextIntegrity, nextShift)
 
     if (nextShift > prevShift) {
       this.mode = 'kill'
@@ -93,16 +98,45 @@ export class HealthAnimation implements HealthView {
   }
 
   // The back half of a kill: fill the emptied bar up to the incoming dealer's integrity
-  // as it walks in. Pairs with drain() across the upgrade-selector pause.
-  refill(integrity: number, startAfter: number): void {
+  // as it walks in. Pairs with drain() across the upgrade-selector pause. `shift` scales
+  // the fill to the incoming dealer's own max.
+  refill(integrity: number, shift: number, startAfter: number): void {
     this.mode = 'refill'
     this.from = 0
-    this.to = frac(integrity)
+    this.to = frac(integrity, shift)
     this.start = startAfter
     this.end = startAfter + REFILL_MS
   }
 
+  // A late dealer repairing itself after a win: the bar rises from its damaged level
+  // to the healed one, timed to the yellow heal beam (nexus-animator's heal()).
+  // `beamStart` is when the beam lifts off; the fill begins as the beam LANDS
+  // (HEAL_TRAVEL_MS later) and takes HEAL_RISE_MS — the window the beam holds on the
+  // dealer — so the bar visibly climbs under the beam rather than snapping up.
+  heal(
+    prevIntegrity: number,
+    prevShift: number,
+    nextIntegrity: number,
+    nextShift: number,
+    beamStart: number,
+  ): void {
+    this.mode = 'heal'
+    this.from = frac(prevIntegrity, prevShift)
+    this.to = frac(nextIntegrity, nextShift)
+    this.start = beamStart + HEAL_TRAVEL_MS
+    this.end = this.start + HEAL_RISE_MS
+  }
+
   level(now: number): number {
+    if (this.mode === 'heal') {
+      if (now <= this.start) {
+        return this.from
+      }
+      if (now >= this.end) {
+        return this.to
+      }
+      return lerp(this.from, this.to, smoothStep((now - this.start) / HEAL_RISE_MS))
+    }
     if (this.mode === 'refill') {
       if (now <= this.start) {
         return this.from
@@ -153,11 +187,29 @@ export class HealthAnimation implements HealthView {
     return null
   }
 
+  // The freshly-repaired slice glowing green-gold as the heal beam fills it — the
+  // wholesome inverse of the red hit ghost. While filling it tracks the rising
+  // waterline (lo = old level, hi = the fill's current top); once full the whole
+  // added slice glows, then fades back to the bar's red over HEAL_FADE_MS.
+  healGlow(now: number): Ghost | null {
+    if (this.mode !== 'heal') {
+      return null
+    }
+    const glowEnd = this.end + HEAL_FADE_MS
+    if (now < this.start || now >= glowEnd) {
+      return null
+    }
+    if (now < this.end) {
+      return { lo: this.from, hi: this.level(now), fade: 1 }
+    }
+    return { lo: this.from, hi: this.to, fade: 1 - smoothStep((now - this.end) / HEAL_FADE_MS) }
+  }
+
   // Snap the settled fill to a given integrity without animating — used on load so a
   // dealer that starts partway damaged (the dealerHealth dev override) shows the
-  // right bar from the first frame.
-  set(integrity: number): void {
-    this.settle(frac(integrity))
+  // right bar from the first frame. `shift` scales it to that dealer's max.
+  set(integrity: number, shift: number): void {
+    this.settle(frac(integrity, shift))
   }
 
   private settle(level: number): void {
@@ -169,8 +221,8 @@ export class HealthAnimation implements HealthView {
   }
 }
 
-function frac(integrity: number): number {
-  return clamp01(Math.max(0, integrity) / FULL_INTEGRITY)
+function frac(integrity: number, shift: number): number {
+  return clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
 }
 
 function lerp(a: number, b: number, t: number): number {

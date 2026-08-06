@@ -20,6 +20,10 @@ export interface HealthView {
   isAnimating(now: number): boolean
   level(now: number): number // solid fill fraction, 0..1
   ghost(now: number): Ghost | null
+  // The slice a heal beam is repairing, glowing green-gold over the red fill (null
+  // when no heal is playing). Reuses the Ghost shape: lo/hi bound the slice, fade
+  // runs 1 (bright) → 0 (gone).
+  healGlow(now: number): Ghost | null
 }
 
 interface RGB {
@@ -102,6 +106,10 @@ export function drawHealthBar(
   drawFill(ctx, box, level)
   if (ghost) {
     drawGhost(ctx, box, ghost)
+  }
+  const heal = view.healGlow(now)
+  if (heal) {
+    drawHealGlow(ctx, box, heal)
   }
 
   ctx.restore()
@@ -255,6 +263,34 @@ function drawGhost(ctx: CanvasRenderingContext2D, box: Box, g: Ghost): void {
   ctx.globalAlpha = g.fade
   ctx.fillStyle = css(hot)
   ctx.fillRect(box.x, yTop, box.w, h)
+  ctx.restore()
+}
+
+// The slice a heal beam is repairing: a soft green-gold wash laid over the red fill,
+// brightest at its top edge (the rising waterline), drawn additively so it reads as
+// restorative light rather than repainting the bar. The counterpart to drawGhost.
+const HEAL_GLOW: RGB = { r: 0x30, g: 0xe4, b: 0x50 } // vivid green, matching the beam
+function drawHealGlow(ctx: CanvasRenderingContext2D, box: Box, g: Ghost): void {
+  const yTop = box.y + box.h * (1 - g.hi)
+  const yBot = box.y + box.h * (1 - g.lo)
+  const h = yBot - yTop
+  if (h <= 0) {
+    return
+  }
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+
+  // A vertical wash over the added slice, strongest at the top and easing down. Kept
+  // light and see-through so it reads as a green restorative shimmer, not a repaint.
+  const wash = ctx.createLinearGradient(0, yTop, 0, yBot)
+  wash.addColorStop(0, rgba(HEAL_GLOW, g.fade * 0.38))
+  wash.addColorStop(1, rgba(HEAL_GLOW, g.fade * 0.07))
+  ctx.fillStyle = wash
+  ctx.fillRect(box.x, yTop, box.w, h)
+
+  // A crisp bright line right at the fill's top — the healing waterline.
+  ctx.fillStyle = rgba({ r: 190, g: 255, b: 195 }, g.fade * 0.65)
+  ctx.fillRect(box.x, yTop, box.w, Math.max(1, box.h * 0.01))
   ctx.restore()
 }
 

@@ -9,6 +9,7 @@
 // Reads dealerBox / dealerEyes from scene.ts (the single source of truth for the
 // figure's footprint, shared with the health bar, chip anchors and Analyze beams).
 
+import { TOTAL_DEALERS } from '../game/run'
 import { smoothEnd2, smoothEnd3, smoothStart2 } from './easing'
 import { dealerColors } from './palette'
 import { dealerBox, dealerEyes, type DealerBox, type Layout } from './scene'
@@ -105,8 +106,9 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
   ctx.translate(hit.shakeX * d.headR, hit.shakeY * d.headR)
 
   // The bowtie's colour is this dealer's identity (RGB dealers shimmer with `now`).
-  const colors = dealerColors(view.figureShift(now), now)
-  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), colors.bowtie, colors.bowtieKnot)
+  const shift = view.figureShift(now)
+  const colors = dealerColors(shift, now)
+  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), angerFor(shift), colors.bowtie, colors.bowtieKnot, shift >= TOTAL_DEALERS)
 
   if (hit.flash > 0.001) {
     drawHitFlash(ctx, d, hit.flash)
@@ -146,15 +148,32 @@ function drawFigure(
   d: DealerBox,
   eyeCore: number,
   browFear: number,
+  anger: number,
   bowtie: string,
   bowtieKnot: string,
+  imposing: boolean,
 ): void {
   ctx.save()
 
+  // The final dealer carries a heavier frame: a wider torso under a broad shoulder
+  // yoke that juts past it, for an imposing, hulking silhouette. The head, eyes, and
+  // laser/heal impact all stay head-anchored (unchanged), so only the body bulks up.
+  const widen = imposing ? d.headR * 0.42 : 0
+  const bodyLeft = d.bodyLeft - widen
+  const bodyRight = d.bodyRight + widen
+
   ctx.fillStyle = TORSO
   ctx.beginPath()
-  ctx.roundRect(d.bodyLeft, d.bodyTop, d.bodyRight - d.bodyLeft, d.baseY - d.bodyTop, d.headR * 0.18)
+  ctx.roundRect(bodyLeft, d.bodyTop, bodyRight - bodyLeft, d.baseY - d.bodyTop, d.headR * 0.18)
   ctx.fill()
+
+  if (imposing) {
+    const overhang = d.headR * 0.4
+    const yokeH = d.headR * 0.78
+    ctx.beginPath()
+    ctx.roundRect(bodyLeft - overhang, d.bodyTop, bodyRight - bodyLeft + overhang * 2, yokeH, d.headR * 0.28)
+    ctx.fill()
+  }
 
   ctx.fillStyle = HEAD
   ctx.beginPath()
@@ -184,9 +203,11 @@ function drawFigure(
 
   // Angry brows: a hood shadow clips each eye's top-inner into a slit, then a
   // raised brow plate sits above it. Both angle DOWN toward the centre (\ /), the
-  // classic menace read. Drawn after the eyes so the hood cuts the red core. On a
-  // hit they swing up into a scared /\ (browFear 0..1) and roll back.
-  drawBrows(ctx, d, eyeY, browFear)
+  // classic menace read — steeper for each later dealer (`anger`), so the first
+  // dealer's brows sit level and the last's bear down hardest. Drawn after the eyes
+  // so the hood cuts the red core. On a hit they swing up into a scared /\
+  // (browFear 0..1) and roll back.
+  drawBrows(ctx, d, eyeY, browFear, anger)
 
   // Rectangular mouth panel, a little lighter than the head, set below the eyes.
   // A voice sine-wave readout will animate inside it later; the grille separators
@@ -212,14 +233,23 @@ function drawFigure(
 // The full-fear brow swing, in radians (left CCW, right CW). Scaled by browFear.
 const BROW_FEAR_ANGLE = (40 * Math.PI) / 180
 
+// How much the inner brow tip drops below its bar's midline at full anger, in headR
+// units. Scaled by `anger` (0 = level brows, 1 = the full menace) so each later
+// dealer's brows bear down harder; the outer tip lifts by the same amount, pivoting
+// each bar about its midline so its average height stays put.
+const BROW_INNER_DROP = 0.12
+
 // Angry brows + hooded eye-slits. Each is an angled bar rendered as a rotated
 // rounded rect (helper below). Geometry is all in headR units off the eye line.
-// `fear` (0..1) hinges the whole brow unit at its OUTER corner so the inner tips
-// lift into a worried /\ — left brow CCW, right CW. Canvas angles are CW-positive,
-// so the per-side sign is just `sx` (-1 = left/CCW, +1 = right/CW). Lifting the
-// hood off the eye at the same time widens the slit, reinforcing the scared read.
-function drawBrows(ctx: CanvasRenderingContext2D, d: DealerBox, eyeY: number, fear: number): void {
+// `anger` (0..1) sets the resting downward tilt toward centre — level for the first
+// dealer, steepest for the last. `fear` (0..1) then hinges the whole brow unit at
+// its OUTER corner so the inner tips lift into a worried /\ — left brow CCW, right
+// CW. Canvas angles are CW-positive, so the per-side sign is just `sx` (-1 =
+// left/CCW, +1 = right/CW). Lifting the hood off the eye at the same time widens the
+// slit, reinforcing the scared read.
+function drawBrows(ctx: CanvasRenderingContext2D, d: DealerBox, eyeY: number, fear: number, anger: number): void {
   const r = d.headR
+  const drop = r * BROW_INNER_DROP * anger
   for (const sx of [-1, 1]) {
     const outerX = d.cx + sx * r * 0.72
     const innerX = d.cx + sx * r * 0.14
@@ -232,11 +262,18 @@ function drawBrows(ctx: CanvasRenderingContext2D, d: DealerBox, eyeY: number, fe
       ctx.translate(-pivotX, -pivotY)
     }
     // Hood: near-black, sits low enough to shave the eye's top-inner into a slit.
-    drawBar(ctx, outerX, eyeY - r * 0.28, innerX, eyeY - r * 0.04, r * 0.2, HOOD)
+    drawBar(ctx, outerX, eyeY - r * 0.16 - drop, innerX, eyeY - r * 0.16 + drop, r * 0.2, HOOD)
     // Brow plate: raised metal, angled the same way, riding just above the hood.
-    drawBar(ctx, outerX, eyeY - r * 0.46, innerX, eyeY - r * 0.22, r * 0.13, BROW)
+    drawBar(ctx, outerX, eyeY - r * 0.34 - drop, innerX, eyeY - r * 0.34 + drop, r * 0.13, BROW)
     ctx.restore()
   }
+}
+
+// This dealer's brow anger, 0..1: the first dealer's brows sit level (0), the last
+// fixed dealer's (and the RGB dealer past it) bear down hardest (1). Mirrors the
+// board-tech ramp in palette.ts so menace and gear advance together.
+function angerFor(shiftIndex: number): number {
+  return Math.min(Math.max((shiftIndex - 1) / (TOTAL_DEALERS - 1), 0), 1)
 }
 
 // A thick angled bar drawn as a rotated rounded rect between two points.

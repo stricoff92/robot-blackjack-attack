@@ -30,6 +30,17 @@ const RED_FADE_MS = 470 // wind down after the strike
 const PULSE_MS = 520 // yellow hit-token pulse
 const PULSE_PEAK = 0.9
 
+// --- the yellow heal beam (a late dealer repairing itself after a win) ----------
+// The counterpart to the red laser strike, fired from the YELLOW emitter: a gentle
+// beam that lifts off, reaches the dealer, then holds while its health bar refills
+// and fades. The three windows are EXPORTED so health-animator.ts locks its refill
+// to the same HEAL_RISE_MS (they can't drift), and game-view can time the beat.
+export const HEAL_TRAVEL_MS = 240 // beam floats nexus → dealer (softer than the laser)
+export const HEAL_RISE_MS = 560 // the health bar fills while the beam holds on the dealer
+export const HEAL_FADE_MS = 260 // beam + emitter glow wind down after the fill
+const HEAL_GLOW_IN_MS = 130 // the yellow emitter lights up as the beam lifts off
+const HEAL_GLOW_PEAK = 0.85 // how bright the yellow lens runs while healing
+
 export interface NexusChargeView {
   // Each emitter light's glow, 0 (dim) .. 1 (fully lit), at `now`.
   redLight(now: number): number
@@ -38,6 +49,9 @@ export interface NexusChargeView {
   // began, `cap` the latest a ball may spawn (advances with `now` while charging,
   // freezes at the Next-hand click). Null when nothing is charging.
   chargeUp(now: number): { start: number; cap: number } | null
+  // The yellow heal beam's head-of-travel (0..1 from nexus to dealer) + its opacity,
+  // or null when no heal is in flight.
+  healBeam(now: number): { travel: number; alpha: number } | null
 }
 
 export class NexusAnimation implements NexusChargeView {
@@ -64,6 +78,15 @@ export class NexusAnimation implements NexusChargeView {
   // Yellow hit pulse.
   private pulseStart = 0
   private pulseEnd = 0
+
+  // Yellow heal beam (a late dealer repairing itself): the emitter flares, a beam
+  // lifts off at healStart, reaches the dealer at healContact (its bar starts
+  // rising), holds through the fill until healHold, then fades out by healEnd.
+  private healing = false
+  private healStart = 0
+  private healContact = 0
+  private healHold = 0
+  private healEnd = 0
 
   // The hand resolved and the nexus is waiting for Next hand: both lights come up
   // to a steady anticipation glow and hold there, while the red light powers up by
@@ -112,6 +135,39 @@ export class NexusAnimation implements NexusChargeView {
     this.pulseEnd = startAfter + PULSE_MS
   }
 
+  // Fire the yellow heal beam at the dealer, starting at `startAfter`: the emitter
+  // flares, a beam floats out over HEAL_TRAVEL_MS, then holds on the dealer for
+  // HEAL_RISE_MS (its health bar refills over the same window) before fading. Drives
+  // the yellow light itself too, so the lens glows for the duration.
+  heal(startAfter: number): void {
+    this.healing = true
+    this.healStart = startAfter
+    this.healContact = startAfter + HEAL_TRAVEL_MS
+    this.healHold = this.healContact + HEAL_RISE_MS
+    this.healEnd = this.healHold + HEAL_FADE_MS
+  }
+
+  // The yellow heal beam's head-of-travel + opacity, or null. Advances to the dealer,
+  // holds solid while the bar fills, then fades — mirrors the red StrikeView.beam.
+  healBeam(now: number): { travel: number; alpha: number } | null {
+    if (!this.healing || now < this.healStart || now >= this.healEnd) {
+      return null
+    }
+    if (now < this.healContact) {
+      return { travel: (now - this.healStart) / HEAL_TRAVEL_MS, alpha: 1 }
+    }
+    if (now < this.healHold) {
+      return { travel: 1, alpha: 1 }
+    }
+    return { travel: 1, alpha: 1 - smoothEnd2((now - this.healHold) / HEAL_FADE_MS) }
+  }
+
+  // True while the heal beam is still on screen — used to hold the Next-hand button
+  // (and the result message) until the repair finishes, so it always reads in full.
+  isHealing(now: number): boolean {
+    return this.healing && now < this.healEnd
+  }
+
   redLight(now: number): number {
     if (this.antHeld) {
       return this.antLevel(now)
@@ -135,7 +191,7 @@ export class NexusAnimation implements NexusChargeView {
         y = this.fireFrom * (1 - smoothEnd2(clamp01((now - this.yStart) / YELLOW_FADE_MS)))
       }
     }
-    return Math.max(y, this.pulse(now))
+    return Math.max(y, this.pulse(now), this.healGlow(now))
   }
 
   chargeUp(now: number): { start: number; cap: number } | null {
@@ -168,11 +224,29 @@ export class NexusAnimation implements NexusChargeView {
     if (this.fired && now < this.fireEnd) {
       return true
     }
+    if (this.isHealing(now)) {
+      return true
+    }
     return now < this.pulseEnd
   }
 
   private antLevel(now: number): number {
     return ANT_LEVEL * clamp01((now - this.antStart) / ANT_IN_MS)
+  }
+
+  // The yellow emitter's glow while a heal beam is in flight: lights up as the beam
+  // lifts off, holds full through the fill, then winds down with the beam's fade.
+  private healGlow(now: number): number {
+    if (!this.healing || now < this.healStart || now >= this.healEnd) {
+      return 0
+    }
+    if (now < this.healStart + HEAL_GLOW_IN_MS) {
+      return HEAL_GLOW_PEAK * clamp01((now - this.healStart) / HEAL_GLOW_IN_MS)
+    }
+    if (now < this.healHold) {
+      return HEAL_GLOW_PEAK
+    }
+    return HEAL_GLOW_PEAK * (1 - smoothEnd2((now - this.healHold) / HEAL_FADE_MS))
   }
 
   private pulse(now: number): number {

@@ -101,6 +101,65 @@ describe('stand', () => {
   })
 })
 
+describe('smart soft-17 dealer (Dealer 6)', () => {
+  const smart = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'smart' as const }
+
+  it('stands on a soft 17 that is already beating the player', () => {
+    // Player stands on 15; dealer A+6 = soft 17. Already ahead → keep it, do not risk a hit.
+    const round = stand(startRound([card('K'), card('5'), card('A'), card('6')], 50, smart))
+    expect(round.dealer).toHaveLength(2)
+    expect(outcomeOf(round)).toBe('lose')
+  })
+
+  it('hits a soft 17 that would only tie or lose', () => {
+    // Player stands on 17; dealer A+6 = soft 17 → a stand only pushes, so it draws (→ 21).
+    const round = stand(startRound([card('K'), card('7'), card('A'), card('6'), card('4')], 50, smart))
+    expect(round.dealer).toHaveLength(3)
+    expect(outcomeOf(round)).toBe('lose')
+  })
+
+  it('folds the Anti-dealer downgrade into the soft-17 decision', () => {
+    // Player 16 vs dealer soft 17. Face value 17 beats 16 → a plain smart dealer stands.
+    const shoe = [card('K'), card('6'), card('A'), card('6'), card('4')]
+    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
+    // With the downgrade active the dealer's 17 settles as 16 — no longer ahead — so it hits.
+    const downgraded = { ...smart, dealerDowngrade: true }
+    expect(stand(startRound(shoe, 50, downgraded)).dealer).toHaveLength(3)
+  })
+
+  it('stands on a hard 17 that ties the player (a sure push beats a risky hit)', () => {
+    // Player 17; dealer 10+7 = hard 17. A stand pushes — do not gamble it away.
+    const round = stand(startRound([card('K'), card('7'), card('10'), card('7')], 50, smart))
+    expect(round.dealer).toHaveLength(2)
+    expect(outcomeOf(round)).toBe('push')
+  })
+
+  it('hits a hard 17 when strictly behind (a stand is a certain loss)', () => {
+    // Player stands on 18; dealer 10+7 = hard 17 → certain loss if it stands, so it draws (→ 20).
+    const round = stand(startRound([card('K'), card('8'), card('10'), card('7'), card('3')], 50, smart))
+    expect(round.dealer).toHaveLength(3)
+    expect(outcomeOf(round)).toBe('lose')
+  })
+
+  it('folds the Anti-dealer downgrade into the hard-17 decision', () => {
+    // Player 17 vs dealer hard 17. Face value ties (push) → a plain smart dealer stands.
+    const shoe = [card('K'), card('7'), card('10'), card('7'), card('3')]
+    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
+    // Downgrade settles the 17 as 16 — now strictly behind the player's 17 — so it hits.
+    const downgraded = { ...smart, dealerDowngrade: true }
+    expect(stand(startRound(shoe, 50, downgraded)).dealer).toHaveLength(3)
+  })
+
+  it('raises the hard-hit ceiling when desperate (hits a hard 18 behind)', () => {
+    // Player 19; dealer 10+8 = hard 18, behind. At the base ceiling (17) it stands…
+    const shoe = [card('K'), card('9'), card('10'), card('8'), card('3')]
+    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
+    // …but a desperate dealer (ceiling 18) hits it (→ 21).
+    const desperate = { ...smart, dealerHardHitCeiling: 18 }
+    expect(stand(startRound(shoe, 50, desperate)).dealer).toHaveLength(3)
+  })
+})
+
 describe('hit', () => {
   it('loses immediately when the player busts, before the dealer draws', () => {
     const round = hit(startRound([card('K'), card('6'), card('9'), card('7'), card('Q')], 40))

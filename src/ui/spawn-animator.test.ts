@@ -101,4 +101,19 @@ describe('SpawnAnimation', () => {
     // ceremony's end — later than shredding the cards alone.
     expect(withDeck).toBeGreaterThan(withoutDeck)
   })
+
+  it('runs a longer, grander ceremony for the final dealer', () => {
+    const grand = new SpawnAnimation().begin(0, 3, true, true)
+    const normal = new SpawnAnimation().begin(0, 3, true, false)
+    // The grand fresh-deck fly + unwrap beats are stretched, so the whole thing ends later.
+    expect(grand).toBeGreaterThan(normal)
+  })
+
+  it('still unwraps fully by the end of the grand ceremony', () => {
+    const anim = new SpawnAnimation()
+    anim.begin(0, 3, true, true)
+    const st = anim.deckState(DONE)
+    expect(st?.fly).toBe(1)
+    expect(st?.unwrap).toBe(1)
+  })
 })

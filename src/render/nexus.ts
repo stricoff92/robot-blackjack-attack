@@ -197,7 +197,12 @@ export function drawStrikeFx(
   ctx: CanvasRenderingContext2D,
   l: Layout,
   view: StrikeView,
-  charge: { red: number; yellow: number; chargeUp: { start: number; cap: number } | null },
+  charge: {
+    red: number
+    yellow: number
+    chargeUp: { start: number; cap: number } | null
+    healBeam: { travel: number; alpha: number } | null
+  },
   now: number,
 ): void {
   ctx.clearRect(0, 0, l.width, l.height)
@@ -241,6 +246,105 @@ export function drawStrikeFx(
     drawGlow(ctx, to.x, to.y, scale * 0.06 * arch2(spark) + scale * 0.02, arch2(spark))
     drawSparkBurst(ctx, to.x, to.y, spark, scale)
   }
+
+  // The yellow heal beam (a late dealer repairing itself after a win): a gentle
+  // green-gold stream from the YELLOW emitter to the dealer, opposite in feel to the
+  // red laser. Never overlaps a strike — a heal is a loss, a strike is a win.
+  if (charge.healBeam) {
+    const heal = nexusYellowLight(l, now)
+    drawHealBeam(ctx, heal, to, charge.healBeam.travel, charge.healBeam.alpha, scale, now)
+  }
+}
+
+// A restorative beam from the yellow emitter: a soft green-gold glow with a warm
+// (not hot) core, healing motes streaming up it toward the dealer, and a gentle
+// aura blooming on the dealer once it lands. Drawn additively like the laser, but
+// softer and cooler-edged so it reads as nourishing light, not a blast. `travel`
+// advances the head nexus → dealer; `alpha` fades the whole thing on the wind-down.
+function drawHealBeam(
+  ctx: CanvasRenderingContext2D,
+  from: Point,
+  to: Point,
+  travel: number,
+  alpha: number,
+  scale: number,
+  now: number,
+): void {
+  const hx = from.x + (to.x - from.x) * travel
+  const hy = from.y + (to.y - from.y) * travel
+  const outer = clamp(scale * 0.022, 5, 18)
+
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.lineCap = 'round'
+
+  // Soft green-gold outer glow, brightening toward the head.
+  const grad = ctx.createLinearGradient(from.x, from.y, hx, hy)
+  grad.addColorStop(0, `rgba(150, 240, 130, ${alpha * 0.16})`)
+  grad.addColorStop(1, `rgba(180, 255, 150, ${alpha * 0.42})`)
+  ctx.strokeStyle = grad
+  ctx.lineWidth = outer
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(hx, hy)
+  ctx.stroke()
+
+  // A warm white-green core — thinner and gentler than the laser's hot white spine.
+  ctx.strokeStyle = `rgba(235, 255, 215, ${alpha * 0.78})`
+  ctx.lineWidth = outer * 0.3
+  ctx.beginPath()
+  ctx.moveTo(from.x, from.y)
+  ctx.lineTo(hx, hy)
+  ctx.stroke()
+
+  // Healing motes flowing up the beam toward the dealer — energy being delivered.
+  // Each cycles along the beam on a shared clock at its own hashed phase + lane, so
+  // the stream is deterministic per frame (no Math.random) yet visibly moves.
+  const dx = hx - from.x
+  const dy = hy - from.y
+  const len = Math.hypot(dx, dy)
+  if (len > 1) {
+    const nx = dx / len
+    const ny = dy / len
+    const perpX = -ny
+    const perpY = nx
+    const MOTES = 7
+    for (let i = 0; i < MOTES; i++) {
+      const phase = (now / 900 + hash(i, 17)) % 1
+      const along = phase * len
+      const fade = Math.sin(phase * Math.PI) // fade in/out at the beam's ends
+      const off = (hash(i, 33) - 0.5) * outer * 0.7
+      const mx = from.x + nx * along + perpX * off
+      const my = from.y + ny * along + perpY * off
+      const r = outer * (0.14 + hash(i, 51) * 0.16)
+      const a = alpha * 0.9 * fade
+      const m = ctx.createRadialGradient(mx, my, 0, mx, my, r)
+      m.addColorStop(0, `rgba(240, 255, 220, ${a})`)
+      m.addColorStop(1, 'rgba(160, 240, 140, 0)')
+      ctx.fillStyle = m
+      ctx.beginPath()
+      ctx.arc(mx, my, r, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  // A soft restorative aura blooming on the dealer once the beam has landed, plus a
+  // fountain of green sparks shooting off the impact point.
+  if (travel >= 0.999) {
+    const auraR = scale * 0.07
+    const aura = ctx.createRadialGradient(to.x, to.y, 0, to.x, to.y, auraR)
+    aura.addColorStop(0, `rgba(205, 255, 190, ${alpha * 0.5})`)
+    aura.addColorStop(0.5, `rgba(130, 240, 130, ${alpha * 0.22})`)
+    aura.addColorStop(1, 'rgba(120, 230, 120, 0)')
+    ctx.fillStyle = aura
+    ctx.beginPath()
+    ctx.arc(to.x, to.y, auraR, 0, Math.PI * 2)
+    ctx.fill()
+
+    drawHealSparks(ctx, to.x, to.y, alpha, scale, now)
+  }
+
+  ctx.restore()
 }
 
 // A red energy beam: an outer glow plus a hot white core, drawn additively so it
@@ -473,6 +577,10 @@ function drawGlow(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius:
 const SPARK_COUNT = 28
 const SPARK_GRAVITY = 0.06 // downward droop at full life, as a fraction of `scale`
 
+const HEAL_SPARK_COUNT = 16
+const HEAL_SPARK_PERIOD_MS = 640 // one heal spark's fly-out-and-fade lifetime
+const HEAL_SPARK_REACH = 0.13 // outward distance as a fraction of `scale`
+
 function drawSparkBurst(ctx: CanvasRenderingContext2D, cx: number, cy: number, p: number, scale: number): void {
   const fade = 1 - smoothEnd2(p) // brightness: fades out on smoothEnd2
   if (fade <= 0.001) {
@@ -512,6 +620,56 @@ function drawSparkBurst(ctx: CanvasRenderingContext2D, cx: number, cy: number, p
     ctx.beginPath()
     ctx.arc(x, y, Math.max(0.8, scale * 0.004) * (0.6 + 0.6 * fade), 0, Math.PI * 2)
     ctx.fill()
+  }
+  ctx.restore()
+}
+
+// Green sparks/bubbles bursting off the dealer where the heal beam lands — a
+// continuous fountain while the beam holds. Each spark loops on its own staggered
+// phase (deterministic per frame from hash(), no Math.random) so it streams smoothly:
+// born at the impact, shooting outward with a gentle buoyant lift, then fading. `alpha`
+// winds the whole thing down with the beam.
+function drawHealSparks(ctx: CanvasRenderingContext2D, cx: number, cy: number, alpha: number, scale: number, now: number): void {
+  if (alpha <= 0.001) {
+    return
+  }
+  const reach = scale * HEAL_SPARK_REACH
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.lineCap = 'round'
+  for (let i = 0; i < HEAL_SPARK_COUNT; i++) {
+    const phase = (now / HEAL_SPARK_PERIOD_MS + hash(i, 13)) % 1
+    const fade = Math.sin(phase * Math.PI) * alpha // born at the impact, brighten, fade
+    if (fade <= 0.01) {
+      continue
+    }
+    const angle = hash(i, 71) * Math.PI * 2
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    const dist = reach * smoothEnd3(phase) * (0.45 + hash(i, 83) * 0.9) // fast out, easing
+    const rise = scale * 0.05 * phase * phase // a gentle buoyant lift as it flies
+    const x = cx + cos * dist
+    const y = cy + sin * dist - rise
+    // A round green bubble with a soft glowing halo.
+    const r = scale * (0.006 + hash(i, 51) * 0.008) * (0.6 + 0.7 * fade)
+    const gc = 232 + Math.floor(hash(i, 29) * 23) // green 232..255
+    const rc = 70 + Math.floor(hash(i, 37) * 70) //  red   70..140 (a touch of variety)
+    const bc = 95 + Math.floor(hash(i, 43) * 55) //  blue  95..150
+    const bub = ctx.createRadialGradient(x, y, 0, x, y, r)
+    bub.addColorStop(0, `rgba(${rc}, ${gc}, ${bc}, ${fade})`)
+    bub.addColorStop(1, 'rgba(70, 220, 110, 0)')
+    ctx.fillStyle = bub
+    ctx.beginPath()
+    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.fill()
+    // A short motion streak trailing back toward the impact — the "shoot away" read.
+    const len = scale * (0.012 + 0.016 * hash(i, 97)) * fade
+    ctx.strokeStyle = `rgba(190, 255, 190, ${fade * 0.45})`
+    ctx.lineWidth = Math.max(1, scale * 0.003)
+    ctx.beginPath()
+    ctx.moveTo(x - cos * len, y - sin * len)
+    ctx.lineTo(x, y)
+    ctx.stroke()
   }
   ctx.restore()
 }

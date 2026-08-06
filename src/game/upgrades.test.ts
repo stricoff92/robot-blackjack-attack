@@ -8,6 +8,7 @@ import { Session } from './session'
 import {
   bumpUpgrade,
   emptyUpgrades,
+  inflationResistanceFor,
   MAX_UPGRADE_TIER,
   nextTierLabel,
   rulesForUpgrades,
@@ -163,6 +164,14 @@ describe('token eco', () => {
     const shoe = [card('K'), card('Q'), card('10', 'hearts'), card('7')] // player 20 beats dealer 17
     expect(reward(stand(startRound(shoe, 10, rules({ tokenEco: 2 }))))).toEqual({ damage: 22, tokens: 9 }) // 8 * 1.10
     expect(reward(stand(startRound(shoe, 10, rules({ tokenEco: 3 }))))).toEqual({ damage: 22, tokens: 10 }) // 8 * 1.20
+  })
+
+  it('resists token inflation, from full to half across the tiers', () => {
+    const at = (tokenEco: number): RunUpgrades => ({ antiDealer: 0, chipEco: 0, tokenEco })
+    expect(inflationResistanceFor(at(0))).toBe(1)
+    expect(inflationResistanceFor(at(1))).toBe(0.85)
+    expect(inflationResistanceFor(at(2))).toBe(0.7)
+    expect(inflationResistanceFor(at(3))).toBe(0.5)
   })
 })
 

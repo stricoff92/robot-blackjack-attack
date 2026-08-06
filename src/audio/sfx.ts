@@ -9,6 +9,8 @@
 // a base gain (all 1.0 for now) that setGain() can retune at runtime, and an
 // optional playback-rate jitter so repeated draws/moves don't sound identical.
 
+import { createAudioContext } from './context'
+
 // Vite fingerprints each asset URL; fetch() then pulls it (from cache after the
 // first load) for decodeAudioData.
 import shuffleUrl from '../assets/oxidvideos-shuffling-deck-of-cards-522518.ogg'
@@ -117,7 +119,9 @@ const SFX: Record<SfxName, SfxDef> = {
 // Peak level of the synth vacuum drone that accompanies the shredder.
 const VACUUM_GAIN = 0.16
 
-type WindowWithWebkitAudio = Window & { webkitAudioContext?: typeof AudioContext }
+// Master level of the synth "repair beam" (playHeal) — kept gentle so the dealer's
+// heal reads as soft restorative light, not a second blast.
+const HEAL_GAIN = 0.2
 
 class SfxService {
   private ctx: AudioContext | null = null
@@ -209,6 +213,81 @@ class SfxService {
     }
     osc.start(t0)
     osc.stop(t0 + dur + 0.02)
+  }
+
+  // A synthesised "repair beam": a warm major-chord swell that glides gently upward
+  // — a hopeful, restorative rise, the wholesome counterpart to the laser's blast —
+  // topped with a faint high shimmer as the beam lands. All sine/triangle voices
+  // under soft gain envelopes (through a warming lowpass), so it reads as gentle
+  // light rather than an impact. `delaySeconds` schedules it to lead the beam. Like
+  // playTone it's fully synthesised, so it needs no buffer / load().
+  playHeal(delaySeconds = 0): void {
+    const ctx = this.context()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    const t0 = ctx.currentTime + Math.max(0, delaySeconds)
+    const dur = 0.9
+
+    // Master swell for the whole heal: eased up, held, then back to silence so
+    // nothing clicks on/off.
+    const out = ctx.createGain()
+    out.gain.setValueAtTime(0, t0)
+    out.gain.linearRampToValueAtTime(HEAL_GAIN, t0 + 0.12)
+    out.gain.setValueAtTime(HEAL_GAIN, t0 + dur * 0.62)
+    out.gain.linearRampToValueAtTime(0, t0 + dur)
+    out.connect(ctx.destination)
+
+    // A soft lowpass keeps the chord warm (no harsh upper partials); the sparkle
+    // layer below bypasses it so its twinkle still reads bright.
+    const warm = ctx.createBiquadFilter()
+    warm.type = 'lowpass'
+    warm.frequency.value = 2600
+    warm.Q.value = 0.6
+    warm.connect(out)
+
+    // The chord — G major (root, third, fifth, octave) — each voice gliding up ~a
+    // semitone across the swell so the whole tone lifts (the "restore" rise). Upper
+    // voices are quieter so it reads as one warm chord, not four stacked beeps.
+    const chord = [392.0, 493.9, 587.3, 784.0]
+    const glide = 1.06
+    chord.forEach((hz, i) => {
+      const osc = ctx.createOscillator()
+      osc.type = i === 0 ? 'triangle' : 'sine' // a touch of body on the root
+      osc.frequency.setValueAtTime(hz, t0)
+      osc.frequency.linearRampToValueAtTime(hz * glide, t0 + dur)
+      const v = ctx.createGain()
+      v.gain.value = 0.6 / (i + 1.6)
+      osc.connect(v).connect(warm)
+      osc.onended = () => {
+        osc.disconnect()
+        v.disconnect()
+      }
+      osc.start(t0)
+      osc.stop(t0 + dur + 0.05)
+    })
+
+    // A faint high shimmer: two quick sine pings an octave-plus up, staggered, to
+    // twinkle as the beam lands — the little "heal" sparkle. Bypasses the lowpass so
+    // it stays crisp; very quiet, quick exponential decay.
+    const shimmer = [1568.0, 2093.0]
+    shimmer.forEach((hz, i) => {
+      const at = t0 + 0.2 + i * 0.12
+      const osc = ctx.createOscillator()
+      osc.type = 'sine'
+      osc.frequency.value = hz
+      const v = ctx.createGain()
+      v.gain.setValueAtTime(0, at)
+      v.gain.linearRampToValueAtTime(0.12, at + 0.01)
+      v.gain.exponentialRampToValueAtTime(0.0001, at + 0.3)
+      osc.connect(v).connect(out)
+      osc.onended = () => {
+        osc.disconnect()
+        v.disconnect()
+      }
+      osc.start(at)
+      osc.stop(at + 0.34)
+    })
   }
 
   // Begin the shredding bed: the shredder clip on a loop (so it covers a shred of any
@@ -320,24 +399,16 @@ class SfxService {
     )
   }
 
+  // The context is created through the shared factory, which wires in the
+  // iOS/Android unlock plumbing (gesture-resume kept live across backgrounding,
+  // the "playback" audio-session hint, and hidden/visible suspend/resume) — see
+  // ./context. play() still nudges resume() as a belt-and-braces for the first
+  // automatic sound (e.g. the end-of-hand riffle).
   private context(): AudioContext {
     if (!this.ctx) {
-      const Ctor = window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext
-      this.ctx = new Ctor()
-      this.unlockOnGesture()
+      this.ctx = createAudioContext()
     }
     return this.ctx
-  }
-
-  // Autoplay policy leaves the context suspended until the user interacts;
-  // resume on the first gesture so an automatic sound (e.g. the end-of-hand
-  // riffle) isn't silently dropped.
-  private unlockOnGesture(): void {
-    const resume = (): void => {
-      void this.ctx?.resume()
-    }
-    window.addEventListener('pointerdown', resume, { once: true })
-    window.addEventListener('keydown', resume, { once: true })
   }
 }
 

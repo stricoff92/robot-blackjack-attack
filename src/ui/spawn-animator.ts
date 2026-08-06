@@ -44,6 +44,16 @@ const UNWRAP_MS = 860 // plastic opens in beats: edge strip peels + tosses → s
 const UNWRAP_HOLD_AT = 0.5
 const UNWRAP_HOLD_MS = 300
 
+// The final dealer gets a grander presentation: the fresh deck's fly-in, settle, and
+// unwrap all play slower and more deliberately, with a longer pause on the empty shoe
+// and a longer mid-unwrap hold — so its arrival reads as the climax it is. Only the
+// scaling changes; the beats themselves are the same. Applied when begin(grand=true).
+const GRAND_SPAWN_DELAY_SCALE = 1.7
+const GRAND_FLY_SCALE = 1.5
+const GRAND_SETTLE_SCALE = 2.6
+const GRAND_UNWRAP_SCALE = 1.3
+const GRAND_HOLD_SCALE = 2.4
+
 export interface DeckState {
   fly: number // 0..1 dealer → shoe (0 = at the dealer, 1 = landed)
   unwrap: number // 0..1 plastic tear-off (0 = wrapped, 1 = bare deck)
@@ -63,17 +73,30 @@ export class SpawnAnimation {
   private unwrapStart = 0
   private unwrapEnd = 0
   private endAt = 0
+  // Durations for the fresh deck's fly-in + unwrap, stretched for the grand (final
+  // dealer) ceremony. Held as fields so the per-frame queries scale to match begin().
+  private flyMs = DECK_FLY_MS
+  private unwrapMs = UNWRAP_MS
+  private unwrapHoldMs = UNWRAP_HOLD_MS
 
   // Start the ceremony at `now`, shredding `cardCount` table cards (0 on page load,
   // where there are no previous cards). `shredOldDeck` also sucks the previous dealer's
   // resting deck into the mouth before the fresh one flies in (a kill / New run — false
   // on the opening intro, which has no old deck). Returns the timestamp the deck is
   // fully unwrapped and ready — the moment the next hand may deal.
-  begin(now: number, cardCount: number, shredOldDeck = false): number {
+  begin(now: number, cardCount: number, shredOldDeck = false, grand = false): number {
     this.begun = true
     this.t0 = now
     this.n = Math.max(0, cardCount)
     this.hasOldDeck = shredOldDeck
+
+    // Stretch the fresh-deck beats for the grand (final dealer) ceremony; identity
+    // scales (×1) otherwise, so every other spawn is unchanged.
+    const spawnDelayMs = DECK_SPAWN_DELAY_MS * (grand ? GRAND_SPAWN_DELAY_SCALE : 1)
+    const settleMs = DECK_SETTLE_MS * (grand ? GRAND_SETTLE_SCALE : 1)
+    this.flyMs = DECK_FLY_MS * (grand ? GRAND_FLY_SCALE : 1)
+    this.unwrapMs = UNWRAP_MS * (grand ? GRAND_UNWRAP_SCALE : 1)
+    this.unwrapHoldMs = UNWRAP_HOLD_MS * (grand ? GRAND_HOLD_SCALE : 1)
 
     const lastCardSuckStart = this.n > 0 ? (this.n - 1) * SHRED_STAGGER_MS : 0
     const lastCardSuckEnd = this.n > 0 ? lastCardSuckStart + SHRED_SUCK_MS : 0
@@ -97,12 +120,12 @@ export class SpawnAnimation {
     // vanishing and the new one arriving); on the intro (no old deck) it instead leaves the
     // dealer DECK_FLY_LEAD_MS before the last table card lands, as before.
     const deckFlyBase = this.hasOldDeck
-      ? this.deckShredEnd + DECK_SPAWN_DELAY_MS
+      ? this.deckShredEnd + spawnDelayMs
       : now + lastCardSuckEnd - DECK_FLY_LEAD_MS
     this.deckFlyStart = Math.max(now, deckFlyBase)
-    this.deckFlyEnd = this.deckFlyStart + DECK_FLY_MS
-    this.unwrapStart = this.deckFlyEnd + DECK_SETTLE_MS
-    this.unwrapEnd = this.unwrapStart + UNWRAP_MS + UNWRAP_HOLD_MS
+    this.deckFlyEnd = this.deckFlyStart + this.flyMs
+    this.unwrapStart = this.deckFlyEnd + settleMs
+    this.unwrapEnd = this.unwrapStart + this.unwrapMs + this.unwrapHoldMs
 
     const lastCardChunkEnd =
       this.n > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
@@ -201,7 +224,7 @@ export class SpawnAnimation {
       return null
     }
     if (now < this.deckFlyEnd) {
-      return { fly: (now - this.deckFlyStart) / DECK_FLY_MS, unwrap: 0 }
+      return { fly: (now - this.deckFlyStart) / this.flyMs, unwrap: 0 }
     }
     if (now < this.unwrapStart) {
       return { fly: 1, unwrap: 0 }
@@ -217,14 +240,14 @@ export class SpawnAnimation {
   // UNWRAP_HOLD_MS (the strip is gone, the sheet not yet sliding), then resumes —
   // so the slide-left beat is pushed UNWRAP_HOLD_MS later without altering its shape.
   private unwrapProgress(elapsed: number): number {
-    const holdStart = UNWRAP_HOLD_AT * UNWRAP_MS
+    const holdStart = UNWRAP_HOLD_AT * this.unwrapMs
     if (elapsed < holdStart) {
-      return elapsed / UNWRAP_MS
+      return elapsed / this.unwrapMs
     }
-    if (elapsed < holdStart + UNWRAP_HOLD_MS) {
+    if (elapsed < holdStart + this.unwrapHoldMs) {
       return UNWRAP_HOLD_AT
     }
-    return (elapsed - UNWRAP_HOLD_MS) / UNWRAP_MS
+    return (elapsed - this.unwrapHoldMs) / this.unwrapMs
   }
 }
 

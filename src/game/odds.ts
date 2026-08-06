@@ -181,7 +181,7 @@ function dealerBeatsPlayer(
   }
   if (!frozen) {
     let usedNext = false
-    while (dealerHits(evaluateRanks(ranks), rules)) {
+    while (dealerHits(evaluateRanks(ranks), rules, playerTotal)) {
       if (nextRank !== null && !usedNext) {
         ranks.push(nextRank) // known top-of-shoe card, already excluded from the pool
         usedNext = true
@@ -203,13 +203,28 @@ function dealerBeatsPlayer(
   return dealerTotal <= 21 && dealerTotal > playerTotal
 }
 
-// The dealer's fixed rule: hit below 17, and hit a soft 17 only when the table
-// says so. Mirrors round.ts' dealerShouldHit, working from an evaluated value.
-function dealerHits(value: HandValue, rules: RoundRules): boolean {
+// The dealer's play rule: hit below 17, stand on 21, and follow rules.dealerSoft17 at
+// 17-20. Mirrors round.ts' dealerShouldHit exactly (the 'smart' rule's soft-vs-hard
+// split, the desperation hard-hit ceiling, and the downgraded settling total), so the
+// odds reflect how the dealer really plays. `playerTotal` is the standing player total.
+function dealerHits(value: HandValue, rules: RoundRules, playerTotal: number): boolean {
   if (value.total < DEALER_STANDS_AT) {
     return true
   }
-  return value.total === DEALER_STANDS_AT && value.soft && rules.dealerHitsSoft17
+  if (value.total >= 21) {
+    return false
+  }
+  if (rules.dealerSoft17 === 'hit') {
+    return value.total === DEALER_STANDS_AT && value.soft
+  }
+  if (rules.dealerSoft17 === 'smart') {
+    const effective = rules.dealerDowngrade && value.total < 21 ? value.total - 1 : value.total
+    if (value.soft) {
+      return value.total === DEALER_STANDS_AT && effective <= playerTotal
+    }
+    return value.total <= rules.dealerHardHitCeiling && effective < playerTotal
+  }
+  return false
 }
 
 // Pick a rank from the multiset weighted by its remaining count and decrement it

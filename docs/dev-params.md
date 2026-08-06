@@ -26,6 +26,7 @@ server is `5173`.)
 | `forcePairs` | *(flag)* | Every deal gives the player a splittable pair. |
 | `forcePairs=<rank>` | `2`–`10`, `J`, `Q`, `K`, `A` | …a pair of that specific rank. |
 | `tokens=<n>` | non-negative int | Start the run with `n` tokens (buy powerups off the first deal). |
+| `chips=<n>` | positive int | Start the run with `n` chips (test the wealth-floor bet — §5 — with a fat stack). |
 | `dealerHealth=<n>` | `1`–`100` | Start the first dealer at `n`% health (see the low-health eye flicker / a quick kill). |
 | `dealer=<n>` | `1`–`6` | Start the run at dealer `n` (jumps straight to that dealer's colour). |
 | `sabotageUpgrade=<t>` | `0`–`3` | Start with the **Sabotage** (anti-dealer) path unlocked through tier `t`. |
@@ -72,6 +73,7 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 ?forcePairs=8                          # split 8s every hand
 ?forcePairs&tokens=1000                # splits + re-splits with tokens to burn
 ?dealer=6&dealerHealth=5               # the final RGB dealer, near death
+?dealer=6&chips=8000                   # Dealer 6 with a fat stack → the 12.5% wealth-floor bet kicks in
 ?chipUpgrade=3&tokenUpgrades=2         # maxed Payout + Tokens through tier 2
 ?sabotageUpgrade=3&dealer=5            # maxed Sabotage, starting at dealer 5
 ?dealerBlackjack&sabotageUpgrade=1     # watch the refund animation on repeat

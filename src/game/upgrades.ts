@@ -17,7 +17,8 @@ export interface RunUpgrades {
   antiDealer: number
   /** Bigger chip payouts: 3:1 blackjacks → 21 as blackjack → 20 as blackjack. */
   chipEco: number
-  /** More tokens: ×1.05 → ×1.10 → ×1.20 on every reward. */
+  /** The economy path: more tokens (×1.05 → ×1.20 on every reward) AND slower token
+   *  inflation (accrue ×0.85 → ×0.50 per shift — see inflationResistanceFor). */
   tokenEco: number
 }
 
@@ -29,6 +30,13 @@ const DEALER_NATURAL_REFUND = 0.6
 // Token eco multiplier by unlocked tier (index = level 0..3). The tiers replace
 // one another rather than stacking, so the top is a flat ×1.20.
 const TOKEN_MULTIPLIERS = [1, 1.05, 1.1, 1.2]
+
+// Token eco inflation resistance by unlocked tier (index = level 0..3): the factor
+// applied to each shift's token-inflation add (run.ts). Since the Tokens path earns
+// more tokens — which would otherwise inflate faster — this resistance both cancels
+// that and turns the path into the run's economy/anti-inflation identity. At max the
+// player inflates at half rate.
+const INFLATION_RESISTANCE = [1, 0.85, 0.7, 0.5]
 
 export function emptyUpgrades(): RunUpgrades {
   return { antiDealer: 0, chipEco: 0, tokenEco: 0 }
@@ -54,6 +62,13 @@ export function hasAvailableUpgrade(upgrades: RunUpgrades): boolean {
 
 export function tokenMultiplierFor(upgrades: RunUpgrades): number {
   return TOKEN_MULTIPLIERS[upgrades.tokenEco] ?? 1
+}
+
+// The factor applied to each shift's token-inflation add for the run's Token eco
+// tier — 1 (no path) down to 0.5 (maxed), so a maxed Tokens build inflates half as
+// fast. See run.ts's inflationIncrement.
+export function inflationResistanceFor(upgrades: RunUpgrades): number {
+  return INFLATION_RESISTANCE[upgrades.tokenEco] ?? INFLATION_RESISTANCE[INFLATION_RESISTANCE.length - 1]
 }
 
 // Fold the unlocked tiers into the RoundRules for a fresh round.
@@ -111,9 +126,9 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
     name: 'Tokens',
     color: '#49b26a',
     tiers: [
-      '+5% tokens',
-      '+10% tokens',
-      '+20% tokens',
+      '+5% tokens · 15% inflation resist',
+      '+10% tokens · 30% inflation resist',
+      '+20% tokens · 50% inflation resist',
     ],
   },
 ]

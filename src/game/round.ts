@@ -4,8 +4,17 @@ import { cardValue, evaluateHand, isBlackjack, isBust } from './hand'
 export type RoundStatus = 'player-turn' | 'dealer-turn' | 'resolved'
 export type HandOutcome = 'blackjack' | 'win' | 'push' | 'lose' | 'bust'
 
+// How the dealer plays a soft 17: 'stand' (S17, the friendly default), 'hit' (H17 —
+// always draws), or 'smart' (draws only when it isn't already beating the player —
+// see dealerShouldHit). Set per dealer in run.ts's SHIFT_TABLE.
+export type Soft17Rule = 'stand' | 'hit' | 'smart'
+
 export interface RoundRules {
-  dealerHitsSoft17: boolean
+  /** The dealer's soft-17 play rule for this round (per dealer, see run.ts). */
+  dealerSoft17: Soft17Rule
+  /** The highest HARD total the 'smart' dealer will hit when strictly behind (17 for a
+   *  healthy dealer; Dealer 6 raises it toward 20 as it nears death — see run.ts). */
+  dealerHardHitCeiling: number
   blackjackPayoutNumerator: number
   blackjackPayoutDenominator: number
   allowSplit: boolean
@@ -26,7 +35,8 @@ export interface RoundRules {
 }
 
 export const DEFAULT_ROUND_RULES: RoundRules = {
-  dealerHitsSoft17: false,
+  dealerSoft17: 'stand',
+  dealerHardHitCeiling: 17,
   blackjackPayoutNumerator: 3,
   blackjackPayoutDenominator: 2,
   allowSplit: true,
@@ -389,21 +399,79 @@ function playDealer(round: Round): Round {
   if (round.dealerFrozen) {
     return round
   }
+  // The 'smart' soft-17 rule plays against the player's best live hand.
+  const playerTotal = bestLivePlayerTotal(round)
   let dealer = round.dealer
   let drawIndex = round.drawIndex
-  while (dealerShouldHit(dealer, round.rules)) {
+  while (dealerShouldHit(dealer, round.rules, playerTotal)) {
     dealer = [...dealer, round.shoe[drawIndex]]
     drawIndex += 1
   }
   return { ...round, dealer, drawIndex }
 }
 
-function dealerShouldHit(dealer: Card[], rules: RoundRules): boolean {
+// The dealer's play rule: always hit below 17, always stand on 21. At 17-20,
+// rules.dealerSoft17 decides:
+//   • 'hit'   — plain H17: draw a soft 17, stand everything else.
+//   • 'smart' — draw only when not already beating the player, judged on the dealer's
+//     *settling* total (Anti-dealer downgrade folded in) vs the player's best live
+//     hand. A SOFT 17 draws when behind OR tied (the ace makes that hit free, so
+//     breaking even a push is +EV). A HARD total draws only when *strictly* behind and
+//     no higher than dealerHardHitCeiling — 17 for a healthy dealer, but a wounded
+//     Dealer 6 raises it (18/19/20) as it grows desperate, taking bigger risks to
+//     survive a hand a stand would lose.
+function dealerShouldHit(dealer: Card[], rules: RoundRules, playerTotal: number): boolean {
   const value = evaluateHand(dealer)
   if (value.total < DEALER_STANDS_AT) {
     return true
   }
-  return value.total === DEALER_STANDS_AT && value.soft && rules.dealerHitsSoft17
+  if (value.total >= 21) {
+    return false
+  }
+  if (rules.dealerSoft17 === 'hit') {
+    return value.total === DEALER_STANDS_AT && value.soft
+  }
+  if (rules.dealerSoft17 === 'smart') {
+    const effective = rules.dealerDowngrade && value.total < 21 ? value.total - 1 : value.total
+    if (value.soft) {
+      return value.total === DEALER_STANDS_AT && effective <= playerTotal
+    }
+    return value.total <= rules.dealerHardHitCeiling && effective < playerTotal
+  }
+  return false // 'stand'
+}
+
+// The highest standing-eligible total (17-20) the dealer held and then hit before
+// busting — the hand it "would have stood on" under stand-on-17. On a bust the final
+// total is >21, so every 17-20 it ever held was a hit it chose (a forced draw only
+// happens below 17), and this is the best one it threw away. 0 if it never held one
+// (it drew straight from a stiff into the bust). Used to grade the player's win so the
+// dealer's aggression doesn't dock them to the weak bust tier (see rewards.ts).
+export function dealerAbandonedStand(dealer: Card[]): number {
+  let best = 0
+  for (let n = 2; n <= dealer.length; n += 1) {
+    const total = evaluateHand(dealer.slice(0, n)).total
+    if (total >= 17 && total <= 20 && total > best) {
+      best = total
+    }
+  }
+  return best
+}
+
+// The best (highest, non-busted) total among the player hands still to be judged
+// against the dealer — the target the 'smart' soft-17 rule plays against. Hands that
+// already carry an outcome (busts, auto-blackjacks) are settled and need no dealer.
+function bestLivePlayerTotal(round: Round): number {
+  let best = 0
+  for (const hand of round.hands) {
+    if (hand.outcome === null) {
+      const total = evaluateHand(hand.cards).total
+      if (total <= 21 && total > best) {
+        best = total
+      }
+    }
+  }
+  return best
 }
 
 // The dealer's total as it settles: normally the evaluated hand, but one lower

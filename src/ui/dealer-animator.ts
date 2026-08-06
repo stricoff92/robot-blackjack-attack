@@ -9,7 +9,7 @@
 // health bar. The kill phase durations are EXPORTED so health-animator.ts locks
 // its drain/pause/refill to them (they can't drift apart).
 
-import { FULL_INTEGRITY } from '../game/run'
+import { maxIntegrityFor } from '../game/run'
 import { arch2, smoothEnd2, smoothStart2 } from '../render/easing'
 import { WALK_STEPS, type DealerView } from '../render/dealer'
 import type { StrikeView } from '../render/nexus'
@@ -87,7 +87,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     final = false,
     walkIn = true,
   ): void {
-    this.level = clamp01(Math.max(0, nextIntegrity) / FULL_INTEGRITY)
+    this.level = clamp01(Math.max(0, nextIntegrity) / maxIntegrityFor(nextShift))
 
     if (nextShift > prevShift) {
       this.mode = 'kill'
@@ -120,9 +120,10 @@ export class DealerAnimation implements DealerView, StrikeView {
 
   // Snap the settled health fraction to a given integrity without playing a hit —
   // used on load so a dealer that starts partway damaged (the dealerHealth dev
-  // override) flickers (or not) correctly from the first frame.
-  setLevel(integrity: number): void {
-    this.level = clamp01(Math.max(0, integrity) / FULL_INTEGRITY)
+  // override) flickers (or not) correctly from the first frame. `shift` scales it to
+  // that dealer's max.
+  setLevel(integrity: number, shift: number): void {
+    this.level = clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
   }
 
   // Snap the figure's colour identity to a given dealer without any death/walk-in —

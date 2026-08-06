@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
-import { hitTokens } from './run'
+import { getShift, hitTokens, powerupCost } from './run'
 import { Session } from './session'
 
 describe('Session', () => {
@@ -187,7 +187,9 @@ describe('Session.buyReturn', () => {
         // three cards; if it survives, that's our scenario.
         const round = snap.round!
         const affordableCleanStart =
-          snap.run.tokens >= cost && round.hands.length === 1 && round.hands[0].cards.length === 2
+          snap.run.tokens >= powerupCost(cost, snap.run) &&
+          round.hands.length === 1 &&
+          round.hands[0].cards.length === 2
         if (affordableCleanStart) {
           session.hit()
           const mid = session.snapshot()
@@ -206,7 +208,9 @@ describe('Session.buyReturn', () => {
             // own reward tokens on settle and mask the deduction. A loss/push/bust
             // credits nothing, so the balance is exactly the pre-cast total minus cost.
             if (returned.outcome !== 'win' && returned.outcome !== 'blackjack') {
-              expect(after.run.tokens).toBe(tokensBefore - cost)
+              // The charge is the inflated price (token inflation may have risen if a
+              // kill happened earlier in the loop), so measure against that, not the base.
+              expect(after.run.tokens).toBe(tokensBefore - powerupCost(cost, mid.run))
               return
             }
           }
@@ -312,6 +316,12 @@ describe('Session startDealer dev override', () => {
     const run = new Session(1, { startDealer: 4 }).snapshot().run
     expect(run.shiftIndex).toBe(4)
     expect(run.kills).toEqual([1, 2, 3])
+  })
+
+  it('opens the jumped-to dealer at its own full health', () => {
+    // Regression: a jump used to leave integrity at Dealer 1's 100, so Dealer 6
+    // (max 220) opened at ~45% instead of full.
+    expect(new Session(1, { startDealer: 6 }).snapshot().run.integrity).toBe(getShift(6).maxIntegrity)
   })
 
   it('re-applies the override on a New run', () => {

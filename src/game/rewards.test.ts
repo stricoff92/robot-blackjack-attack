@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from './deck'
 import { handReward } from './rewards'
-import { freezeDealer, hit, stand, startRound, type Round } from './round'
+import { DEFAULT_ROUND_RULES, freezeDealer, hit, stand, startRound, type Round } from './round'
 
 function card(rank: Rank, suit: Suit = 'spades'): Card {
   return { rank, suit }
@@ -25,9 +25,34 @@ describe('handReward', () => {
     expect(reward(beat20)).toEqual({ damage: 52, tokens: 22 })
   })
 
-  it('pays the least for a dealer that busts itself', () => {
+  it('pays the least for a dealer that busts from a stiff (no abandoned stand)', () => {
+    // Dealer 16 was forced to draw, so the bust earns nothing more than the bust tier.
     const dealerBust = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('6'), card('10', 'hearts')], 10))
     expect(reward(dealerBust)).toEqual({ damage: 12, tokens: 4 })
+  })
+
+  it('does not punish the player when the dealer busts from a hand it would have stood on', () => {
+    // Player 20; dealer 10+9 = hard 19, hits it (desperation ceiling 19) and busts on a 5.
+    // Grade as beating the abandoned 19, not the weak bust tier.
+    const desperate = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'smart' as const, dealerHardHitCeiling: 19 }
+    const shoe = [card('K'), card('K', 'hearts'), card('10'), card('9'), card('5')]
+    const round = stand(startRound(shoe, 10, desperate))
+    expect(round.dealer.length).toBeGreaterThan(2) // it hit the 19
+    expect(reward(round)).toEqual({ damage: 40, tokens: 16 }) // beat-19, not { 12, 4 }
+  })
+
+  it('folds the Sabotage downgrade into the abandoned-stand credit (if active)', () => {
+    const shoe = [card('K'), card('K', 'hearts'), card('10'), card('9'), card('5')]
+    const downgraded = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'smart' as const, dealerHardHitCeiling: 19, dealerDowngrade: true }
+    // Abandoned 19 → −1 → 18 → beat-18, mirroring a stood downgraded 19.
+    expect(reward(stand(startRound(shoe, 10, downgraded)))).toEqual({ damage: 30, tokens: 12 })
+  })
+
+  it('credits an abandoned soft 17 (H17 dealer) as beat-17 on a bust', () => {
+    // Dealer A+6 = soft 17, hits per H17 → 6 → 13 → K → bust. Player 18 wins.
+    const hitRules = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'hit' as const }
+    const shoe = [card('K'), card('8'), card('A'), card('6'), card('6', 'hearts'), card('K', 'hearts')]
+    expect(reward(stand(startRound(shoe, 10, hitRules)))).toEqual({ damage: 22, tokens: 8 })
   })
 
   it('grades every frozen-dealer win as the 17 tier', () => {

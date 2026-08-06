@@ -25,10 +25,14 @@ import {
   addTokens,
   applyRound,
   applyUpgrade,
-  FULL_INTEGRITY,
+  abilitiesLocked,
+  dealerHardHitCeiling,
+  getShift,
   hasAvailableUpgrade,
   hitTokens,
+  maxIntegrityFor,
   nextBet,
+  powerupCost,
   spendTokens,
   startRun,
   type RunState,
@@ -49,6 +53,8 @@ export interface SessionOptions {
   forcePairRank?: Rank | null
   /** Dev switch: seed the run (and each New run) with this many tokens; null = default. */
   startTokens?: number | null
+  /** Dev switch: seed the run (and each New run) with this many chips; null = default (300). */
+  startChips?: number | null
   /** Dev switch: start the first dealer of each run at this % health (1-100); null = full. */
   dealerHealth?: number | null
   /** Dev switch: start each run at this dealer (1-based); null = the first dealer. */
@@ -67,6 +73,8 @@ export interface SessionState {
   foresightCard: Card | null
   /** Live Analyze readout, shown until the next action clears it. */
   analysis: Analysis | null
+  /** Whether token abilities are locked — the Dealer 6 "honorable duel" (< 20% health). */
+  abilitiesLocked: boolean
 }
 
 // Decorrelates the Analyze simulator's RNG from the deal RNG, so running odds
@@ -74,9 +82,14 @@ export interface SessionState {
 // the player ever buys Analyze).
 const ANALYSIS_SEED_SALT = 0x5f356495
 
+// Decorrelates the heal-on-win roll from the deal RNG, so a healing dealer's repair
+// amount never disturbs the card sequence (like ANALYSIS_SEED_SALT does for Analyze).
+const HEAL_SEED_SALT = 0x1b873593
+
 export class Session {
   private nextRandom: Rng
   private analysisRandom: Rng
+  private healRandom: Rng
   private run: RunState
   private round: Round | null = null
   private phase: Phase = 'betting'
@@ -89,6 +102,7 @@ export class Session {
   private readonly forcePairs: boolean
   private readonly forcePairRank: Rank | null
   private readonly startTokens: number | null
+  private readonly startChips: number | null
   private readonly dealerHealth: number | null
   private readonly startDealer: number | null
   private readonly startUpgrades: RunUpgrades | null
@@ -97,9 +111,11 @@ export class Session {
   constructor(seed: number, options: SessionOptions = {}) {
     this.nextRandom = createRng(seed)
     this.analysisRandom = createRng(seed ^ ANALYSIS_SEED_SALT)
+    this.healRandom = createRng(seed ^ HEAL_SEED_SALT)
     this.forcePairs = options.forcePairs ?? false
     this.forcePairRank = options.forcePairRank ?? null
     this.startTokens = options.startTokens ?? null
+    this.startChips = options.startChips ?? null
     this.dealerHealth = options.dealerHealth ?? null
     this.startDealer = options.startDealer ?? null
     this.startUpgrades = options.startUpgrades ?? null
@@ -114,6 +130,9 @@ export class Session {
     if (this.startTokens !== null) {
       run = { ...run, tokens: this.startTokens }
     }
+    if (this.startChips !== null) {
+      run = { ...run, chips: this.startChips }
+    }
     if (this.startDealer !== null && this.startDealer > 1) {
       // Jump to a later dealer: advance the shift index and seed the kills of the
       // dealers we skipped, so the "dealers left" pips and the win-at-6 count stay
@@ -122,10 +141,13 @@ export class Session {
       for (let i = 1; i < this.startDealer; i += 1) {
         kills.push(i)
       }
-      run = { ...run, shiftIndex: this.startDealer, kills }
+      // Full health for the jumped-to dealer — its own max, not Dealer 1's (or the bar
+      // would open partway drained, e.g. 100/220 at Dealer 6).
+      run = { ...run, shiftIndex: this.startDealer, kills, integrity: maxIntegrityFor(this.startDealer) }
     }
     if (this.dealerHealth !== null) {
-      run = { ...run, integrity: Math.round((FULL_INTEGRITY * this.dealerHealth) / 100) }
+      // dealerHealth is a percentage of the current dealer's own max integrity.
+      run = { ...run, integrity: Math.round((maxIntegrityFor(run.shiftIndex) * this.dealerHealth) / 100) }
     }
     if (this.startUpgrades !== null) {
       run = { ...run, upgrades: this.startUpgrades }
@@ -141,6 +163,7 @@ export class Session {
       peeked: this.peeked,
       foresightCard: this.foresightCard,
       analysis: this.analysis,
+      abilitiesLocked: abilitiesLocked(this.run),
     }
   }
 
@@ -159,8 +182,14 @@ export class Session {
     this.peeked = false
     this.foresightCard = null
     this.analysis = null
-    // Fold the run's unlocked upgrades into this round's rules.
-    this.round = startRound(shoe, bet, rulesForUpgrades(this.run.upgrades))
+    // Fold the run's unlocked upgrades AND the current dealer's house rules (late
+    // dealers hit soft 17) into this round's rules.
+    const rules = {
+      ...rulesForUpgrades(this.run.upgrades),
+      dealerSoft17: getShift(this.run.shiftIndex).dealerSoft17,
+      dealerHardHitCeiling: dealerHardHitCeiling(this.run),
+    }
+    this.round = startRound(shoe, bet, rules)
     if (this.round.status === 'resolved') {
       this.settle()
     } else {
@@ -203,7 +232,7 @@ export class Session {
       return
     }
     this.analysis = null
-    this.run = spendTokens(this.run, POWERUPS.peek.cost)
+    this.run = spendTokens(this.run, this.costOf('peek'))
     this.peeked = true
   }
 
@@ -213,7 +242,7 @@ export class Session {
     }
     const round = this.requireRound()
     this.analysis = null
-    this.run = spendTokens(this.run, POWERUPS.foresight.cost)
+    this.run = spendTokens(this.run, this.costOf('foresight'))
     this.foresightCard = round.shoe[round.drawIndex]
   }
 
@@ -225,7 +254,7 @@ export class Session {
       return
     }
     const round = this.requireRound()
-    this.run = spendTokens(this.run, POWERUPS.analyze.cost)
+    this.run = spendTokens(this.run, this.costOf('analyze'))
     // Fold in whatever the player has already peeked: the dealer's hole card
     // (Peek Dealer) and/or the next card in the shoe (Peek Deck). Both sharpen the
     // odds — a known hole is used outright, a known next card makes the outcome
@@ -241,7 +270,7 @@ export class Session {
     if (!this.canBuy('late-double') || !this.canAffordLateDouble()) {
       return
     }
-    this.run = spendTokens(this.run, POWERUPS['late-double'].cost)
+    this.run = spendTokens(this.run, this.costOf('late-double'))
     this.act(() => lateDouble(this.requireRound()))
   }
 
@@ -249,7 +278,7 @@ export class Session {
     if (!this.canBuy('forced-split') || !canForcedSplit(this.requireRound()) || !this.canAffordSplitBet()) {
       return
     }
-    this.run = spendTokens(this.run, POWERUPS['forced-split'].cost)
+    this.run = spendTokens(this.run, this.costOf('forced-split'))
     this.act(() => forcedSplit(this.requireRound()))
   }
 
@@ -258,7 +287,7 @@ export class Session {
       return
     }
     this.analysis = null
-    this.run = spendTokens(this.run, POWERUPS['second-chance'].cost)
+    this.run = spendTokens(this.run, this.costOf('second-chance'))
     this.round = armSecondChance(this.requireRound())
   }
 
@@ -267,7 +296,7 @@ export class Session {
       return
     }
     this.analysis = null
-    this.run = spendTokens(this.run, POWERUPS.freeze.cost)
+    this.run = spendTokens(this.run, this.costOf('freeze'))
     this.round = freezeDealer(this.requireRound())
   }
 
@@ -276,7 +305,7 @@ export class Session {
       return
     }
     this.analysis = null
-    this.run = spendTokens(this.run, POWERUPS.mulligan.cost)
+    this.run = spendTokens(this.run, this.costOf('mulligan'))
     // The peeked next card is dealt into the fresh hand, so the stale preview clears.
     this.foresightCard = null
     this.round = mulligan(this.requireRound())
@@ -293,7 +322,7 @@ export class Session {
     // The returned card becomes the new top of the shoe, so any Peek Deck preview
     // (which pointed at the old top) is now stale — drop it.
     this.foresightCard = null
-    this.run = spendTokens(this.run, POWERUPS.return.cost)
+    this.run = spendTokens(this.run, this.costOf('return'))
     this.round = returnCard(this.requireRound())
     // Return auto-stands, which can hand the turn to the dealer and resolve the
     // round outright — settle if so, exactly like a normal stand.
@@ -328,6 +357,7 @@ export class Session {
     const seed = generateSeed()
     this.nextRandom = createRng(seed)
     this.analysisRandom = createRng(seed ^ ANALYSIS_SEED_SALT)
+    this.healRandom = createRng(seed ^ HEAL_SEED_SALT)
     this.run = this.freshRun(seed)
     this.round = null
     this.peeked = false
@@ -353,7 +383,7 @@ export class Session {
 
   private settle(): void {
     const beforeShift = this.run.shiftIndex
-    this.run = applyRound(this.run, this.requireRound())
+    this.run = applyRound(this.run, this.requireRound(), this.healRandom)
     // A non-final kill (the dealer advanced but the run isn't won) earns an upgrade
     // pick, taken after the player calls the next hand.
     if (!this.run.over && this.run.shiftIndex > beforeShift) {
@@ -362,8 +392,17 @@ export class Session {
     this.phase = this.run.over ? 'over' : 'resolved'
   }
 
+  // A powerup's live cost — its base price inflated by the run's token inflation.
+  private costOf(id: PowerupId): number {
+    return powerupCost(POWERUPS[id].cost, this.run)
+  }
+
   private canBuy(id: PowerupId): boolean {
-    return this.phase === 'playing' && this.round !== null && this.run.tokens >= POWERUPS[id].cost
+    // The Dealer 6 duel locks abilities below 20% health.
+    if (abilitiesLocked(this.run)) {
+      return false
+    }
+    return this.phase === 'playing' && this.round !== null && this.run.tokens >= this.costOf(id)
   }
 
   private canAffordLateDouble(): boolean {
