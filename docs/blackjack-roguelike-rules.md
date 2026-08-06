@@ -8,6 +8,16 @@ A solo, free-to-play web game. You sit down across from a machine that deals bla
 >
 > Keep the riff at the name level. Don't reproduce the pastel-and-dolphins look or license anything near that soundtrack — a nod is fine, a costume is a takedown.
 
+> **Revision note (2026-08-06, bet-ladder + peek pass).** Playtest still showed a player reaching the end too reliably, so two levers tightened:
+> - **Min-bet ladder doubled per dealer** (§3): 10/15/25/40/90/150 → **20/40/80/160/320/640**, with the wealth floor steepened to 0/10/12/15/18/**25%**. Max bets held at 200–2,750, so the bet *range* compresses on the later dealers. Thinner 300-chip bankroll + higher variance = more bust-outs, hardest early where runs actually end. The per-kill grant (3× the next min, §4) rises with it, so the floor climbs without starving the run.
+> - **Peek Dealer 60 → 150** (§7): repriced to parity with Peek Deck — hole-card knowledge shapes every decision of the hand, the single biggest EV leak in basic strategy, so it earns the top tier rather than a discount. `RULES_VERSION` → 13.
+>
+> **Revision note (2026-08-06, upgrade-rebalance pass).** The roguelite upgrades (§8) were the real difficulty leak — after a couple of picks a run steamrolled — so all three paths were reworked and the old "upgrades are deliberately overpowered" stance (§5 note) reversed: the toolkit is a difficulty dial now, too.
+> - **Payout** (§8): auto-blackjack removed. Now 2:1 → 3:1 blackjack → **you win all pushes** (chips + score, no damage — so it never shortens the run).
+> - **Sabotage** (§8): the −1 dealer downgrade removed. Now 75% refund → **any dealer 21 (natural or hit) is VOIDED** (a wash — a new outcome, *not* a push) → hijack the natural. Void + Payout T3 cashes the voided 21 out as a chips-only win.
+> - **Tokens** (§8): buffed to +10/18/30% and 25/45/65% inflation resist, so the (now weaker) other two don't dwarf it.
+> - **Why the damage axis, not min bets:** progress is gated by *damage* (fixed per win, independent of bet, §4); chips only buy survival. So difficulty is tuned on the damage/upgrade axis, and Payout's bigger winnings are wasted buffer by design. `RULES_VERSION` → 12.
+>
 > **Revision note (2026-08-06, final-duel pass).** Turned the Dealer 6 endgame into a climax (§3, §4):
 > - **Desperation:** as Dealer 6 falls, its smart AI raises the hard total it'll hit when behind — 17 → 18 (<30%) → 19 (<20%) → 20 (<10%).
 > - **No self-repair below 30%** and **no token abilities below 20%** ("honorable duel", shown in the UI). Heal-off is what keeps the desperation from heal-looping into an unkillable stalemate.
@@ -79,7 +89,7 @@ Standard, with the fiddly bits trimmed:
 - **No insurance.** It's a trap bet that teaches nothing and clutters the UI
 - **No surrender** at baseline (see Open Questions)
 
-*(The engine keeps these as configurable `RoundRules` — e.g. dealer-hits-soft-17, 6:5 payout — but the defaults above are the only ones in play. Roguelike upgrades (§8) can bend some of them mid-run: the Payout path raises blackjack to 3:1 and lets a 20/21 count as a natural, and the Sabotage path rewrites how the dealer's natural and standing total resolve.)*
+*(The engine keeps these as configurable `RoundRules` — e.g. dealer-hits-soft-17, 6:5 payout — but the defaults above are the only ones in play. Roguelike upgrades (§8) can bend some of them mid-run: the Payout path raises the blackjack rate (2:1, then 3:1) and later pays pushes out to the player, and the Sabotage path rewrites how the dealer's natural — and any dealer 21 — resolves.)*
 
 ---
 
@@ -89,19 +99,19 @@ This is the engine that makes the game finite. You face one dealer at a time. **
 
 | Dealer | Health | Min bet | Max bet | Wealth floor | Soft 17 | Score × |
 |---|---|---|---|---|---|---|
-| 1 | 100 | 10 | 100 | 0% | stand | 1.0 |
-| 2 | 110 | 15 | 150 | 4% | stand | 1.5 |
-| 3 | 125 | 25 | 250 | 8% | **hit** | 2.0 |
-| 4 | 150 | 40 | 400 | 12% | **hit** | 3.0 |
-| 5 | 185 | 90 | 900 | 16% | **hit** | 4.0 |
-| 6 | 220 | 150 | **2,500** | 20% | **smart** | 5.5 |
-| 7+ | +45 each dealer | ×2.5 each dealer | 10× min | 20% held | smart | **+1.5 flat** each dealer |
+| 1 | 100 | 20 | 200 | 0% | stand | 1.0 |
+| 2 | 110 | 40 | 350 | 10% | stand | 1.5 |
+| 3 | 125 | 80 | 550 | 12% | **hit** | 2.0 |
+| 4 | 150 | 160 | 850 | 15% | **hit** | 3.0 |
+| 5 | 185 | 320 | 1,700 | 18% | **hit** | 4.0 |
+| 6 | 220 | 640 | **2,750** | 25% | **smart** | 5.5 |
+| 7+ | +45 each dealer | ×2.5 each dealer | 10× min | 25% held | smart | **+1.5 flat** each dealer |
 
-Max bet is 10× the minimum through Dealer 5, then jumps to **2,500** on Dealer 6 so a dragged-out final fight can climb to a real ceiling. There is no dealer beyond the sixth in a normal run — clearing it ends the run in a win — but the extrapolation row exists so the maths never falls off a table (a dev jump can still seat a later dealer).
+Max bet is 10× the minimum on Dealer 1 but grows slower than the doubling floor, so the bet *range* narrows on the later dealers — Dealer 6 runs 640 up to **2,750** (a ~4× band), still enough for a dragged-out final fight to climb to a real ceiling. There is no dealer beyond the sixth in a normal run — clearing it ends the run in a win — but the extrapolation row exists so the maths never falls off a table (a dev jump can still seat a later dealer).
 
-**The min-bet floor climbs ~1.6× per dealer early, then jumps harder on Dealers 5–6** (90, then 150) to squeeze the endgame bankroll — the point in the run where stacked upgrades used to make bust-out a non-threat. The per-kill grant (§4) still tops up the bankroll, but the late floor means a cold streak against a fat, self-repairing Dealer 6 bleeds you fast.
+**The min-bet floor doubles per dealer** (20 → 40 → 80 → 160 → 320 → 640) to thin the 300-chip bankroll and raise variance — cold streaks bust the player out more often, hardest early where runs actually end. The per-kill grant (§4) still tops up the bankroll, but the heavier floor means a cold streak — early, or late against a fat, self-repairing Dealer 6 — bleeds you fast.
 
-**The wealth floor** (detailed in §5) is the fixed floor's answer to a rich player: the bet is forced to at least a *percentage of your current stack* — 0% on Dealer 1, up to **20% on Dealer 6** — so a bankroll swollen by banked upgrades and winnings can't shrug off the stakes. Unlike the fixed min, it scales with wealth and can even exceed the table max, so late hands always move real money no matter how far ahead you are.
+**The wealth floor** (detailed in §5) is the fixed floor's answer to a rich player: the bet is forced to at least a *percentage of your current stack* — 0% on Dealer 1, up to **25% on Dealer 6** — so a bankroll swollen by banked upgrades and winnings can't shrug off the stakes. Unlike the fixed min, it scales with wealth and can even exceed the table max, so late hands always move real money no matter how far ahead you are.
 
 **The house plays tougher late.** On top of the tanky, self-repairing HP (§4), the dealers' *play* sharpens as you climb — a house edge that lowers your win rate at the source, untouched by your upgrades. It's the cleanest "the endgame is harder" lever: the fiction is the house bringing out its better machines.
 
@@ -109,10 +119,9 @@ Max bet is 10× the minimum through Dealer 5, then jumps to **2,500** on Dealer 
 - **Dealer 6: smart 17.** The final machine is smarter than a fixed rule — it plays its 17 to your hand:
   - **Soft 17:** draws when a stand would *tie or lose*, keeps it when already ahead. (The ace makes that draw risk-free, so even breaking a push is worth it.) This captures H17's upside while cutting its one gift to the player — a plain H17 dealer busts a soft 17 it was already winning; the smart one never does.
   - **Hard 17:** draws only when *strictly behind* — where a stand is a certain loss, so any non-bust improvement helps. On a tie it stands (hitting a hard 17 would throw away a sure push), and it never hits above 17 (no drawing to an 18 to chase your 19).
-  - Both decisions **read the Sabotage downgrade** (§8): if your Anti-dealer T3 makes its 17 settle as 16, the dealer knows it's behind and draws accordingly — you can't downgrade your way past it for free.
 
 **The final duel** — as Dealer 6 nears death, the fight escalates into a raw, no-safety-net climax:
-- **Desperation.** Its hard-hit ceiling rises with its wounds: it will hit a hard total when strictly behind up to **17** (healthy) → **18** (<30% health) → **19** (<20%) → **20** (<10%). A cornered machine throwing bigger and bigger risks to survive a hand a stand would lose. (It never hits a 21, and the ceiling still respects the downgrade.)
+- **Desperation.** Its hard-hit ceiling rises with its wounds: it will hit a hard total when strictly behind up to **17** (healthy) → **18** (<30% health) → **19** (<20%) → **20** (<10%). A cornered machine throwing bigger and bigger risks to survive a hand a stand would lose. (It never hits a 21.)
 - **No self-repair below 30%.** Heal-on-win (§4) switches off once it's under 30% — too damaged to patch itself. Without this the desperation-hitting would let it heal-loop into a stalemate; with it, the endgame is a race you can actually win.
 - **No abilities below 20%.** Token powerups (§7) lock out entirely for the last stretch — an "honorable duel" of pure blackjack. Each powerup button greys out with a red ✕ in place of its price.
 - **Its gambles don't dock your damage** (§4, damage): when it busts a hand it *would have stood on*, you're paid for beating that total, not the weak bust tier — so its aggression can't cheat you out of the kill.
@@ -148,7 +157,7 @@ So the ladder is: dealer bust `<` beat 17 `<` beat 18 `<` beat 19 `<` beat 20, w
 
 **Busting wastes your attack.** Bust first and the dealer never draws, so it takes nothing — not even from a hand you'd otherwise have won. Busting already costs you your bet; now it also wastes an attack. This gives standing on a stiff 15 a real reason to exist.
 
-**A dealer that busts a hand it would have stood on still pays full damage.** When a dealer takes an above-standard hit (a soft-17 draw, or Dealer 6's smart/desperation hit on a made hand, §3) and busts, you're graded as beating the total it *abandoned* — the highest 17-20 it held — not the weak 12-damage bust tier. So the dealer's aggression can't dock your damage: forcing it to gamble a 19 and bust still pays beat-19 (40). A plain draw from a stiff (<17) has no abandoned stand and pays the bust tier as before. The Sabotage downgrade (§8) folds in exactly as if the dealer had stood (an abandoned 19 with the downgrade active pays beat-18).
+**A dealer that busts a hand it would have stood on still pays full damage.** When a dealer takes an above-standard hit (a soft-17 draw, or Dealer 6's smart/desperation hit on a made hand, §3) and busts, you're graded as beating the total it *abandoned* — the highest 17-20 it held — not the weak 12-damage bust tier. So the dealer's aggression can't dock your damage: forcing it to gamble a 19 and bust still pays beat-19 (40). A plain draw from a stiff (<17) has no abandoned stand and pays the bust tier as before.
 
 ### Heal-on-win (late dealers fight back)
 
@@ -183,18 +192,18 @@ The player does not choose a bet. The game sets it each hand as the **greater of
 
 ```
 ladder = min(dealerMinBet × (1 + handsAgainstThisDealer × 0.5), dealerMaxBet)
-floor  = dealerFloorPct × yourChips        # 0% at Dealer 1 → 20% at Dealer 6 (§3)
+floor  = dealerFloorPct × yourChips        # 0% at Dealer 1 → 25% at Dealer 6 (§3)
 bet    = min(max(ladder, floor), yourChips)
 ```
 
 **The ladder** is a **sawtooth**: `handsAgainstThisDealer` starts at 0 for each new dealer and resets when you destroy one, so each dealer opens at its minimum and the bet climbs the longer the fight drags on.
 
-- Dealer 1: 10 → 15 → 20 → 25 → …
-- Destroy it → Dealer 2 opens fresh at 15 → 23 → 30 → …
+- Dealer 1: 20 → 30 → 40 → 50 → …
+- Destroy it → Dealer 2 opens fresh at 40 → 60 → 80 → …
 
 This escalates risk over time and quietly rewards **destroying fast** — a dragged-out fight inflates your own bet and bleeds you toward bust-out. The `0.5` step is the main run-length knob (§11).
 
-**The wealth floor** is what keeps a fat bankroll honest. Without it, the fixed ladder min (150 at Dealer 6) is trivial next to a stack built from stacked upgrades and banked winnings, so a rich player never feels a hand. The floor forces the bet to at least a percentage of your *current* stack — nothing on Dealer 1, rising to **20% by Dealer 6** — so wins and losses always move real money late. Two properties fall out of it:
+**The wealth floor** is what keeps a fat bankroll honest. Without it, the fixed ladder min (640 at Dealer 6) is trivial next to a stack built from stacked upgrades and banked winnings, so a rich player never feels a hand. The floor forces the bet to at least a percentage of your *current* stack — nothing on Dealer 1, rising to **25% by Dealer 6** — so wins and losses always move real money late. Two properties fall out of it:
 
 - **It can exceed the table max.** For the very rich the percentage floor overrides `dealerMaxBet`, so there's no ceiling to hide a huge stack behind (still capped at the chips you hold).
 - **It auto-deleverages.** Because it tracks your *current* chips, a losing streak shrinks the floor as your stack shrinks — a smooth glide toward the ladder min, not a cliff. You can't be forced all-in by the floor alone.
@@ -216,7 +225,7 @@ Tokens are the powerup currency (§7). Unlike the old Charge meter, they're earn
 - **Hit tokens are risk-priced.** A safe hit pays the base +1; a hit that was very likely to bust but landed anyway pays up to +10. Because a risky hit rarely survives to be paid, the expected value stays modest — it rewards nerve without inflating the economy. The token is credited **only if the hand survives**; a bust earns nothing (this closes the old hit-into-bust farm).
 - **Win tokens move on the same tiers as damage** (§4): beating a higher standing total pays more.
 - Win/blackjack tokens are awarded per hand, so a swept split pays for each winning hand.
-- The **Token roguelike upgrade** (§8) multiplies every token reward above by ×1.05 / ×1.10 / ×1.20.
+- The **Token roguelike upgrade** (§8) multiplies every token reward above by ×1.10 / ×1.18 / ×1.30.
 - **No cap.** Tokens accumulate freely — but the more you earn, the more they inflate (below), so hoarding buys less than it looks.
 
 ### Token inflation
@@ -238,7 +247,7 @@ added(shift) = cap(shift) × min(tokensEarnedThisShift, denom(shift)) / denom(sh
 | 5 | 18.0% | 280 |
 
 - **Earned, not banked.** It keys off tokens *earned* in the shift (wins, hits, the bounty — all post-multiplier), so it can't be gamed by spend-then-rebuy, and it ramps naturally on the token-rich late dealers. A lean shift adds less than its cap; a heavy-earning one caps out.
-- **`resistance`** is the Tokens upgrade's discount on the *add* (§8): ×1 with no path, down to ×0.5 maxed. It scales the increment only — it never claws back inflation already banked. Cumulative inflation runs ~48% by Dealer 6 for typical play (~62.5% if every shift maxes), ~15 points less for a maxed-Tokens build.
+- **`resistance`** is the Tokens upgrade's discount on the *add* (§8): ×1 with no path, down to ×0.35 maxed. It scales the increment only — it never claws back inflation already banked. Cumulative inflation runs ~48% by Dealer 6 for typical play (~62.5% if every shift maxes); a maxed-Tokens build cuts its own add to ~a third (~17% cumulative typical, ~31 points less).
 
 ---
 
@@ -254,13 +263,13 @@ Bought with tokens (§6), spent during your turn. Costs escalate with how much t
 | **Late double** | 30 | Double down after you've already taken hits. |
 | **Forced split** | 30 | Split your opening two cards even when they aren't a matching pair. |
 | **Return** | 50 | Push your most recently drawn card back onto the shoe (the dealer draws it next), then stand. |
-| **Peek Dealer** | 60 | Reveal the dealer's hole card. |
 | **Freeze Dealer** | 70 | Force the dealer to stand on its current two-card total — it takes no draws. |
 | **Bust Block** | 90 | One expendable shield against busting. See below. |
 | **Mulligan** | 100 | Discard your untouched opening hand and redeal it once. |
 | **Peek Deck** | 150 | See the next card in the shoe. |
+| **Peek Dealer** | 150 | Reveal the dealer's hole card. |
 
-**Peek Dealer sits in the upper tier on purpose** (it was 10 — badly underpriced). Knowing the dealer's exact total lets you deviate from basic strategy *optimally on every decision of the hand* — stand and let a stiff 12–16 bust, hit hard into a made 18–20 — and uncertainty about the dealer's hand is where basic strategy loses the most EV. That's why hole-carding is a premier advantage-play technique; it is **not** the minor "information" tool the old price implied. At 10 tokens it was self-funded by a single hand's winnings and became a rote every-hand buy that carried whole runs; at 60 it's a considered purchase for a pivotal hand. (It doesn't fully resolve the dealer — a stiff still draws unknown cards — so it's priced just below Deck Peek's one-card certainty rather than above it.)
+**Peek Dealer sits at the top tier on purpose** (it was 10 — badly underpriced). Knowing the dealer's exact total lets you deviate from basic strategy *optimally on every decision of the hand* — stand and let a stiff 12–16 bust, hit hard into a made 18–20 — and uncertainty about the dealer's hand is where basic strategy loses the most EV. That's why hole-carding is a premier advantage-play technique; it is **not** the minor "information" tool the old price implied. At 10 tokens it was self-funded by a single hand's winnings and became a rote every-hand buy that carried whole runs. It's now **150 — level with Peek Deck**: hole-card knowledge steers every decision of the hand rather than a single hit, so even though it doesn't fully resolve the dealer (a stiff still draws unknown cards), it earns parity with the shoe peek's one-card certainty rather than a discount.
 
 Bust Block is priced below Peek Deck on purpose. Peek Deck is reliable certainty — see the card, decline the hit, never bust — whereas Bust Block is conditional and can whiff (nothing to shield if you weren't going to bust, or a second bust on the re-roll). So Peek Deck is the expensive, reliable power and Bust Block is the cheaper, swingier "upside" play — the one that can turn a dead 16 into a live 20.
 
@@ -300,31 +309,37 @@ Tiers within a path unlock **in order** (1 → 2 → 3). The choose-upgrade scre
 
 | Tier | Effect |
 |---|---|
-| 1 | **60% refund** on a loss to the dealer's natural blackjack. |
-| 2 | **Hijack** the dealer's natural blackjack: you take it *as your own* natural blackjack (paid at the blackjack rate — so it respects the Payout 3:1 upgrade below — and dealing the blackjack damage/tokens). |
-| 3 | The dealer's standing total counts as **1 lower** whenever it's under 21 (applied after the dealer stands — it drives both who wins and the reward tier). |
+| 1 | **75% refund** on a loss to the dealer's natural blackjack. |
+| 2 | **Any dealer 21 voids the hand.** A dealer that shows — or draws to — 21 while you're under 21 is a wash: your bet comes back, no damage, no reward. This is a **VOIDED** outcome, deliberately *not* a push (so it doesn't accidentally trigger Payout T3 on its own). |
+| 3 | **Hijack** the dealer's natural blackjack: you take it *as your own* natural blackjack (paid at the blackjack rate — so it respects the Payout upgrade below — and dealing the blackjack damage/tokens). |
 
-### Payout — bigger chip returns
+The tiers layer on the same event: on a **dealt natural** it's refund (T1) → void (T2) → hijack (T3), each strictly better; a **drawn dealer 21** can't be hijacked, so it keeps voiding at T3. All of it keys on the dealer reaching 21 (~12% of hands), so Sabotage is high-impact-but-situational insurance, not an always-on effect.
+
+### Payout — bigger chip returns (money, not progress)
 
 | Tier | Effect |
 |---|---|
-| 1 | Natural blackjack pays **3:1** (instead of 3:2). |
-| 2 | Your **21 counts as a natural blackjack**: the moment your hand reaches 21 it resolves instantly — the dealer draws nothing; a dealt dealer natural pushes, otherwise you win as a blackjack. |
-| 3 | Your **20 counts as a natural blackjack** too (same instant resolution). |
+| 1 | Natural blackjack pays **2:1** (instead of 3:2). |
+| 2 | Natural blackjack pays **3:1**. |
+| 3 | **You win all pushes.** A genuine tie is paid to you at even money — chips **and score, but no damage and no reward tokens** (a *chips-only* win). It also cashes out a Sabotage-voided dealer 21 (T2 above): with both, a dealer 21 becomes a chips-only win instead of a wash. |
+
+Payout is deliberately the money/score path, not a damage path: chips are a survival buffer, not a progress lever (killing a dealer is gated by damage, which is fixed per win — §4), so a chips-only push-win pads your stack and your score without shortening the run. It's the one path whose winnings don't buy you a faster kill.
 
 ### Tokens — the economy path
 
 | Tier | Effect |
 |---|---|
-| 1 | **+5%** tokens (×1.05) · token inflation grows **15% slower** (×0.85). |
-| 2 | **+10%** tokens (×1.10) · inflation grows **30% slower** (×0.70). |
-| 3 | **+20%** tokens (×1.20) · inflation grows **50% slower** (×0.50). |
+| 1 | **+10%** tokens (×1.10) · token inflation grows **25% slower** (×0.75). |
+| 2 | **+18%** tokens (×1.18) · inflation grows **45% slower** (×0.55). |
+| 3 | **+30%** tokens (×1.30) · inflation grows **65% slower** (×0.35). |
 
 Two effects, both replacing the last tier (not stacking). The **multiplier** applies to every token source in §6 — hits, wins, blackjacks, and the kill bounty. The **inflation resistance** scales down each shift's inflation add (§6) — so this is the run's economy/anti-inflation identity, sitting alongside Sabotage (neuter the dealer) and Payout (bigger chips).
 
-The resistance also fixes the friction the two effects would otherwise have: earning *more* tokens would, on its own, inflate *faster*. The resistance more than cancels that — a maxed-Tokens build both earns more and ends the run ~15 points *less* inflated than a build that skipped the path. Earlier this was the weakest, least-picked path; controlling inflation is meant to make it a genuine third strategy.
+The resistance also fixes the friction the two effects would otherwise have: earning *more* tokens would, on its own, inflate *faster*. The resistance more than cancels that — a maxed-Tokens build both earns more and ends the run ~30 points *less* inflated than a build that skipped the path. Earlier this was the weakest, least-picked path; the buffed multipliers plus inflation control are meant to keep it a genuine third strategy now that the other two were cut.
 
-**Shape.** Every upgrade is a pure buff, so the system is a straight difficulty reduction — deliberately, since reaching the later dealers was the pain point. It **snowballs the late game** more than it eases the first few dealers (you enter Dealer 1 with zero picks), which is the intended roguelite arc: an early skill check, then a compounding power fantasy once you survive to bank a couple of picks.
+**Shape.** Every upgrade is still a buff — the paths only ever help — but they're deliberately **surgical, not overwhelming** now: the old auto-blackjack and −1-downgrade tiers trivialised the back half, so they're gone. Each path owns a distinct axis — **Sabotage** neuters the dealer's 21s (win rate), **Payout** fattens chips + score (a survival/score buffer, not progress — see above), **Tokens** runs the ability economy — so a pick is a real trade-off, not a straight power spike. It still snowballs the late game more than the first few dealers (you enter Dealer 1 with zero picks), the intended roguelite arc, but the ceiling is low enough that the *house* (§3–§4) stays the main difficulty dial.
+
+**Chips buy survival, not progress.** Destroying a dealer is gated by *damage*, which is fixed per win and independent of your bet (§4); chips only keep you solvent. That's why raising the *min bet* alone never made the game harder — it scales the buffer symmetrically — and why the fix lived in the upgrade set and the wealth-floor bet *volatility* (§5), not bet size. It's also why Payout can be a pure money/score path without unbalancing progress.
 
 ---
 
@@ -336,9 +351,9 @@ Score is a separate ratchet from chips. It **never decreases**.
 score += (chips won on the hand) × current dealer multiplier × win-streak combo
 ```
 
-Blackjack paying 3:2 (or 3:1 with the Payout upgrade, §8) therefore scores more automatically.
+Blackjack paying 3:2 (2:1, then 3:1, with the Payout upgrade, §8) therefore scores more automatically, and Payout T3 turns a push — normally zero — into a scoring chips-only win.
 
-- **Win-streak combo.** Each consecutive won hand lifts *that hand's* chip score: ×1 on the first win, then +0.25 per win, capped at **×3** (the ninth win in a row and beyond). A hand the dealer wins resets the streak to ×1; a push leaves it untouched. This is score-only — it never touches chips, damage, or survival — so it rewards a dominant hot streak without affecting balance, and the healing late dealers (§4) are exactly what threaten to break a streak.
+- **Win-streak combo.** Each consecutive won hand lifts *that hand's* chip score: ×1 on the first win, then +0.25 per win, capped at **×3** (the ninth win in a row and beyond). A hand the dealer wins resets the streak to ×1; a push — or a chips-only push-win (§8), which deals no damage — leaves it untouched. This is score-only — it never touches chips, damage, or survival — so it rewards a dominant hot streak without affecting balance, and the healing late dealers (§4) are exactly what threaten to break a streak.
 - **Destruction bonus:** `150 × dealer number` when you destroy a dealer, **plus a clean-kill bonus** — a second helping of that same base, scaled by how few hands you lost to the dealer: full at zero losses (so a flawless kill pays the bounty *twice*), shrinking 20% per lost hand, to nothing at five losses. This inverts the old incentive: killing fast and clean now scores *more*, not less.
 
 The result points score at the play the win condition already wants — fast, clean, high-tier kills and unbroken streaks — instead of at grinding out extra hands. Winning the run (all six dealers) naturally maximises everything.
@@ -362,12 +377,12 @@ Unspent tokens and unlocked upgrades are **not** converted to anything at bust-o
 Difficulty lives in a handful of places:
 
 1. **The within-dealer bet step** (`0.5` in §5). Bigger → the bet climbs faster within a dealer → shorter, tenser runs.
-2. **The minimum-bet curve** (~1.6× per dealer through the table, ×2.5 past it), the **Dealer-6 max bet** (2,500, §3), **and the wealth floor** (0% → 20% by Dealer 6, §5). The fixed curve gentler → runs stop ending reliably; the wealth floor is the anti-turtle dial — it forces a rich, upgrade-stacked player to keep real money on the table late, so raise its late percentages if the endgame still feels stakes-free (and lower them if bust-out comes too fast for a fat stack).
+2. **The minimum-bet curve** (×2 per dealer through the table, ×2.5 past it), the **Dealer-6 max bet** (2,750, §3), **and the wealth floor** (0% → 25% by Dealer 6, §5). The fixed curve gentler → runs stop ending reliably; the wealth floor is the anti-turtle dial — it forces a rich, upgrade-stacked player to keep real money on the table late, so raise its late percentages if the endgame still feels stakes-free (and lower them if bust-out comes too fast for a fat stack).
 3. **The per-kill bankroll grant** (`3 ×` the next min bet, §4), the **dealer HP ladder** (100 → 220, §3), the **late-dealer heals** (Dealer 5 5–9, Dealer 6 10–15, off below 30%, §4), the **soft-17 rule** per dealer (§2 — `stand` / `hit` / `smart`; the strongest single win-rate lever, set in the shift table), and the **damage tiers** (§4).
    - **The Dealer 6 final duel** (§3) has its own dials: the desperation health thresholds (30/20/10% → hard ceiling 18/19/20), the heal-off threshold (30%), and the abilities-lock threshold (20%). These are the knobs for how brutal the climax is — widen the lock window or raise the ceilings to make it harder, narrow them if it walls players out. Together these set how survivable the ladder is and how many hands it takes to destroy a dealer. Note that raising a late min bet (§3) also inflates the *previous* dealer's kill grant (`3 ×` it), which can hand the player a war chest right before the hardest fight — flatten the late kill grant if that reads as too soft.
-4. **Token rewards** (§6) and **base powerup costs** (§7). These set how often a player gets to use the fun part; Peek Dealer's base price (60, up from 10) is the sharpest, since it's the strongest info tool.
-5. **Token inflation** (§6): the per-shift **caps** (7% → 18%), the **denoms** (140 → 280), and the Tokens-path **resistance** (×1 → ×0.5). This is the anti-token-bank dial — raising the caps or lowering the denoms makes late powerups pricier and the token bank worth less. The denoms are estimates of per-shift token income and should be calibrated against real logged earnings; they're the most likely numbers to be off.
-6. **The roguelike upgrades** (§8). Being near-pure buffs, they're the strongest lever on win rate; the current set targets a punishing but achievable clear. Tokens is now the economy path (inflation resistance), no longer a strict income buff.
+4. **Token rewards** (§6) and **base powerup costs** (§7). These set how often a player gets to use the fun part; Peek Dealer's base price (150, up from 10) is the sharpest, since it's the strongest info tool.
+5. **Token inflation** (§6): the per-shift **caps** (7% → 18%), the **denoms** (140 → 280), and the Tokens-path **resistance** (×1 → ×0.35). This is the anti-token-bank dial — raising the caps or lowering the denoms makes late powerups pricier and the token bank worth less. The denoms are estimates of per-shift token income and should be calibrated against real logged earnings; they're the most likely numbers to be off.
+6. **The roguelike upgrades** (§8). Still the strongest single lever on win rate, but the set was rebalanced *down* (auto-blackjack and the −1 downgrade removed, Tokens buffed) so it no longer trivialises the back half; each path now owns a distinct axis (Sabotage = win rate, Payout = chips/score, Tokens = ability economy). Tune the tier strengths to move the clear rate — this is where the recent "too easy" pressure was fixed.
 7. **The score multiplier must stay linear** (§3). This is not a taste knob — making it compound reintroduces the runaway leaderboard tail.
 8. **The score combo and clean-kill** (§9): the combo step (`+0.25`/win) and cap (`×3`), and the clean-kill decay (`20%`/loss). These are score-only — they change the leaderboard shape and what play the board rewards, not survival — so they can be tuned freely without touching win rate.
 
@@ -404,7 +419,7 @@ const rng = mulberry32(seed);
 shuffle(deck, rng);
 ```
 
-The prototype already does this: the deal logic is pure and deterministic, and it uses a seeded mulberry32 PRNG threaded through the shuffle — no `Math.random()` anywhere in deal logic. A `RULES_VERSION` constant (currently 11) is stored so retuned rewards don't silently validate old replays.
+The prototype already does this: the deal logic is pure and deterministic, and it uses a seeded mulberry32 PRNG threaded through the shuffle — no `Math.random()` anywhere in deal logic. A `RULES_VERSION` constant (currently 12) is stored so retuned rewards don't silently validate old replays.
 
 **Still to build:** logging the player's action sequence (hit, stand, double, split, token spends, upgrade picks) alongside the seed. That pair — seed plus actions — is a complete, verifiable recording of a run: a server that knows the seed replays the identical deal, computes the score itself, and trusts nothing the client sent. Replay validation is unusually cheap here (turn-based, no timing, a short input vocabulary; a full run is a couple of kilobytes). Doing it now is nearly free; retrofitting it once randomness is scattered through the deal code is not.
 
@@ -425,7 +440,7 @@ If you want a daily anyway, the least-bad version seeds **per hand rather than p
 ## 14. Open questions for playtest
 
 - **Do runs end at the right length, and win at the right rate?** Run length is set by the bet climb (§5) draining chips vs how fast you destroy dealers, and the roguelike upgrades (§8) tilt the back half toward a clear. Target a punishing-but-achievable win rate and roughly 8–15 minutes; the `0.5` bet step, the bet curve, and the upgrade strengths are the dials.
-- **Are the upgrades balanced against each other?** Sabotage and Payout are far stronger than Tokens; watch whether Tokens is ever picked, and whether a maxed Sabotage/Payout trivialises the late game.
+- **Are the upgrades balanced against each other?** The paths were rebalanced (§8) — the trivialising tiers cut, Tokens buffed. Watch whether Tokens is now worth picking, whether Sabotage (win rate) still edges Payout (chips/score), and whether the reworked set lands the target clear rate instead of steamrolling the back half as the old set did.
 - **Can a player get stuck?** Because advancing requires destroying, a cold streak on a dealer you can't damage just bleeds you out on it. Is that tense (good) or frustrating (bad)?
 - **Are the powerup costs right, and does inflation tame the token bank?** Nine powerups compete for tokens (§7); Peek Dealer moved 10 → 60 after it single-handedly carried runs. The token bank is now attacked by **inflation** (§6) — the open question is whether the caps/denoms are calibrated right (the denoms are estimates), whether ~48% typical endgame inflation actually makes a flush player feel the squeeze, and whether the Tokens path's resistance leaves it competitive without swinging to overpowered.
 - **Is Late double / Forced split ever bought?** They share a slot with each other in the UI; if either sees little use, reconsider its price or presentation.

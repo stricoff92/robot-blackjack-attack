@@ -15,12 +15,12 @@
 //   ?sabotageUpgrade=3 — start with the Sabotage (anti-dealer) path unlocked through this tier (0-3)
 //   ?chipUpgrade=2     — start with the Payout (chip) path unlocked through this tier (0-3)
 //   ?tokenUpgrades=1   — start with the Tokens path unlocked through this tier (0-3)
-//   ?dealerBlackjack   — the dealer draws a natural 21 every hand (test hijack/refund/push)
+//   ?dealerBlackjack   — the dealer draws a natural 21 every hand (test refund/void/hijack/push)
 //
 // See docs/dev-params.md for the full reference (values, effects, examples). Handy
 // for exercising split without waiting for a pair, buying a pricey powerup off the
 // first deal, testing any upgrade combo without grinding to kills, or forcing the
-// dealer-blackjack outcomes (loss/refund/hijack/push) on demand.
+// dealer-blackjack outcomes (loss/refund/void/hijack/push) on demand.
 
 import { RANKS, type Rank } from './deck'
 import { TOTAL_DEALERS } from './run'

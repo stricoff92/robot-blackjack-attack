@@ -14,9 +14,10 @@
 // `ChipView` (the animator) reports. It never owns timing.
 
 import type { HandOutcome, Round } from '../game/round'
-import { cardSize, handCenterX, PLAYER_ROW } from './cards'
+import { BOTTOM_HUD_RESERVE, cardSize, COUNT_HOLO, drawHoloText, handCenterX, holoCountBox, playerCardBox, PLAYER_ROW } from './cards'
 import { chipImage } from './chip-sprite'
 import { smoothStep } from './easing'
+import type { HoloRayTarget } from './nexus'
 import { dealerBox, type Layout } from './scene'
 
 export interface Point {
@@ -38,7 +39,8 @@ export const CHIP_STYLE: ChipStyle = { face: '#d9a441', edge: '#a97b28', stroke:
 const CHIP_RATIO = 0.42 // ry / rx — how much the disc is squashed for perspective
 const LIFT_RATIO = 0.2 // vertical offset per stacked chip (= visible rim thickness), × rx
 const BET_GAP = 0.5 // gap between the player cards' bottom edge and the bet chips, × card height
-const BOTTOM_HUD_RESERVE = 96 // px kept clear at the screen bottom for the action bar + the bet label below the circle
+// BOTTOM_HUD_RESERVE (px kept clear at the screen bottom for the action bar + the bet
+// label below the circle) is defined in cards.ts, which sizes cards against it too.
 
 // --- animator contract -------------------------------------------------------
 
@@ -108,25 +110,29 @@ export function betAnchor(l: Layout, round: Round, handIndex: number): Point {
   }
 }
 
+// The bankroll number's position + font size (below the corner pile). Kept as a helper
+// so drawChips draws the label and its ray-target box at the same spot.
+export function bankrollLabelAnchor(l: Layout): { x: number; y: number; size: number } {
+  const m = chipMetrics(l)
+  const p = playerAnchor(l)
+  return { x: p.x, y: p.y + m.ry + 30, size: 22 }
+}
+
 // White table markings, drawn on the table layer (under the chips + cards): a
 // betting circle where the bet chips sit, and a box where the player's cards are
 // dealt — the fixed markings of the single player seat (centered).
 export function drawTableMarkings(ctx: CanvasRenderingContext2D, l: Layout): void {
   const cx = l.width / 2
-  const feltTop = l.edgeY
-  const feltH = l.height - feltTop
-  const { w: cardW, h: cardH } = cardSize(l)
-  const cardTopY = feltTop + feltH * PLAYER_ROW
+  const { w: cardW } = cardSize(l)
 
   ctx.save()
   ctx.strokeStyle = 'rgba(255, 255, 255, 0.32)'
   ctx.lineWidth = Math.max(3, cardW * 0.055)
 
   // Card box: rounded rectangle around the dealt-card area.
-  const boxW = cardW * 1.85
-  const boxH = cardH * 1.18
+  const box = playerCardBox(l)
   ctx.beginPath()
-  ctx.roundRect(cx - boxW / 2, cardTopY + cardH / 2 - boxH / 2, boxW, boxH, cardW * 0.12)
+  ctx.roundRect(box.x, box.y, box.w, box.h, cardW * 0.12)
   ctx.stroke()
 
   // Betting circle: an ellipse (matching the chips' perspective) at the bet base.
@@ -168,9 +174,12 @@ export function drawChips(
   data: { chips: number; chipsScale?: number; round: Round | null },
   view: ChipView,
   now: number,
-): void {
+): HoloRayTarget[] {
   ctx.clearRect(0, 0, l.width, l.height)
   const m = chipMetrics(l)
+  // The holo-projected chip-count boxes actually drawn this frame — returned so the ray
+  // fans target exactly the labels on screen. Each drawn label pairs with a push here.
+  const projected: HoloRayTarget[] = []
 
   const player = playerAnchor(l)
   // Fixed decorative pile; the number below it is the source of truth. It's a
@@ -179,18 +188,21 @@ export function drawChips(
   // busted out for good).
   const pileDiscs = data.chips > 0 ? BANK_PILE_DISCS : 0
   drawChipStack(ctx, player.x, player.y, pileDiscs, m, CHIP_STYLE)
-  drawChipLabel(ctx, String(data.chips), player.x, player.y + m.ry + 30, 22, data.chipsScale ?? 1)
+  const bl = bankrollLabelAnchor(l)
+  drawChipLabel(ctx, String(data.chips), bl.x, bl.y, now, bl.size, data.chipsScale ?? 1)
+  projected.push(holoCountBox(bl.x, bl.y, bl.size))
   // Where flying bet/winnings chips land and fade in: the crown of the pile.
   const playerTop: Point = { x: player.x, y: player.y - pileDiscs * m.lift }
 
   const round = data.round
   if (!round) {
-    return
+    return projected
   }
   const dealer = dealerAnchor(l)
   for (let hi = 0; hi < round.hands.length; hi++) {
-    drawHandChips(ctx, l, m, round, hi, dealer, playerTop, view.betChip(hi, now))
+    projected.push(...drawHandChips(ctx, l, m, round, hi, dealer, playerTop, view.betChip(hi, now), now))
   }
+  return projected
 }
 
 function drawHandChips(
@@ -202,9 +214,11 @@ function drawHandChips(
   dealer: Point,
   playerTop: Point,
   st: BetChipState,
-): void {
+  now: number,
+): HoloRayTarget[] {
+  const boxes: HoloRayTarget[] = []
   if (st.phase === 'done') {
-    return
+    return boxes
   }
   const bet = betAnchor(l, round, handIndex)
   const amount = round.hands[handIndex].bet
@@ -213,7 +227,7 @@ function drawHandChips(
 
   const won = st.outcome === 'win' || st.outcome === 'blackjack'
   // The winnings must track handPayout: a blackjack pays the rules' ratio (3:2 by
-  // default, 3:1 with the Payout upgrade), not a hardcoded 1.5x.
+  // default, 2:1 then 3:1 with the Payout upgrade), not a hardcoded 1.5x.
   const winAmount =
     st.outcome === 'blackjack'
       ? Math.floor(amount * (round.rules.blackjackPayoutNumerator / round.rules.blackjackPayoutDenominator))
@@ -227,13 +241,15 @@ function drawHandChips(
   const paintBet = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, betCount, m, CHIP_STYLE, alpha)
     if (label) {
-      drawChipLabel(ctx, String(amount), x, belowY(y), 18)
+      drawChipLabel(ctx, String(amount), x, belowY(y), now, 18)
+      boxes.push(holoCountBox(x, belowY(y), 18)) // ray target = exactly where this label was drawn
     }
   }
   const paintWin = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, winCount, m, CHIP_STYLE, alpha)
     if (label) {
-      drawChipLabel(ctx, String(winAmount), x, belowY(y), 18)
+      drawChipLabel(ctx, String(winAmount), x, belowY(y), now, 18)
+      boxes.push(holoCountBox(x, belowY(y), 18))
     }
   }
 
@@ -288,6 +304,7 @@ function drawHandChips(
       break
     }
   }
+  return boxes
 }
 
 // A stack of chips seen edge-on, bottom disc centered at (x, yBase), growing
@@ -397,6 +414,7 @@ function drawChipLabel(
   text: string,
   x: number,
   y: number,
+  now: number,
   fontSize = 13,
   scale = 1,
 ): void {
@@ -409,10 +427,8 @@ function drawChipLabel(
     ctx.scale(scale, scale)
     ctx.translate(-x, -y)
   }
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
-  ctx.fillText(text, x + 1, y + 1)
-  ctx.fillStyle = '#f6ecd2'
-  ctx.fillText(text, x, y)
+  // A chip count is projected by the holo — translucent glowing light + the shared flicker.
+  drawHoloText(ctx, text, x, y, fontSize, COUNT_HOLO, now)
   ctx.restore()
 }
 

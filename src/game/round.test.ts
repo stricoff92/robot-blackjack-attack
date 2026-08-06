@@ -13,9 +13,7 @@ import {
   freezeDealer,
   handNet,
   hit,
-  isDealerDowngraded,
   isDealerHijacked,
-  isHandUpgraded,
   lateDouble,
   mulligan,
   payout,
@@ -118,15 +116,6 @@ describe('smart soft-17 dealer (Dealer 6)', () => {
     expect(outcomeOf(round)).toBe('lose')
   })
 
-  it('folds the Anti-dealer downgrade into the soft-17 decision', () => {
-    // Player 16 vs dealer soft 17. Face value 17 beats 16 → a plain smart dealer stands.
-    const shoe = [card('K'), card('6'), card('A'), card('6'), card('4')]
-    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
-    // With the downgrade active the dealer's 17 settles as 16 — no longer ahead — so it hits.
-    const downgraded = { ...smart, dealerDowngrade: true }
-    expect(stand(startRound(shoe, 50, downgraded)).dealer).toHaveLength(3)
-  })
-
   it('stands on a hard 17 that ties the player (a sure push beats a risky hit)', () => {
     // Player 17; dealer 10+7 = hard 17. A stand pushes — do not gamble it away.
     const round = stand(startRound([card('K'), card('7'), card('10'), card('7')], 50, smart))
@@ -139,15 +128,6 @@ describe('smart soft-17 dealer (Dealer 6)', () => {
     const round = stand(startRound([card('K'), card('8'), card('10'), card('7'), card('3')], 50, smart))
     expect(round.dealer).toHaveLength(3)
     expect(outcomeOf(round)).toBe('lose')
-  })
-
-  it('folds the Anti-dealer downgrade into the hard-17 decision', () => {
-    // Player 17 vs dealer hard 17. Face value ties (push) → a plain smart dealer stands.
-    const shoe = [card('K'), card('7'), card('10'), card('7'), card('3')]
-    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
-    // Downgrade settles the 17 as 16 — now strictly behind the player's 17 — so it hits.
-    const downgraded = { ...smart, dealerDowngrade: true }
-    expect(stand(startRound(shoe, 50, downgraded)).dealer).toHaveLength(3)
   })
 
   it('raises the hard-hit ceiling when desperate (hits a hard 18 behind)', () => {
@@ -415,34 +395,14 @@ describe('mulligan', () => {
   })
 })
 
-// Display predicates used to badge the score with the roguelite upgrade that
-// altered it (see render/cards.ts). They mirror the resolution logic, not new
-// behaviour.
-describe('upgrade score badges', () => {
+// The roguelite-upgrade outcomes surfaced to the renderer (see render/cards.ts) —
+// the dealer's hijack marker, the voided-hand outcome, and push-wins.
+describe('upgrade outcomes', () => {
   function rules(patch: Partial<RoundRules>): RoundRules {
     return { ...DEFAULT_ROUND_RULES, ...patch }
   }
 
-  it('isDealerDowngraded marks a dealer that stood under 21 only with the T3 rule', () => {
-    // Player 19 stands; dealer K,Q = 20 stands. Downgraded to 19 → push.
-    const shoe = [card('K'), card('9'), card('K', 'hearts'), card('Q')]
-    const downgraded = stand(startRound(shoe, 50, rules({ dealerDowngrade: true })))
-    expect(isDealerDowngraded(downgraded)).toBe(true)
-    expect(outcomeOf(downgraded)).toBe('push') // 19 vs downgraded 19
-
-    const normal = stand(startRound(shoe, 50))
-    expect(isDealerDowngraded(normal)).toBe(false) // rule off
-    expect(outcomeOf(normal)).toBe('lose') // 19 vs 20
-  })
-
-  it('isDealerDowngraded never marks a dealer natural (21 is not under 21)', () => {
-    // Dealer A,K = 21 natural; the round resolves at the deal.
-    const shoe = [card('9'), card('7'), card('A'), card('K')]
-    const round = startRound(shoe, 50, rules({ dealerDowngrade: true }))
-    expect(isDealerDowngraded(round)).toBe(false)
-  })
-
-  it('isDealerHijacked marks a hijacked dealt natural only with the T2 rule', () => {
+  it('isDealerHijacked marks a hijacked dealt natural only with the T3 rule', () => {
     // Dealer A,K natural; player 16. Hijack steals it into a player blackjack.
     const shoe = [card('9'), card('7'), card('A'), card('K')]
     const hijacked = startRound(shoe, 50, rules({ hijackDealerNatural: true }))
@@ -454,18 +414,35 @@ describe('upgrade score badges', () => {
     expect(outcomeOf(normal)).toBe('lose')
   })
 
-  it('isHandUpgraded marks an auto-blackjack lift but not a genuine natural', () => {
-    // Chip eco T3: a dealt 20 is lifted to a natural blackjack.
-    const lifted = startRound([card('K'), card('Q'), card('9'), card('7')], 50, rules({ autoBlackjackAt: 20 }))
-    expect(isHandUpgraded(lifted.hands[0], lifted.rules)).toBe(true)
-    expect(outcomeOf(lifted)).toBe('blackjack')
+  it('voids a dealt dealer natural into a wash with the void rule', () => {
+    const shoe = [card('9'), card('7'), card('A'), card('K')]
+    const round = startRound(shoe, 50, rules({ voidDealer21: true }))
+    expect(outcomeOf(round)).toBe('voided')
+    expect(payout(round)).toBe(0)
+  })
 
-    // A real two-card 21 is a natural, not an upgrade — even with the rule on.
-    const natural = startRound([card('A'), card('K'), card('9'), card('7')], 50, rules({ autoBlackjackAt: 20 }))
-    expect(isHandUpgraded(natural.hands[0], natural.rules)).toBe(false)
+  it('voids a dealer that hits to 21, but leaves a dealer 20 alone', () => {
+    // Player 16 stands; dealer 10+6 hits the 5 → 21 → voided.
+    const toTwentyOne = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('5')], 50, rules({ voidDealer21: true })))
+    expect(outcomeOf(toTwentyOne)).toBe('voided')
+    // The same start but a 4 on the end lands the dealer on 20 — untouched, a loss.
+    const toTwenty = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('4')], 50, rules({ voidDealer21: true })))
+    expect(outcomeOf(toTwenty)).toBe('lose')
+  })
 
-    // Same dealt 20 without the upgrade rule is just a 20 — never a natural.
-    const plain = startRound([card('K'), card('Q'), card('9'), card('7')], 50)
-    expect(isHandUpgraded(plain.hands[0], plain.rules)).toBe(false)
+  it('pays a voided dealer 21 to the player with push-wins (void + push)', () => {
+    const shoe = [card('9'), card('7'), card('A'), card('K')]
+    const round = startRound(shoe, 50, rules({ voidDealer21: true, pushWinsToPlayer: true }))
+    expect(outcomeOf(round)).toBe('win')
+    expect(round.hands[0].chipsOnly).toBe(true)
+    expect(payout(round)).toBe(50) // even money, chips only
+  })
+
+  it('wins a genuine tie as a chips-only win with push-wins', () => {
+    // Player 20 vs dealer 20 → push, upgraded to a chips-only win.
+    const round = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], 50, rules({ pushWinsToPlayer: true })))
+    expect(outcomeOf(round)).toBe('win')
+    expect(round.hands[0].chipsOnly).toBe(true)
+    expect(payout(round)).toBe(50)
   })
 })

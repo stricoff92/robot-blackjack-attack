@@ -17,8 +17,12 @@ describe('nexus hover geometry', () => {
   })
 
   it('lifts the red muzzle and yellow vent together (one shared bob)', () => {
-    for (const t of [0, 500, 1234, 2600]) {
-      expect(nexusRedLight(l, t).y).toBeCloseTo(nexusYellowLight(l, t).y)
+    // Red (top-left) and yellow (bottom-right) sit on different rows now, but the
+    // hover lifts them by the same amount — the vertical gap between them is fixed.
+    const gaps = [0, 500, 1234, 2600].map((t) => nexusYellowLight(l, t).y - nexusRedLight(l, t).y)
+    for (const gap of gaps) {
+      expect(gap).toBeCloseTo(gaps[0])
     }
+    expect(gaps[0]).toBeGreaterThan(1) // yellow's row sits below red's
   })
 })

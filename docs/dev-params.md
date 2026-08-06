@@ -50,9 +50,9 @@ choose-upgrade screen still appears after kills and continues from the seeded ti
 
 | Tier | `sabotageUpgrade` (Sabotage) | `chipUpgrade` (Payout) | `tokenUpgrades` (Tokens) |
 | --- | --- | --- | --- |
-| 1 | 60% refund on a dealer natural blackjack | Natural blackjack pays 3:1 | +5% tokens |
-| 2 | Hijack the dealer's natural blackjack (you win) | Your 21 counts as a natural blackjack | +10% tokens |
-| 3 | −1 to the dealer's score (when under 21) | Your 20 counts as a natural blackjack | +20% tokens |
+| 1 | 75% refund on a dealer natural blackjack | Natural blackjack pays 2:1 | +10% tokens · 25% inflation resist |
+| 2 | Any dealer 21 (natural or hit) voids the hand | Natural blackjack pays 3:1 | +18% tokens · 45% inflation resist |
+| 3 | Hijack the dealer's natural blackjack (you win) | You win all pushes (chips only, no damage) | +30% tokens · 65% inflation resist |
 
 ## `dealerBlackjack` — forcing the dealer-natural outcomes
 
@@ -63,9 +63,10 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 | Combination | What you see every hand |
 | --- | --- |
 | `?dealerBlackjack` | Plain loss to the dealer's blackjack. |
-| `?dealerBlackjack&sabotageUpgrade=1` | The **60% refund** — bet flies to the dealer, then a refund stack slides back. |
-| `?dealerBlackjack&sabotageUpgrade=2` | The **hijack** — you take it as a blackjack (blackjack payout; add `chipUpgrade=1` for 3:1). |
-| `?dealerBlackjack&chipUpgrade=3` | You hold a two-card 20/21 → a **push** against the dealer's natural. |
+| `?dealerBlackjack&sabotageUpgrade=1` | The **75% refund** — bet flies to the dealer, then a refund stack slides back. |
+| `?dealerBlackjack&sabotageUpgrade=2` | **VOIDED** — the hand is a wash (bet returned, no damage). |
+| `?dealerBlackjack&sabotageUpgrade=2&chipUpgrade=3` | The voided dealer 21 pays out as a **chips-only win** (Payout T3). |
+| `?dealerBlackjack&sabotageUpgrade=3` | The **hijack** — you take it as a blackjack (`sabotageUpgrade=3` also carries the void + refund tiers; add `chipUpgrade=2` for the 3:1 rate). |
 
 ## Examples
 

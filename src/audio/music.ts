@@ -16,8 +16,9 @@ import { createAudioContext } from './context'
 import canneryUrl from '../assets/Kevin MacLeod-The Cannery.ogg'
 import serpentineUrl from '../assets/Kevin MacLeod-Serpentine-Trek.ogg'
 import maestroUrl from '../assets/Kevin MacLeod-One-eyed-Maestro.ogg'
+import machinationsUrl from '../assets/Kevin-MacLeod-Machinations.ogg'
 
-export type TrackName = 'cannery' | 'serpentine' | 'maestro'
+export type TrackName = 'cannery' | 'serpentine' | 'maestro' | 'machinations'
 
 interface TrackDef {
   url: string
@@ -34,6 +35,7 @@ const TRACKS: Record<TrackName, TrackDef> = {
   cannery: { url: canneryUrl, baseVolume: 0.4 },
   serpentine: { url: serpentineUrl, baseVolume: 1 },
   maestro: { url: maestroUrl, baseVolume: 1 },
+  machinations: { url: machinationsUrl, baseVolume: 1 },
 }
 
 const ALL_TRACKS = Object.keys(TRACKS) as TrackName[]

@@ -1,53 +1,62 @@
-// The table nexus: a small device sitting on the right-centre of the felt with
-// two emitter lenses — a RED one the damage laser fires from, and a YELLOW one the
-// reward tokens lift off from. Mirrors the render convention — geometry + paint
-// live here; the strike timing (a StrikeView) and the light charge (a
+// The table nexus: a small TALL device floating over the right-centre of the felt with
+// a VERTICAL stack of three emitter lenses, top to bottom —
+//
+//     RED    the damage laser fires from here on a win; the heal beam fires from here
+//            too on a loss (they never overlap, so one lens serves both)
+//     YELLOW the reward tokens lift off from here
+//     HOLO   an RGB holo projector — dark when off, glows + cycles hues when it projects
+//
+// The narrow column hugs the screen's right edge. Mirrors the render convention —
+// geometry + paint live here; the strike timing (a StrikeView) and the light charge (a
 // NexusChargeView) are owned by the animators (ui).
 //
-// The device body is a PLACEHOLDER (a dark emitter box with two lenses); at rest
-// both lenses sit dim, and the charge glow (drawn additively on the fx layer)
-// brings them up when the nexus is about to act. The laser is a red additive beam
+// The device body is a PLACEHOLDER (a dark emitter box with four lenses); at rest
+// every lens sits dim, and the charge glow (drawn additively on the fx layer)
+// brings a lens up when the nexus is about to act. The laser is a red additive beam
 // modelled on the Analyze eye-beam (cards.ts).
 
-import { arch2, smoothEnd2, smoothEnd3, smoothStart3 } from './easing'
+import { arch2, smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
 import { dealerBox, type Layout } from './scene'
 import type { Point } from './tokens'
 
 // The nexus sits in the empty mid-right felt band: below the shoe (top-right of
 // centre) and the health bar (top-right), above the bankroll pile (bottom-right),
-// clear of the centred cards + bet circle. This is the device's centre; the two
-// emitter lenses straddle it (see nexusRedLight / nexusYellowLight).
+// clear of the centred cards + bet circle. `a` (in nexusGeom) is the device's centre;
+// the four lenses stack vertically along it (see nexusRedLight … nexusHoloLight).
 export function nexusAnchor(l: Layout): Point {
-  return { x: l.width * 0.82, y: l.edgeY + (l.height - l.edgeY) * 0.5 }
+  // The vertical spot: the mid-right felt band, a touch above centre. The x is anchored
+  // to the screen's right edge in nexusGeom, so the stack hugs the far right.
+  return { x: l.width, y: l.edgeY + (l.height - l.edgeY) * 0.45 }
 }
 
-// Shared body geometry, so the drawn device and the two emitter-light positions
-// never drift apart. The box is deliberately wide enough to seat two lenses side
-// by side.
+// Shared body geometry, so the drawn device and the three emitter-light positions never
+// drift apart. The body is a narrow, TALL rounded box seating a vertical column of three
+// lenses; lens i (0=top) sits at (a.x, a.y + (i − 1)·gap).
 interface NexusGeom {
-  a: Point // device centre
-  w: number
-  h: number
+  a: Point // body centre (unlifted)
+  w: number // body width (narrow)
+  h: number // body height (tall)
   r: number // body corner radius
   lensR: number
-  lensY: number // both lenses share this y
-  dx: number // half the gap between the two lenses
+  gap: number // vertical distance between adjacent lens centres
+  bob: number // hover-amplitude reference (the base scale)
 }
 
 function nexusGeom(l: Layout): NexusGeom {
-  const a = nexusAnchor(l)
+  const base = nexusAnchor(l)
   const scale = Math.min(l.width, l.height)
-  const w = clamp(scale * 0.13, 56, 124)
-  const h = w * 0.52
-  return {
-    a,
-    w,
-    h,
-    r: h * 0.24,
-    lensR: h * 0.22,
-    lensY: a.y - h * 0.05,
-    dx: w * 0.22,
-  }
+  // Base scale (≈ the old square side); capped small so it doesn't dominate big desktops.
+  const s = clamp(scale * 0.12, 54, 84)
+  const lensR = s * 0.1275 // 25% smaller than the old 0.17·s
+  const socket = lensR * 1.14
+  const gap = lensR * 2.5 // vertical spacing between adjacent lens centres
+  const w = socket * 2 + lensR * 0.9 // narrow body: one lens wide + side padding
+  const h = gap * 2 + socket * 2 + lensR // three stacked lenses + top/bottom padding
+  // Hug the screen's right edge (a small margin in), so the narrow stack sits at the far
+  // right; keep the same vertical centre (a full base-scale above the anchor).
+  const rightMargin = Math.max(10, l.width * 0.02)
+  const a = { x: l.width - rightMargin - w / 2, y: base.y - s }
+  return { a, w, h, r: w * 0.3, lensR, gap, bob: s }
 }
 
 // The device never rests on the felt — it floats in a slow, perpetual hover.
@@ -59,26 +68,42 @@ function nexusGeom(l: Layout): NexusGeom {
 // drift). The contact shadow (drawNexus) instead stays pinned to the felt, spreading
 // and fading as the device climbs.
 const HOVER_PERIOD_MS = 3400
-const HOVER_MIN = 0.4 // low point of the bob, as a fraction of body height h
-const HOVER_MAX = 0.72 // high point of the bob
+const HOVER_MIN = 0.26 // low point of the bob, as a fraction of the bob reference
+const HOVER_MAX = 0.43 // high point of the bob
+
+// The bob phase, 0 (low point) .. 1 (high point).
+function hoverPhase(now: number): number {
+  return (Math.sin((now / HOVER_PERIOD_MS) * Math.PI * 2) + 1) * 0.5
+}
 
 function hoverLift(g: NexusGeom, now: number): number {
-  const phase = (Math.sin((now / HOVER_PERIOD_MS) * Math.PI * 2) + 1) * 0.5 // 0..1
-  return g.h * (HOVER_MIN + (HOVER_MAX - HOVER_MIN) * phase)
+  return g.bob * (HOVER_MIN + (HOVER_MAX - HOVER_MIN) * hoverPhase(now))
 }
 
-// The RED emitter: the muzzle the damage laser fires from (left lens, dealer side),
-// lifted to wherever the device is floating at `now`.
+// The y of stacked lens `row` (0=top … 2=bottom) at `now`, floating with the device.
+function lensY(g: NexusGeom, row: number, now: number): number {
+  return g.a.y + (row - 1) * g.gap - hoverLift(g, now)
+}
+
+// The RED emitter (top lens): the muzzle the damage laser fires from on a win — and the
+// heal beam fires from here too on a loss (they never overlap).
 export function nexusRedLight(l: Layout, now: number): Point {
   const g = nexusGeom(l)
-  return { x: g.a.x - g.dx, y: g.lensY - hoverLift(g, now) }
+  return { x: g.a.x, y: lensY(g, 0, now) }
 }
 
-// The YELLOW emitter: where the reward tokens lift off from (right lens), floating
-// with the device at `now`.
+// The YELLOW emitter (middle lens): where the reward tokens lift off from.
 export function nexusYellowLight(l: Layout, now: number): Point {
   const g = nexusGeom(l)
-  return { x: g.a.x + g.dx, y: g.lensY - hoverLift(g, now) }
+  return { x: g.a.x, y: lensY(g, 1, now) }
+}
+
+// The HOLO emitter (bottom lens): the RGB holo projector. Dark when off; when it
+// projects it glows and cycles washed pastel colours (holoGlowStyle). Exposed so the
+// projection (e.g. the end-of-game scoreboard) can anchor to its muzzle.
+export function nexusHoloLight(l: Layout, now: number): Point {
+  const g = nexusGeom(l)
+  return { x: g.a.x, y: lensY(g, 2, now) }
 }
 
 // Where the laser lands on the dealer: the centre of its torso (a solid target
@@ -96,7 +121,7 @@ function impactPoint(l: Layout): Point {
 
 export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number): void {
   const g = nexusGeom(l)
-  const { a, w, h, r } = g
+  const { a, w, h } = g
   const lift = hoverLift(g, now)
   const cy = a.y - lift // the floating body's centre
 
@@ -107,10 +132,10 @@ export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number)
   // diffuse shadow. As the device climbs it spreads a touch and dims — the subtle
   // "further from the surface" cue — but only gently, so the bob doesn't make the
   // shadow visibly throb. `t` is the bob phase: 0 at the low point, 1 at the high.
-  const t = (lift / h - HOVER_MIN) / (HOVER_MAX - HOVER_MIN)
-  const rx = w * 0.4 * (1 + t * 0.16)
-  const ry = w * 0.12 * (1 + t * 0.16)
-  const alpha = 0.34 - t * 0.1 // 0.34 (low, tighter/darker) .. 0.24 (high, softer)
+  const t = hoverPhase(now)
+  const rx = w * 0.78 * (1 + t * 0.16)
+  const ry = w * 0.27 * (1 + t * 0.16)
+  const alpha = 0.45 - t * 0.1 // 0.45 (low, tighter/darker) .. 0.35 (high, softer)
   ctx.save()
   ctx.translate(a.x, a.y + h * 0.46)
   ctx.scale(1, ry / rx) // squash the circular gradient into a flat felt ellipse
@@ -124,25 +149,172 @@ export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number)
   ctx.fill()
   ctx.restore()
 
-  // Body: a dark brushed-metal box, lifted to its floating height.
-  const body = ctx.createLinearGradient(a.x, cy - h / 2, a.x, cy + h / 2)
-  body.addColorStop(0, '#3a4152')
-  body.addColorStop(0.5, '#242833')
-  body.addColorStop(1, '#15181f')
+  // The hover thrust — blue light discs pulsing down from the base — drawn UNDER the
+  // body so they read as emerging from beneath it (this is how it floats).
+  drawHoverThrust(ctx, g, cy, lift, now)
+
+  const top = cy - h / 2
+  const bottom = cy + h / 2
+  const ch = Math.min(w * 0.36, h * 0.1) // corner chamfer
+
+  // Body: a chamfered (octagonal) alien-metal casing — cool teal-tinted steel, cross-lit.
+  traceBodyOctagon(ctx, a.x, top, bottom, w, ch)
+  const body = ctx.createLinearGradient(a.x - w * 0.45, top, a.x + w * 0.45, bottom)
+  body.addColorStop(0, '#33424b')
+  body.addColorStop(0.5, '#171f27')
+  body.addColorStop(1, '#0d1218')
   ctx.fillStyle = body
-  ctx.beginPath()
-  ctx.roundRect(a.x - w / 2, cy - h / 2, w, h, r)
   ctx.fill()
-  ctx.lineWidth = Math.max(1, w * 0.02)
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+  ctx.lineWidth = Math.max(1, w * 0.04)
+  ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, 0.22)` // an energised teal edge — powered, not inert
   ctx.stroke()
 
-  // The two emitter lenses, seated in dark sockets on the top face and idling dim
-  // — the red laser muzzle and the yellow token vent. The charge glow (fx layer)
-  // brings them up to full when the nexus is about to act. Lifted with the body.
-  drawDimLens(ctx, a.x - g.dx, g.lensY - lift, g.lensR, RED_LENS)
-  drawDimLens(ctx, a.x + g.dx, g.lensY - lift, g.lensR, YELLOW_LENS)
+  // A teal energy conduit down the right flank — a pulse flowing toward the emitter, the
+  // power feeding the hover thrust.
+  drawEdgeConduit(ctx, a.x + w / 2 - w * 0.09, top + ch, bottom - ch, w)
 
+  // The three emitter lenses, each set in a hexagonal alien bezel — top to bottom: red
+  // (laser + heal), yellow token vent, and the RGB holo projector. All idle dim; the
+  // charge glow (fx layer) brings a lens up to full when the nexus acts.
+  const lensStyles = [RED_LENS, YELLOW_LENS, HOLO_OFF_LENS]
+  for (let i = 0; i < 3; i++) {
+    const ly = lensY(g, i, now)
+    drawHexBezel(ctx, a.x, ly, g.lensR * 1.38)
+    drawDimLens(ctx, a.x, ly, g.lensR, lensStyles[i])
+  }
+
+  // The emitter collar at the base — a metal lip with a teal-glowing nozzle slot the
+  // hover thrust pours from.
+  drawEmitterCollar(ctx, a.x, bottom, w, ch, now)
+
+  ctx.restore()
+}
+
+// --- alien-tech greeble --------------------------------------------------------
+// Teal "alien energy" colour, as an "r, g, b" triple for rgba() templates.
+const ALIEN_ENERGY = '116, 236, 224'
+
+// Trace the body's chamfered-octagon outline into the current path (an angular,
+// machined-alien silhouette instead of a plain rounded box).
+function traceBodyOctagon(ctx: CanvasRenderingContext2D, cx: number, top: number, bottom: number, w: number, ch: number): void {
+  const left = cx - w / 2
+  const right = cx + w / 2
+  ctx.beginPath()
+  ctx.moveTo(left + ch, top)
+  ctx.lineTo(right - ch, top)
+  ctx.lineTo(right, top + ch)
+  ctx.lineTo(right, bottom - ch)
+  ctx.lineTo(right - ch, bottom)
+  ctx.lineTo(left + ch, bottom)
+  ctx.lineTo(left, bottom - ch)
+  ctx.lineTo(left, top + ch)
+  ctx.closePath()
+}
+
+// A flat-top hexagonal metal bezel framing a lens — a raised ring so the round lens reads
+// as an alien optic set into segmented casing plate.
+function drawHexBezel(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number): void {
+  ctx.beginPath()
+  for (let k = 0; k < 6; k++) {
+    const ang = (k * Math.PI) / 3 // flat-top hexagon
+    const x = cx + Math.cos(ang) * R
+    const y = cy + Math.sin(ang) * R
+    if (k === 0) {
+      ctx.moveTo(x, y)
+    } else {
+      ctx.lineTo(x, y)
+    }
+  }
+  ctx.closePath()
+  const grad = ctx.createLinearGradient(cx, cy - R, cx, cy + R)
+  grad.addColorStop(0, '#3c4952')
+  grad.addColorStop(0.5, '#222a31')
+  grad.addColorStop(1, '#161c22')
+  ctx.fillStyle = grad
+  ctx.fill()
+  ctx.lineWidth = Math.max(1, R * 0.07)
+  ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, 0.16)`
+  ctx.stroke()
+}
+
+// A faint teal energy conduit line down one flank — static greeble suggesting a power
+// channel. Additive, so it reads as a lit seam.
+function drawEdgeConduit(ctx: CanvasRenderingContext2D, x: number, top: number, bottom: number, w: number): void {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, 0.16)`
+  ctx.lineWidth = Math.max(1, w * 0.045)
+  ctx.beginPath()
+  ctx.moveTo(x, top)
+  ctx.lineTo(x, bottom)
+  ctx.stroke()
+  ctx.restore()
+}
+
+// The emitter collar at the base: a dark metal lip with a teal-glowing nozzle slot the
+// hover thrust pours from — so the float reads as engine exhaust, not free glow.
+function drawEmitterCollar(ctx: CanvasRenderingContext2D, cx: number, bottom: number, w: number, ch: number, now: number): void {
+  const lipW = w * 0.64
+  const lipH = w * 0.16
+  const lipY = bottom - ch * 0.35
+  ctx.fillStyle = '#1c232a'
+  ctx.beginPath()
+  ctx.roundRect(cx - lipW / 2, lipY - lipH / 2, lipW, lipH, lipH * 0.4)
+  ctx.fill()
+  ctx.lineWidth = 1
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.07)'
+  ctx.stroke()
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  const pulse = 0.45 + 0.3 * (0.5 + 0.5 * Math.sin(now / 420))
+  ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, ${pulse})`
+  ctx.lineWidth = Math.max(1.5, w * 0.06)
+  ctx.lineCap = 'round'
+  ctx.beginPath()
+  ctx.moveTo(cx - lipW * 0.3, lipY)
+  ctx.lineTo(cx + lipW * 0.3, lipY)
+  ctx.stroke()
+  ctx.restore()
+}
+
+// The hover thrust: soft blue light discs streaming DOWN from the device's base toward
+// the felt — the "anti-grav" that keeps it aloft. Each disc loops on its own staggered
+// phase (deterministic from `now`, no Math.random): born just under the base, sinking a
+// flattened ellipse toward the felt while it widens and fades. Additive, so it reads as
+// light. `cy` is the floating body centre; `lift` its current altitude (the discs sink a
+// little past that, so the column always reaches the felt/shadow).
+const THRUST_DISCS = 3
+const THRUST_PERIOD_MS = 1200
+function drawHoverThrust(ctx: CanvasRenderingContext2D, g: NexusGeom, cy: number, lift: number, now: number): void {
+  const top = cy + g.h / 2 - g.lensR * 0.2 // just under the body base
+  const drop = lift + g.w * 0.35 // sink to a touch past the resting shadow
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < THRUST_DISCS; i++) {
+    const phase = ((now / THRUST_PERIOD_MS) % 1 + i / THRUST_DISCS) % 1
+    const y = top + phase * drop
+    const rx = g.w * (0.34 + phase * 1.2) // scale X out a LOT as it sinks — spreads on the "ground"
+    const ry = g.w * (0.11 + phase * 0.05) // Y stays flat, so the disc flattens as it widens
+    const fade = phase < 0.12 ? phase / 0.12 : 1 - (phase - 0.12) / 0.88 // ramp in, then fade out
+    const a = clamp01(fade) * 0.5
+    if (a <= 0.01) {
+      continue
+    }
+    ctx.save()
+    ctx.translate(g.a.x, y)
+    ctx.scale(1, ry / rx) // squash the circular gradient into a flat ellipse
+    // Create the gradient AFTER the transform, centred at (0,0), so its centre isn't
+    // pushed off by the CTM (a translated gradient centre samples all-transparent).
+    const disc = ctx.createRadialGradient(0, 0, 0, 0, 0, rx)
+    disc.addColorStop(0, `rgba(160, 210, 255, ${a})`)
+    disc.addColorStop(0.5, `rgba(90, 170, 255, ${a * 0.5})`)
+    disc.addColorStop(1, 'rgba(70, 150, 255, 0)')
+    ctx.fillStyle = disc
+    ctx.beginPath()
+    ctx.arc(0, 0, rx, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+  }
   ctx.restore()
 }
 
@@ -156,6 +328,23 @@ interface LensStyle {
 }
 const RED_LENS: LensStyle = { core: '#8a3232', mid: '#571c1c', edge: '#230c0c', rim: 'rgba(255, 130, 130, 0.16)' }
 const YELLOW_LENS: LensStyle = { core: '#8a7a30', mid: '#574a18', edge: '#231e0a', rim: 'rgba(255, 225, 140, 0.16)' }
+
+// The RGB holo projector's lens when it's OFF: a neutral dark-grey socket that reads
+// as unlit. When the projector powers on to cast a table projection (e.g. the
+// end-of-game scoreboard), holoGlowStyle drives an additive glow over this that lights
+// it up and cycles through washed pastel colours — see drawStrikeFx.
+const HOLO_OFF_LENS: LensStyle = { core: '#2b2d33', mid: '#17181d', edge: '#0a0a0d', rim: 'rgba(150, 152, 165, 0.12)' }
+
+// HSL (h in degrees, s/l in 0..1) → [r, g, b] 0..255. Local to the holo colour cycle.
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s
+  const hp = ((((h % 360) + 360) % 360) / 60)
+  const x = c * (1 - Math.abs((hp % 2) - 1))
+  const m = l - c / 2
+  const [r, g, b] =
+    hp < 1 ? [c, x, 0] : hp < 2 ? [x, c, 0] : hp < 3 ? [0, c, x] : hp < 4 ? [0, x, c] : hp < 5 ? [x, 0, c] : [c, 0, x]
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)]
+}
 
 function drawDimLens(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, s: LensStyle): void {
   // Dark socket the lens is recessed into.
@@ -199,7 +388,9 @@ export function drawStrikeFx(
   view: StrikeView,
   charge: {
     red: number
+    heal: number
     yellow: number
+    holo: number
     chargeUp: { start: number; cap: number } | null
     healBeam: { travel: number; alpha: number } | null
   },
@@ -222,14 +413,25 @@ export function drawStrikeFx(
   // The emitter lenses glowing — the red laser muzzle and the yellow token vent,
   // each on its own level (anticipation, firing, or the yellow's hit pulse). Drawn
   // first so the beam's muzzle flash (also at the red lens) still punches over it.
-  if (charge.red > 0.001 || charge.yellow > 0.001) {
+  if (charge.red > 0.001 || charge.heal > 0.001 || charge.yellow > 0.001 || charge.holo > 0.001) {
     const g = nexusGeom(l)
     if (charge.red > 0.001) {
       drawLightCharge(ctx, from.x, from.y, g.lensR, charge.red, RED_GLOW)
     }
+    // A heal glows the SAME (red) lens, but green — the heal beam fires from here on a
+    // loss, and never overlaps the red laser (a win), so one lens serves both.
+    if (charge.heal > 0.001) {
+      drawLightCharge(ctx, from.x, from.y, g.lensR, charge.heal, GREEN_GLOW)
+    }
     if (charge.yellow > 0.001) {
       const yellow = nexusYellowLight(l, now)
       drawLightCharge(ctx, yellow.x, yellow.y, g.lensR, charge.yellow, YELLOW_GLOW)
+    }
+    // The holo projector: a cycling pastel glow filling most of its dark lens (a bright
+    // disc with a thin black lens ring), its hue drifting with `now` as it cycles.
+    if (charge.holo > 0.001) {
+      const holo = nexusHoloLight(l, now)
+      drawLightCharge(ctx, holo.x, holo.y, g.lensR * 0.7, charge.holo, holoGlowStyle(now))
     }
   }
 
@@ -247,16 +449,15 @@ export function drawStrikeFx(
     drawSparkBurst(ctx, to.x, to.y, spark, scale)
   }
 
-  // The yellow heal beam (a late dealer repairing itself after a win): a gentle
-  // green-gold stream from the YELLOW emitter to the dealer, opposite in feel to the
-  // red laser. Never overlaps a strike — a heal is a loss, a strike is a win.
+  // The heal beam (a late dealer repairing itself after a loss): a gentle green-gold
+  // stream from the RED emitter to the dealer, opposite in feel to the red laser. Never
+  // overlaps a strike — a heal is a loss, a strike is a win — so both use the red lens.
   if (charge.healBeam) {
-    const heal = nexusYellowLight(l, now)
-    drawHealBeam(ctx, heal, to, charge.healBeam.travel, charge.healBeam.alpha, scale, now)
+    drawHealBeam(ctx, from, to, charge.healBeam.travel, charge.healBeam.alpha, scale, now)
   }
 }
 
-// A restorative beam from the yellow emitter: a soft green-gold glow with a warm
+// A restorative beam from the red emitter: a soft green-gold glow with a warm
 // (not hot) core, healing motes streaming up it toward the dealer, and a gentle
 // aura blooming on the dealer once it lands. Drawn additively like the laser, but
 // softer and cooler-edged so it reads as nourishing light, not a blast. `travel`
@@ -403,6 +604,88 @@ const YELLOW_GLOW: GlowStyle = {
   hot: 'rgba(255, 250, 225,',
   bloom: 1.0,
   intensity: 1.0,
+}
+// The heal glow — green, soft and cool, matching the restorative beam. Drawn on the RED
+// lens (which serves double duty) while a heal fires.
+const GREEN_GLOW: GlowStyle = {
+  core: 'rgba(170, 255, 150,',
+  halo: 'rgba(80, 220, 90,',
+  hot: 'rgba(225, 255, 215,',
+  bloom: 1.1,
+  intensity: 1.0,
+}
+
+// The holo projector's glow, built fresh from `now` so its hue drifts round the wheel
+// as it holds lit. Kept muted + washed — a light, near-white core with only a
+// moderately saturated halo — so it reads as a soft pastel projector, not a strobe.
+const HOLO_CYCLE_MS = 400 // one full trip round the hue wheel
+
+function holoGlowStyle(now: number): GlowStyle {
+  const hue = (now / HOLO_CYCLE_MS) * 360 // hslToRgb wraps this into 0..360
+  const rgb = (s: number, l: number): string => {
+    const [r, g, b] = hslToRgb(hue, s, l)
+    return `rgba(${r}, ${g}, ${b},`
+  }
+  return {
+    core: rgb(0.4, 0.82), // washed, near-white centre
+    halo: rgb(0.72, 0.55), // the visible cycling colour in the bloom
+    hot: rgb(0.18, 0.92), // white-hot pinprick, faintly tinted
+    bloom: 0.85, // soft bloom that reaches a little past the lens edge for a gentle glow
+    intensity: 1.3, // punchier, so the light keeps the brightness that read well
+  }
+}
+
+// A box a holo ray fan targets — the on-felt region of one projected readout number.
+export interface HoloRayTarget {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
+// The holo projector casting one readout: `count` faint WHITE light rays from the holo
+// lens to `box`. The apex is pinned to the lens; each ray's flat base JUMPS to a random
+// height within the box every frame and its opacity flickers in [0.02, 0.05], so the fan
+// shimmers like a projector scanning. White at the lens → transparent at the target,
+// drawn additively so it shines over the (undimmed) scene. `seedBase` decorrelates fans.
+export function drawHoloRays(
+  ctx: CanvasRenderingContext2D,
+  l: Layout,
+  box: HoloRayTarget,
+  count: number,
+  now: number,
+  seedBase: number,
+): void {
+  const src = nexusHoloLight(l, now)
+  const pad = (box.right - box.left) * 0.25
+  const midX = (box.left + box.right) / 2
+  const span = box.bottom - box.top
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = 0; i < count; i++) {
+    const seed = seedBase + i
+    // Each ray owns one horizontal slice of the box and jumps within it — so the fan
+    // always SPANS the number (never leaves it un-lit) while still shimmering.
+    const baseY = box.top + (span * (i + hash(now, seed))) / count
+    const alpha = 0.02 + 0.03 * hash(now, seed + 500)
+    // Fade the ray along a 1 − smoothStart2(t) curve (t: apex → base), so it holds near
+    // full for most of its length and only drops off near the END — more of the ray reads
+    // as light. Approximated with a few evenly-spaced stops (canvas lerps between them).
+    const grad = ctx.createLinearGradient(src.x, src.y, midX, baseY)
+    const STEPS = 5
+    for (let s = 0; s <= STEPS; s++) {
+      const t = s / STEPS
+      grad.addColorStop(t, `rgba(255, 255, 255, ${alpha * (1 - smoothStart2(t))})`)
+    }
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.moveTo(src.x, src.y)
+    ctx.lineTo(box.left - pad, baseY)
+    ctx.lineTo(box.right + pad, baseY)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.restore()
 }
 
 function drawLightCharge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, level: number, s: GlowStyle): void {

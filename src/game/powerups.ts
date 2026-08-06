@@ -20,7 +20,7 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
   peek: {
     id: 'peek',
     name: 'Peek Dealer',
-    cost: 60,
+    cost: 150,
     description: "Reveal the dealer's hole card.",
   },
   'late-double': {

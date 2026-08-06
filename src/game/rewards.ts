@@ -46,6 +46,11 @@ export function handReward(hand: PlayerHand, round: Round): HandReward {
 }
 
 function baseReward(hand: PlayerHand, round: Round): HandReward {
+  // Payout T3 chips-only wins (a paid-out push or Sabotage-voided dealer 21) pay
+  // chips but deal no damage and no reward tokens.
+  if (hand.chipsOnly) {
+    return NO_REWARD
+  }
   if (hand.outcome === 'blackjack') {
     return BLACKJACK_REWARD
   }
@@ -55,28 +60,24 @@ function baseReward(hand: PlayerHand, round: Round): HandReward {
   if (round.dealerFrozen) {
     return BY_DEALER_TOTAL[FROZEN_TIER]
   }
-  // dealerSettleTotal folds in the Anti-dealer downgrade, so a beaten downgraded
-  // dealer grades one tier weaker (matching how it was judged in round.ts).
   const dealerTotal = dealerSettleTotal(round)
   if (dealerTotal > 21) {
     // Don't punish the player for the dealer's aggression: if it busted only because
     // it hit a hand it would have stood on (a soft-17 or smart hit), grade the win as
-    // beating that abandoned total — with the downgrade folded in, exactly like a stood
-    // dealer. A plain draw from a stiff (<17) has no abandoned stand and pays the weak
-    // bust tier as before.
+    // beating that abandoned total, exactly like a stood dealer. A plain draw from a
+    // stiff (<17) has no abandoned stand and pays the weak bust tier as before.
     const abandoned = dealerAbandonedStand(round.dealer)
     if (abandoned < 17) {
       return DEALER_BUST_REWARD
     }
-    return BY_DEALER_TOTAL[tierFor(abandoned, round.rules.dealerDowngrade)]
+    return BY_DEALER_TOTAL[tierFor(abandoned)]
   }
-  return BY_DEALER_TOTAL[tierFor(dealerTotal, false)]
+  return BY_DEALER_TOTAL[tierFor(dealerTotal)]
 }
 
-// The 17-20 reward tier for a dealer total, applying the Anti-dealer downgrade (-1,
-// only when active and under 21) and clamping into the band. A standing 21 never
-// reaches a win and Freeze is handled separately, but the clamp keeps this total-safe.
-function tierFor(dealerTotal: number, downgradeActive: boolean): number {
-  const effective = downgradeActive && dealerTotal < 21 ? dealerTotal - 1 : dealerTotal
-  return Math.min(20, Math.max(17, effective))
+// The 17-20 reward tier for a dealer total, clamped into the band. A standing 21
+// never reaches a win and Freeze is handled separately, but the clamp keeps this
+// total-safe.
+function tierFor(dealerTotal: number): number {
+  return Math.min(20, Math.max(17, dealerTotal))
 }

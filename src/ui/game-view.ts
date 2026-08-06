@@ -10,12 +10,12 @@ import { Session, type SessionState } from '../game/session'
 import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawAnalysisMask, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
 import { drawHealthBar } from '../render/health'
-import { drawStrikeFx, nexusYellowLight } from '../render/nexus'
+import { drawHoloRays, drawStrikeFx, nexusYellowLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
@@ -78,6 +78,9 @@ const TOKEN_TONE_STAGGER_MS = 45
 
 // How long a dismissed Analyze reading takes to flicker out.
 const ANALYSIS_FADE_MS = 300
+
+// How many light rays the holo projector fans onto each number it projects.
+const HOLO_RAYS_PER = 5
 
 // Beat after the won chips collect into the player's stack before the nexus fires
 // its damage laser — so the payout finishes landing before the attack, never during.
@@ -207,6 +210,11 @@ class GameView {
   // over ANALYSIS_FADE_MS instead of vanishing; null once faded.
   private analysisFadeOut: SessionState['analysis'] = null
   private analysisFadeStart = 0
+  // Every projected-number box actually drawn this frame (counts, chip amounts, analysis
+  // rows). The number-drawing calls append here, and drawHoloProjection fires a ray fan at
+  // each — so a ray exists iff its number is on screen, at exactly its position. Cleared at
+  // the top of drawCards (the first draw of the frame); read in drawMask (after drawChips).
+  private frameProjections: HoloRayTarget[] = []
   // The ending hand's round, retained so its cards can be gathered back into
   // the deck after the Session has already cleared `state.round`.
   private collectRound: Round | null = null
@@ -428,7 +436,9 @@ class GameView {
   private drawFx(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const charge = {
       red: this.nexus.redLight(timestamp),
+      heal: this.nexus.healLight(timestamp),
       yellow: this.nexus.yellowLight(timestamp),
+      holo: 1, // the holo projector is always on
       chargeUp: this.nexus.chargeUp(timestamp),
       healBeam: this.nexus.healBeam(timestamp),
     }
@@ -439,6 +449,9 @@ class GameView {
   private drawCards(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.cards.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
+    // Start the frame's projected-number collection fresh; drawHands / drawAnalysis (here)
+    // and drawChips (next) append to it, and drawMask fires the ray fans at it.
+    this.frameProjections = []
     // Every back drawn this frame uses the current dealer's deck colour.
     this.applyDeckColor(timestamp)
 
@@ -494,7 +507,9 @@ class GameView {
       const round = this.state.round ?? this.collectRound
       if (round) {
         const revealHole = this.state.phase !== 'playing' || this.state.peeked
-        drawHands(ctx, layout, round, revealHole, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined)
+        this.frameProjections.push(
+          ...drawHands(ctx, layout, round, revealHole, timestamp, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined),
+        )
       }
     }
 
@@ -528,23 +543,27 @@ class GameView {
     // shimmers, so `timestamp` drives it and the loop is kept alive below.
     const ar = this.analysisRender(timestamp)
     if (ar) {
-      drawAnalysis(ctx, layout, ar.a, ar.age, ar.fade)
+      this.frameProjections.push(...drawAnalysis(ctx, layout, ar.a, ar.age, ar.fade, timestamp))
     }
   }
 
-  // The top 'mask' layer: darkens the world while a reading is up and lets the
-  // projection punch light back through. Cleared (transparent) otherwise.
+  // The top overlay layer (additive light, no scene dimming): the dealer's emissive
+  // eye glow, plus the 5-ray fans the always-on holo projector casts onto every readout.
+  // (The holo lens's own glow lives on the fx layer, drawn by drawStrikeFx.)
   private drawMask(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.mask.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
-    const ar = this.analysisRender(timestamp)
-    if (ar) {
-      drawAnalysisMask(ctx, layout, ar.a, ar.age, ar.fade)
-    }
-    // The dealer's emissive red eye glow, added on top (so it also shows through
-    // the Analyze darkness). Drawn every frame the loop runs and on resize; at
-    // rest the last frame's glow persists on this otherwise-clear layer.
     drawDealerEyeGlow(ctx, layout, this.dealer.eyeGlow(timestamp))
+    this.drawHoloProjection(ctx, layout, timestamp)
+  }
+
+  // The holo projector casts a fan of HOLO_RAYS_PER white rays onto every projected
+  // number that was ACTUALLY drawn this frame — `frameProjections` is the single source
+  // of truth (populated by drawHands / drawChips / drawAnalysis as they draw each number),
+  // so a ray fan exists iff its number is on screen, at exactly its position. No ray can
+  // lead or lag its number. Each fan gets its own seed so their flicker stays independent.
+  private drawHoloProjection(ctx: CanvasRenderingContext2D, layout: Layout, timestamp: number): void {
+    this.frameProjections.forEach((box, i) => drawHoloRays(ctx, layout, box, HOLO_RAYS_PER, timestamp, i * 1000))
   }
 
   // The Analyze projection to paint this frame (live or flickering out), with the
@@ -618,7 +637,7 @@ class GameView {
     this.bankrollTicker.retarget(this.displayedBankroll(), timestamp)
     const chips = this.bankrollTicker.value(timestamp)
     const chipsScale = this.bankrollTicker.scale(timestamp)
-    drawChips(ctx, layout, { chips, chipsScale, round }, this.chips, timestamp)
+    this.frameProjections.push(...drawChips(ctx, layout, { chips, chipsScale, round }, this.chips, timestamp))
   }
 
   // The HUD layer: the dealer's vertical health bar, with the dealer-remaining
@@ -913,7 +932,7 @@ class GameView {
     // never collapses and reflows between hands. Their "only during play"
     // condition lives in `enabled` (via playing()), not `visible`. The contextual
     // ACTION buttons (Hit/Stand/Next/…) still appear per phase.
-    return [
+    const defs: ButtonDef[] = [
       { key: 'hit', label: 'Hit', group: 'action', act: () => this.session.hit(), visible: playing, enabled: yes },
       { key: 'stand', label: 'Stand', group: 'action', act: () => this.session.stand(), visible: playing, enabled: yes },
       {
@@ -1040,6 +1059,11 @@ class GameView {
         enabled: (s) => playing(s) && affords(POWERUPS.foresight.cost, s) && s.foresightCard === null,
       },
     ]
+    // The powerup column reads top-to-bottom in ascending token cost. Array.sort is
+    // stable, so the action buttons (no cost → 0) keep their defined order and their
+    // own column, and equal-cost powerups (e.g. Peek Deck & Peek Dealer at 150) hold
+    // source order. Dispatch to columns is by `group`, so sorting the flat list is safe.
+    return defs.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0))
   }
 
   private buildOverlay(): void {
@@ -1107,7 +1131,7 @@ class GameView {
   private buildUpgradePanel(): HTMLElement {
     const panel = element('div', 'upgrade-panel is-hidden')
     const title = element('div', 'upgrade-panel__title')
-    title.textContent = 'Choose an upgrade'
+    title.textContent = 'Choose:'
     const row = element('div', 'upgrade-panel__row')
     this.upgradeButtons = UPGRADE_PATHS.map((info) => {
       const btn = document.createElement('button')
@@ -1709,10 +1733,15 @@ class GameView {
 }
 
 // A single hand's result label + tone, from its settled outcome and net chips.
-function handResultLabel(hand: PlayerHand, rules: RoundRules): RoundResult {
+// Returns undefined when the hand shows no player-side label — a voided hand is
+// tagged beside the dealer's total instead (see cards.ts dealerNote).
+function handResultLabel(hand: PlayerHand, rules: RoundRules): RoundResult | undefined {
   const net = handNet(hand, rules)
   if (hand.outcome === 'blackjack') {
     return { label: `Blackjack +${net}`, tone: 'win' }
+  }
+  if (hand.outcome === 'voided') {
+    return undefined
   }
   if (net > 0) {
     return { label: `Win +${net}`, tone: 'win' }

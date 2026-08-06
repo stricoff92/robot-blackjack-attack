@@ -174,11 +174,6 @@ function dealerBeatsPlayer(
     remaining -= 1
   }
   const ranks: Rank[] = [upCard, hole]
-  // Anti-dealer T2 (hijack): a dealt dealer natural is stolen as a player win, so
-  // the dealer never beats you — mirror round.ts' resolveOpeningNaturals.
-  if (rules.hijackDealerNatural && evaluateRanks(ranks).total === 21) {
-    return false
-  }
   if (!frozen) {
     let usedNext = false
     while (dealerHits(evaluateRanks(ranks), rules, playerTotal)) {
@@ -194,19 +189,19 @@ function dealerBeatsPlayer(
       remaining -= 1
     }
   }
-  let dealerTotal = evaluateRanks(ranks).total
-  // Anti-dealer T3 (downgrade): the dealer's standing total counts as 1 lower when
-  // under 21 — mirror round.ts' dealerSettleTotal.
-  if (rules.dealerDowngrade && dealerTotal < 21) {
-    dealerTotal -= 1
+  const dealerTotal = evaluateRanks(ranks).total
+  // Sabotage: a voided dealer 21 (T2, any 21) or a hijacked dealt natural (T3, a
+  // two-card 21) is not a dealer win — mirror round.ts' resolution.
+  if (dealerTotal === 21 && (rules.voidDealer21 || (rules.hijackDealerNatural && ranks.length === 2))) {
+    return false
   }
   return dealerTotal <= 21 && dealerTotal > playerTotal
 }
 
 // The dealer's play rule: hit below 17, stand on 21, and follow rules.dealerSoft17 at
 // 17-20. Mirrors round.ts' dealerShouldHit exactly (the 'smart' rule's soft-vs-hard
-// split, the desperation hard-hit ceiling, and the downgraded settling total), so the
-// odds reflect how the dealer really plays. `playerTotal` is the standing player total.
+// split and the desperation hard-hit ceiling), so the odds reflect how the dealer
+// really plays. `playerTotal` is the standing player total.
 function dealerHits(value: HandValue, rules: RoundRules, playerTotal: number): boolean {
   if (value.total < DEALER_STANDS_AT) {
     return true
@@ -218,11 +213,10 @@ function dealerHits(value: HandValue, rules: RoundRules, playerTotal: number): b
     return value.total === DEALER_STANDS_AT && value.soft
   }
   if (rules.dealerSoft17 === 'smart') {
-    const effective = rules.dealerDowngrade && value.total < 21 ? value.total - 1 : value.total
     if (value.soft) {
-      return value.total === DEALER_STANDS_AT && effective <= playerTotal
+      return value.total === DEALER_STANDS_AT && value.total <= playerTotal
     }
-    return value.total <= rules.dealerHardHitCeiling && effective < playerTotal
+    return value.total <= rules.dealerHardHitCeiling && value.total < playerTotal
   }
   return false
 }

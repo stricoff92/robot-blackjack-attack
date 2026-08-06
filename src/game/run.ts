@@ -22,7 +22,15 @@ import {
 // v10: smart D6 also hits a hard 17 when strictly behind (downgrade folded in).
 // v11: D6 "honorable duel" — desperation hard-hit ceiling, no heal <30%, no abilities
 //      <20%, and a bust from an abandoned stand pays the beat-total tier, not weak bust.
-export const RULES_VERSION = 11
+// v12: upgrade-path rework — Payout (2:1 → 3:1 blackjack → win all pushes), Sabotage
+//      (75% refund → void any dealer 21 → hijack natural), buffed Tokens; the
+//      auto-blackjack lift and the −1 dealer downgrade removed.
+// v13: harder economy — min-bet ladder doubled per dealer (20/40/80/160/320/640) with
+//      a steeper wealth floor (0/10/12/15/18/25%); Peek Dealer costs the same as Peek Deck.
+// v14: kill bounty raised (150→1000 ×dealer) so kills dominate score, and clean-kill
+//      decay halved (0.2→0.1) so the clean bonus survives a realistic loss count and
+//      stays reachable on the drawn-out, self-healing late dealers.
+export const RULES_VERSION = 14
 export const STARTING_CHIPS = 300
 // The run is won by destroying this many dealers; there is no dealer beyond it.
 export const TOTAL_DEALERS = 6
@@ -41,7 +49,7 @@ export function hitTokens(bustChance: number): number {
   return HIT_TOKEN_BASE + Math.round(risk * HIT_TOKEN_MAX_BONUS)
 }
 
-const DESTRUCTION_SCORE_BASE = 150
+const DESTRUCTION_SCORE_BASE = 1000
 const HAND_BET_STEP = 0.5
 // On a kill, seed the next dealer's bankroll with this many of its minimum bets,
 // so the escalating min-bet ladder stays survivable instead of starving the run.
@@ -60,8 +68,8 @@ const COMBO_MAX_STEPS = 8 // caps the multiplier at x3
 
 // Clean-kill bonus (score only): a kill pays a second helping of its base bounty,
 // shrunk CLEAN_KILL_DECAY per hand lost to that dealer — a flawless kill doubles
-// the bounty, a sloppy one (5+ losses) adds nothing.
-const CLEAN_KILL_DECAY = 0.2
+// the bounty, a sloppy one (10+ losses) adds nothing.
+const CLEAN_KILL_DECAY = 0.1
 
 // Endgame "honorable duel" on the final dealer. Below these health fractions it stops
 // self-repairing (heal-on-win off), locks the player out of token abilities, and (via
@@ -129,18 +137,20 @@ export interface RunState {
   upgrades: RunUpgrades
 }
 
-// The min-bet floor climbs ~1.6x/shift early, then jumps harder on dealers 5-6 to
-// squeeze the late-game bankroll. maxBet stays at 10x min. Dealer HP scales too —
-// from 100 up to 220 at dealer 6, so late kills take more hands (more exposure to a
-// cold streak, more score) — and dealer 6 repairs 10-15 HP whenever it beats you,
+// The min-bet floor doubles per dealer (20 → 640, v13) to thin the 300-chip bankroll
+// and raise variance — cold streaks bust the player out more often, hardest early
+// where runs actually end. maxBet grows slower than the min, so the ladder's bet range
+// compresses on the later dealers. The wealth floor climbs too (0 → 25%). Dealer HP
+// scales — from 100 up to 220 at dealer 6, so late kills take more hands (more exposure
+// to a cold streak, more score) — and dealer 6 repairs 10-15 HP whenever it beats you,
 // so a stumble against it costs progress, not just chips.
 const SHIFT_TABLE: readonly Shift[] = [
-  { index: 1, minBet: 10, maxBet: 100, scoreMultiplier: 1.0, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
-  { index: 2, minBet: 15, maxBet: 150, scoreMultiplier: 1.5, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.04, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
-  { index: 3, minBet: 25, maxBet: 250, scoreMultiplier: 2.0, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.08, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
-  { index: 4, minBet: 40, maxBet: 400, scoreMultiplier: 3.0, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
-  { index: 5, minBet: 90, maxBet: 900, scoreMultiplier: 4.0, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.16, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
-  { index: 6, minBet: 150, maxBet: 2500, scoreMultiplier: 5.5, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.2, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
+  { index: 1, minBet: 20, maxBet: 200, scoreMultiplier: 1.0, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
+  { index: 2, minBet: 40, maxBet: 350, scoreMultiplier: 1.5, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
+  { index: 3, minBet: 80, maxBet: 550, scoreMultiplier: 2.0, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
+  { index: 4, minBet: 160, maxBet: 850, scoreMultiplier: 3.0, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
+  { index: 5, minBet: 320, maxBet: 1700, scoreMultiplier: 4.0, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
+  { index: 6, minBet: 640, maxBet: 2750, scoreMultiplier: 5.5, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
 ]
 
 export function startRun(seed: number): RunState {

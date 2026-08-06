@@ -41,13 +41,6 @@ describe('handReward', () => {
     expect(reward(round)).toEqual({ damage: 40, tokens: 16 }) // beat-19, not { 12, 4 }
   })
 
-  it('folds the Sabotage downgrade into the abandoned-stand credit (if active)', () => {
-    const shoe = [card('K'), card('K', 'hearts'), card('10'), card('9'), card('5')]
-    const downgraded = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'smart' as const, dealerHardHitCeiling: 19, dealerDowngrade: true }
-    // Abandoned 19 → −1 → 18 → beat-18, mirroring a stood downgraded 19.
-    expect(reward(stand(startRound(shoe, 10, downgraded)))).toEqual({ damage: 30, tokens: 12 })
-  })
-
   it('credits an abandoned soft 17 (H17 dealer) as beat-17 on a bust', () => {
     // Dealer A+6 = soft 17, hits per H17 → 6 → 13 → K → bust. Player 18 wins.
     const hitRules = { ...DEFAULT_ROUND_RULES, dealerSoft17: 'hit' as const }
@@ -76,6 +69,14 @@ describe('handReward', () => {
     const push = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], 10))
     expect(push.hands[0].outcome).toBe('push')
     expect(reward(push)).toEqual({ damage: 0, tokens: 0 })
+  })
+
+  it('is nothing on a chips-only push-win (Payout T3)', () => {
+    // A push paid out to the player pays chips but deals no damage and no tokens.
+    const round = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], 10, { ...DEFAULT_ROUND_RULES, pushWinsToPlayer: true }))
+    expect(round.hands[0].outcome).toBe('win')
+    expect(round.hands[0].chipsOnly).toBe(true)
+    expect(reward(round)).toEqual({ damage: 0, tokens: 0 })
   })
 
   it('is nothing when the player busts', () => {

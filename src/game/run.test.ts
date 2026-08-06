@@ -63,11 +63,11 @@ describe('startRun', () => {
 
 describe('getShift', () => {
   it('reads the fixed ladder for early shifts', () => {
-    expect(getShift(4)).toMatchObject({ minBet: 40, maxBet: 400, scoreMultiplier: 3 })
+    expect(getShift(4)).toMatchObject({ minBet: 160, maxBet: 850, scoreMultiplier: 3 })
   })
 
   it('extrapolates prototype units beyond the table', () => {
-    expect(getShift(7)).toMatchObject({ minBet: 375, maxBet: 3750, scoreMultiplier: 7, maxIntegrity: 265 })
+    expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, scoreMultiplier: 7, maxIntegrity: 265 })
   })
 })
 
@@ -138,21 +138,24 @@ describe('applyRound advancement', () => {
 describe('nextBet', () => {
   it('scales the fixed bet up as a dealer drags on', () => {
     const run0 = startRun(1)
-    expect(nextBet(run0)).toBe(10)
+    expect(nextBet(run0)).toBe(20)
 
     const run1 = applyRound(run0, standWin(10))
     expect(run1.handsThisDealer).toBe(1)
-    expect(nextBet(run1)).toBe(15)
+    expect(nextBet(run1)).toBe(30) // 20 x (1 + 0.5)
   })
 
-  it('resets to the new dealer minimum after a destroy', () => {
+  it('recomputes the bet for the new dealer after a destroy', () => {
     let run = startRun(1)
     while (run.shiftIndex === 1) {
       run = applyRound(run, beatTwentyWin(10))
     }
 
+    // Dealer 1 dies in 2 beat-20 wins → chips 440. On Dealer 2 the ladder min is 40,
+    // but the 10% wealth floor on 440 chips (44) now leads it.
     expect(run.shiftIndex).toBe(2)
-    expect(nextBet(run)).toBe(15)
+    expect(run.chips).toBe(440)
+    expect(nextBet(run)).toBe(44)
   })
 })
 
@@ -173,25 +176,25 @@ describe('late-dealer house rules', () => {
 })
 
 describe('wealth-floor bet', () => {
-  it('scales the floor percentage from 0% at dealer 1 to 20% at dealer 6', () => {
+  it('scales the floor percentage from 0% at dealer 1 to 25% at dealer 6', () => {
     expect(getShift(1).minBetPct).toBe(0)
-    expect(getShift(6).minBetPct).toBe(0.2)
+    expect(getShift(6).minBetPct).toBe(0.25)
   })
 
   it('adds nothing on dealer 1, however fat the stack', () => {
-    expect(nextBet({ ...startRun(1), chips: 5000 })).toBe(10) // ladder min, 0% floor
+    expect(nextBet({ ...startRun(1), chips: 5000 })).toBe(20) // ladder min, 0% floor
   })
 
-  it('forces a bet worth 20% of a fat stack on dealer 6', () => {
-    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 4000 })).toBe(800) // max(150, 20% of 4000)
+  it('forces a bet worth 25% of a fat stack on dealer 6', () => {
+    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 4000 })).toBe(1000) // max(640, 25% of 4000)
   })
 
   it('lets the wealth floor exceed the table max bet for the very rich', () => {
-    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 20000 })).toBe(4000) // 20% of 20000, above the 2500 max
+    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 20000 })).toBe(5000) // 25% of 20000, above the 2750 max
   })
 
   it('falls back to the ladder min when the stack is small', () => {
-    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 300 })).toBe(150) // 20% of 300 = 60 < ladder min 150
+    expect(nextBet({ ...startRun(1), shiftIndex: 6, chips: 1000 })).toBe(640) // 25% of 1000 = 250 < ladder min 640
   })
 })
 
@@ -204,9 +207,9 @@ describe('kill reward', () => {
       hands += 1
     }
 
-    // Each +10 win, plus 3 x the Dealer 2 minimum (15) seeded on the kill.
+    // Each +10 win, plus 3 x the Dealer 2 minimum (40) seeded on the kill.
     expect(run.shiftIndex).toBe(2)
-    expect(run.chips).toBe(300 + hands * 10 + 3 * 15)
+    expect(run.chips).toBe(300 + hands * 10 + 3 * 40)
   })
 })
 
@@ -233,8 +236,8 @@ describe('scaled dealer HP and late min bets', () => {
   })
 
   it('raises the late-dealer minimum bets', () => {
-    expect(getShift(5).minBet).toBe(90)
-    expect(getShift(6).minBet).toBe(150)
+    expect(getShift(5).minBet).toBe(320)
+    expect(getShift(6).minBet).toBe(640)
   })
 })
 
@@ -318,21 +321,22 @@ describe('score helpers', () => {
 
   it('clean-kill factor decays from full to zero with losses', () => {
     expect(cleanKillFactor(0)).toBe(1)
-    expect(cleanKillFactor(2)).toBeCloseTo(0.6)
-    expect(cleanKillFactor(5)).toBe(0)
-    expect(cleanKillFactor(9)).toBe(0)
+    expect(cleanKillFactor(2)).toBeCloseTo(0.8)
+    expect(cleanKillFactor(5)).toBeCloseTo(0.5)
+    expect(cleanKillFactor(10)).toBe(0)
+    expect(cleanKillFactor(14)).toBe(0)
   })
 })
 
 describe('clean-kill bonus', () => {
   it('pays a flawless kill a bigger bounty than a sloppy one', () => {
     // A dealer 1 hand from death; the incoming win destroys it. Same win, same combo,
-    // so the only score difference is the clean-kill helping (base 150: full vs x0.4).
+    // so the only score difference is the clean-kill helping (base 1000: full vs x0.7).
     const flawless = { ...startRun(1), integrity: 10, lossesThisDealer: 0 }
     const sloppy = { ...startRun(1), integrity: 10, lossesThisDealer: 3 }
     const fk = applyRound(flawless, beatTwentyWin(10))
     const sk = applyRound(sloppy, beatTwentyWin(10))
-    expect(fk.score - sk.score).toBe(90) // 150 * 1.0 - round(150 * 0.4) = 150 - 60
+    expect(fk.score - sk.score).toBe(300) // 1000 * 1.0 - round(1000 * 0.7) = 1000 - 700
   })
 })
 
@@ -359,12 +363,12 @@ describe('token inflation', () => {
     expect(after.tokenInflation).toBe(0)
   })
 
-  it('Token eco resists inflation — a maxed path halves the add', () => {
+  it('Token eco resists inflation — a maxed path cuts the add to ~a third', () => {
     const base = { ...startRun(1), integrity: 10, tokensThisShift: 78 }
     const none = applyRound(base, beatTwentyWin(10))
     const maxed = applyRound({ ...base, upgrades: { antiDealer: 0, chipEco: 0, tokenEco: 3 } }, beatTwentyWin(10))
     expect(none.tokenInflation).toBeCloseTo(0.07, 5)
-    expect(maxed.tokenInflation).toBeCloseTo(0.035, 5) // x0.50 resistance (both hands cap the fraction)
+    expect(maxed.tokenInflation).toBeCloseTo(0.0245, 5) // x0.35 resistance (both hands cap the fraction)
   })
 })
 

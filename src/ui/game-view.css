@@ -210,9 +210,9 @@
   background: linear-gradient(#dab55e, #c9a24b);
   border: none;
   border-radius: 12px;
-  padding: 14px 20px;
+  padding: 8px 20px;
   min-width: 72px;
-  min-height: 48px;
+  min-height: 40px;
   cursor: pointer;
   box-shadow: 0 3px 0 #8a6b32, 0 4px 8px rgba(0, 0, 0, 0.4);
   transition: transform 0.05s ease, box-shadow 0.05s ease;
@@ -432,7 +432,7 @@ button.is-hidden,
   }
 
   .hud-powerups button {
-    font-size: 14px;
+    font-size: 12px;
     padding: 4px 7px 19px; /* tighter top/side; bottom still clears the corner pill */
     min-height: 38px;
     border-radius: 8px;
