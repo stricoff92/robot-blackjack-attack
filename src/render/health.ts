@@ -6,7 +6,10 @@
 // Mirrors cards.ts / chips.ts: this module owns geometry + paint, while
 // ui/health-animator.ts owns the timing (the HealthView passed in here).
 
+import { deviceDpr } from './canvas'
+import { cachedGradient } from './gradient-cache'
 import { dealerBox, feltTopEdgeY, type Layout } from './scene'
+import { createSpriteCanvas } from './sprite-canvas'
 
 // The removed slice fading out after a hit, expressed as fractions of the bar
 // (0 = empty/bottom, 1 = full/top). `fade` runs 1 (just removed, hot) → 0 (gone).
@@ -160,14 +163,19 @@ function drawDealerPips(
 // A single glossy red token: a radial body lit from the upper-left with a dark
 // rim, echoing the bar's threat-red so the pips read as part of the same gauge.
 function drawPip(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
-  const body = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.4, r * 0.1, cx, cy, r)
-  body.addColorStop(0, css(shade(FILL, 0.5)))
-  body.addColorStop(0.55, css(FILL))
-  body.addColorStop(1, css(shade(FILL, -0.42)))
-
+  // Drawn around a local origin at (cx, cy) so the (identical) pip gradient is cached
+  // once and translated to each pip rather than rebuilt per pip per frame.
   ctx.save()
+  ctx.translate(cx, cy)
+  const body = cachedGradient(ctx, `health-pip:${Math.round(r)}`, (c) => {
+    const g = c.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.1, 0, 0, r)
+    g.addColorStop(0, css(shade(FILL, 0.5)))
+    g.addColorStop(0.55, css(FILL))
+    g.addColorStop(1, css(shade(FILL, -0.42)))
+    return g
+  })
   ctx.beginPath()
-  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.arc(0, 0, r, 0, Math.PI * 2)
   ctx.fillStyle = body
   ctx.fill()
   ctx.lineWidth = Math.max(1, r * 0.14)
@@ -184,10 +192,15 @@ function drawFrame(ctx: CanvasRenderingContext2D, box: Box): void {
   const h = box.h + PAD * 2
 
   ctx.save()
-  const metal = ctx.createLinearGradient(x, 0, x + w, 0)
-  metal.addColorStop(0, '#3c3c48')
-  metal.addColorStop(0.5, '#131319')
-  metal.addColorStop(1, '#3c3c48')
+  // The frame sits at a fixed position, so its cross-bar metal gradient is cached by
+  // geometry and reused every frame (rebuilt only on a resize, when the key changes).
+  const metal = cachedGradient(ctx, `health-frame:${Math.round(x)}:${Math.round(w)}`, (c) => {
+    const g = c.createLinearGradient(x, 0, x + w, 0)
+    g.addColorStop(0, '#3c3c48')
+    g.addColorStop(0.5, '#131319')
+    g.addColorStop(1, '#3c3c48')
+    return g
+  })
   ctx.fillStyle = metal
   ctx.beginPath()
   ctx.roundRect(x, y, w, h, RADIUS)
@@ -211,9 +224,12 @@ function drawTrough(ctx: CanvasRenderingContext2D, box: Box): void {
   ctx.fillStyle = '#101017'
   ctx.fillRect(box.x, box.y, box.w, box.h)
 
-  const shadow = ctx.createLinearGradient(0, box.y, 0, box.y + box.h)
-  shadow.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
-  shadow.addColorStop(0.18, 'rgba(0, 0, 0, 0)')
+  const shadow = cachedGradient(ctx, `health-trough:${Math.round(box.y)}:${Math.round(box.h)}`, (c) => {
+    const g = c.createLinearGradient(0, box.y, 0, box.y + box.h)
+    g.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
+    g.addColorStop(0.18, 'rgba(0, 0, 0, 0)')
+    return g
+  })
   ctx.fillStyle = shadow
   ctx.fillRect(box.x, box.y, box.w, box.h)
 }
@@ -228,10 +244,15 @@ function drawFill(ctx: CanvasRenderingContext2D, box: Box, level: number): void 
   const h = box.h * level
   const col = FILL
 
-  const sheen = ctx.createLinearGradient(box.x, 0, box.x + box.w, 0)
-  sheen.addColorStop(0, css(shade(col, -0.28)))
-  sheen.addColorStop(0.5, css(shade(col, 0.14)))
-  sheen.addColorStop(1, css(shade(col, -0.38)))
+  // The left→right sheen depends only on the bar's fixed width, not the fill level, so
+  // it's cached by geometry; only the surface highlight below tracks the moving top.
+  const sheen = cachedGradient(ctx, `health-sheen:${Math.round(box.x)}:${Math.round(box.w)}`, (c) => {
+    const g = c.createLinearGradient(box.x, 0, box.x + box.w, 0)
+    g.addColorStop(0, css(shade(col, -0.28)))
+    g.addColorStop(0.5, css(shade(col, 0.14)))
+    g.addColorStop(1, css(shade(col, -0.38)))
+    return g
+  })
   ctx.fillStyle = sheen
   ctx.fillRect(box.x, top, box.w, h)
 
@@ -294,20 +315,12 @@ function drawHealGlow(ctx: CanvasRenderingContext2D, box: Box, g: Ghost): void {
   ctx.restore()
 }
 
-// White heart centered inside the bar near its bottom, painted over the fill with
-// a soft shadow so its edges stay legible on both the red fill and the dark
-// trough. Built by sampling the classic parametric heart curve and fitting it to
-// a target box that's taller than it is wide — a clean upright silhouette (round
-// lobes, sharp point), not the squat bezier version.
-function drawHeart(ctx: CanvasRenderingContext2D, box: Box): void {
-  const s = box.w * HEART_SCALE
-  const targetW = s * 0.9 // narrower than tall — tune these two for the shape
-  const targetH = s * 1.02
-  const cx = box.x + box.w / 2
-  const cy = box.y + box.h - targetH / 2 - box.w * 0.18
-
-  // Sample x = 16sin³t, y = 13cos t − 5cos2t − 2cos3t − cos4t (canvas y flipped),
-  // tracking the bounds so the raw curve can be rescaled into targetW × targetH.
+// The parametric heart curve, sampled once and normalized into a unit box centered
+// on the origin (nx, ny each in [-0.5, 0.5]). drawHeart just scales these points into
+// its target box, so the ~360 trig calls the sampling costs run at module load, not
+// every frame. Sample x = 16sin³t, y = 13cos t − 5cos2t − 2cos3t − cos4t (canvas y
+// flipped), tracking the bounds so the raw curve can be rescaled cleanly.
+function buildHeartPath(): ReadonlyArray<{ nx: number; ny: number }> {
   const N = 72
   const raw: Array<{ x: number; y: number }> = []
   let minX = Infinity
@@ -325,29 +338,70 @@ function drawHeart(ctx: CanvasRenderingContext2D, box: Box): void {
     minY = Math.min(minY, py)
     maxY = Math.max(maxY, py)
   }
-  const sx = targetW / (maxX - minX)
-  const sy = targetH / (maxY - minY)
+  const spanX = maxX - minX
+  const spanY = maxY - minY
   const midX = (minX + maxX) / 2
   const midY = (minY + maxY) / 2
+  return raw.map(({ x, y }) => ({ nx: (x - midX) / spanX, ny: (y - midY) / spanY }))
+}
 
-  ctx.save()
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)'
-  ctx.shadowBlur = s * 0.16
-  ctx.shadowOffsetY = s * 0.03
-  ctx.fillStyle = '#ffffff'
-  ctx.beginPath()
-  for (let i = 0; i < raw.length; i++) {
-    const px = cx + (raw[i].x - midX) * sx
-    const py = cy + (raw[i].y - midY) * sy
-    if (i === 0) {
-      ctx.moveTo(px, py)
-    } else {
-      ctx.lineTo(px, py)
+const HEART_POINTS = buildHeartPath()
+
+// White heart centered inside the bar near its bottom, painted over the fill with
+// a soft shadow so its edges stay legible on both the red fill and the dark
+// trough. The silhouette is the precomputed HEART_POINTS fitted to a target box
+// that's taller than it is wide — a clean upright shape (round lobes, sharp point),
+// not the squat bezier version.
+function drawHeart(ctx: CanvasRenderingContext2D, box: Box): void {
+  const s = box.w * HEART_SCALE
+  const targetW = s * 0.9 // narrower than tall — tune these two for the shape
+  const targetH = s * 1.02
+  const cx = box.x + box.w / 2
+  const cy = box.y + box.h - targetH / 2 - box.w * 0.18
+  // The heart is a fixed white shape drawn every frame; its soft shadow is baked into a
+  // sprite once (shadowBlur is Firefox's slowest op) and just blitted here, centred.
+  const sprite = getHeartSprite(targetW, targetH, s)
+  ctx.drawImage(sprite.canvas, cx - sprite.dw / 2, cy - sprite.dh / 2, sprite.dw, sprite.dh)
+}
+
+interface HeartSprite {
+  canvas: HTMLCanvasElement
+  dw: number // full sprite size incl. shadow padding (CSS px)
+  dh: number
+}
+
+let heartSpriteCache: (HeartSprite & { key: string }) | null = null
+
+// Build (or reuse) the shadowed white-heart sprite for the current bar size. Keyed by
+// its target size + dpr, so it rebuilds only on a resize.
+function getHeartSprite(targetW: number, targetH: number, s: number): HeartSprite {
+  const dpr = deviceDpr()
+  const key = `${Math.round(targetW)}x${Math.round(targetH)}@${dpr}`
+  if (!heartSpriteCache || heartSpriteCache.key !== key) {
+    const pad = s * 0.25 // room for the blur (s*0.16) + downward offset (s*0.03)
+    const dw = targetW + pad * 2
+    const dh = targetH + pad * 2
+    const { canvas, ctx } = createSpriteCanvas(Math.round(dw * dpr), Math.round(dh * dpr))
+    ctx.scale(dpr, dpr)
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)'
+    ctx.shadowBlur = s * 0.16
+    ctx.shadowOffsetY = s * 0.03
+    ctx.fillStyle = '#ffffff'
+    ctx.beginPath()
+    for (let i = 0; i < HEART_POINTS.length; i++) {
+      const px = dw / 2 + HEART_POINTS[i].nx * targetW
+      const py = dh / 2 + HEART_POINTS[i].ny * targetH
+      if (i === 0) {
+        ctx.moveTo(px, py)
+      } else {
+        ctx.lineTo(px, py)
+      }
     }
+    ctx.closePath()
+    ctx.fill()
+    heartSpriteCache = { canvas, dw, dh, key }
   }
-  ctx.closePath()
-  ctx.fill()
-  ctx.restore()
+  return heartSpriteCache
 }
 
 // Shift a colour toward white (amt > 0) or black (amt < 0) by |amt| in [0, 1].

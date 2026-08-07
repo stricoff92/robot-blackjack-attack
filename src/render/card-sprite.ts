@@ -8,6 +8,7 @@
 import type { Card, Suit } from '../game/deck'
 import { dealerColors, type CardBack } from './palette'
 import { drawPcb } from './pcb'
+import { createSpriteCanvas } from './sprite-canvas'
 
 type SpriteCanvas = HTMLCanvasElement | OffscreenCanvas
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
@@ -89,7 +90,7 @@ function renderSprite(card: Card | null, cw: number, ch: number, dpr: number, ba
   const padY = ch * 0.14
   const w = cw + padX * 2
   const h = ch + padY * 2
-  const { canvas, ctx } = createOffscreen(Math.round(w * dpr), Math.round(h * dpr))
+  const { canvas, ctx } = createSpriteCanvas(Math.round(w * dpr), Math.round(h * dpr))
   ctx.scale(dpr, dpr)
 
   if (card) {
@@ -178,24 +179,4 @@ function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number, back: 
 function roundRectPath(ctx: Ctx2D, x: number, y: number, w: number, h: number, radius: number): void {
   ctx.beginPath()
   ctx.roundRect(x, y, w, h, radius)
-}
-
-function createOffscreen(w: number, h: number): { canvas: SpriteCanvas; ctx: Ctx2D } {
-  if (typeof OffscreenCanvas !== 'undefined') {
-    const canvas = new OffscreenCanvas(w, h)
-    const ctx = canvas.getContext('2d')
-    if (!ctx) {
-      throw new Error('offscreen 2d context unavailable')
-    }
-    return { canvas, ctx }
-  }
-
-  const canvas = document.createElement('canvas')
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext('2d')
-  if (!ctx) {
-    throw new Error('2d context unavailable')
-  }
-  return { canvas, ctx }
 }

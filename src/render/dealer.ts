@@ -10,7 +10,8 @@
 // figure's footprint, shared with the health bar, chip anchors and Analyze beams).
 
 import { TOTAL_DEALERS } from '../game/run'
-import { smoothEnd2, smoothEnd3, smoothStart2 } from './easing'
+import { smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
+import { cachedGradient } from './gradient-cache'
 import { dealerColors } from './palette'
 import { dealerBox, dealerEyes, type DealerBox, type Layout } from './scene'
 
@@ -53,6 +54,9 @@ export interface DealerView {
   dying(now: number): number | null
   // Walk-in progress (0..1), or null when not arriving.
   arriving(now: number): number | null
+  // Walk-OFF progress (0..1) as the dealer strides off to the right at game over
+  // (a loss), or null when not leaving.
+  leaving(now: number): number | null
   // Eye-core brightness for the figure (0..1); 1 when healthy, stutters toward 0 as
   // a low-health dealer's eyes flicker. Shares its flicker with eyeGlow.
   eyeCore(now: number): number
@@ -86,6 +90,7 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
   }
 
   const arriving = view.arriving(now)
+  const leaving = view.leaving(now)
   const hit = view.hit(now)
 
   ctx.save()
@@ -100,6 +105,14 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
     const bob = Math.abs(Math.sin(arriving * Math.PI * WALK_STEPS)) * d.headR * WALK_BOB
     ctx.translate(travel * (1 - slide), bob)
     ctx.globalAlpha = smoothEnd2(Math.min(1, arriving / 0.3))
+  } else if (leaving !== null) {
+    // The mirror of the walk-in: stride off to the right, ACCELERATING away
+    // (smoothStart3, the flip of the walk-in's decelerating ease), same WALK_STEPS bob. NO
+    // fade — the figure walks fully off the right edge at full opacity (travel clears it).
+    const slide = smoothStart3(leaving)
+    const travel = layout.width * 0.6
+    const bob = Math.abs(Math.sin(leaving * Math.PI * WALK_STEPS)) * d.headR * WALK_BOB
+    ctx.translate(travel * slide, bob)
   }
   // Take-damage jitter (small; applied after the walk-in translate). The animator
   // reports shake in headR-fraction units, so scale it to pixels here.
@@ -128,15 +141,25 @@ export function drawDealerEyeGlow(ctx: CanvasRenderingContext2D, layout: Layout,
   const r = eyes.radius * 3.5
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
+  // The glow gradient's alpha scales linearly with `a`, and the blend is additive, so a
+  // single full-strength gradient drawn at globalAlpha = a reproduces every intensity —
+  // letting it be cached (built at the origin) and translated onto each eye.
+  ctx.globalAlpha *= a
+  const grad = cachedGradient(ctx, `dealer-eye:${Math.round(r)}`, (c) => {
+    const g = c.createRadialGradient(0, 0, 0, 0, 0, r)
+    g.addColorStop(0, 'rgba(255, 70, 70, 0.95)')
+    g.addColorStop(0.5, 'rgba(255, 40, 40, 0.4)')
+    g.addColorStop(1, 'rgba(255, 30, 30, 0)')
+    return g
+  })
+  ctx.fillStyle = grad
   for (const e of [eyes.left, eyes.right]) {
-    const grad = ctx.createRadialGradient(e.x, e.y, 0, e.x, e.y, r)
-    grad.addColorStop(0, `rgba(255, 70, 70, ${a * 0.95})`)
-    grad.addColorStop(0.5, `rgba(255, 40, 40, ${a * 0.4})`)
-    grad.addColorStop(1, 'rgba(255, 30, 30, 0)')
-    ctx.fillStyle = grad
+    ctx.save()
+    ctx.translate(e.x, e.y)
     ctx.beginPath()
-    ctx.arc(e.x, e.y, r, 0, Math.PI * 2)
+    ctx.arc(0, 0, r, 0, Math.PI * 2)
     ctx.fill()
+    ctx.restore()
   }
   ctx.restore()
 }

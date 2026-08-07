@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from './deck'
-import { hit, stand, startRound } from './round'
+import { DEFAULT_ROUND_RULES, doubleDown, hit, lateDouble, stand, startRound, type HandOutcome, type PlayerHand, type Round } from './round'
 import {
   abilitiesLocked,
   applyRound,
-  cleanKillFactor,
+  comboGain,
   comboMultiplier,
   dealerHardHitCeiling,
   getShift,
@@ -13,6 +13,7 @@ import {
   isLastCall,
   nextBet,
   powerupCost,
+  spendTokens,
   startRun,
 } from './run'
 
@@ -48,6 +49,46 @@ function pushHand(bet: number) {
 
 function losingHand(bet: number) {
   return stand(startRound([card('9'), card('7'), card('K'), card('Q')], bet))
+}
+
+// A resolved multi-hand (split) round with the given per-hand outcomes, over a stood
+// dealer 18 (so a 'win' hand grades to the beat-18 tier). Used to test the combo reset.
+function resolvedSplit(outcomes: HandOutcome[], bet = 10): Round {
+  const hands: PlayerHand[] = outcomes.map((outcome) => ({
+    cards: [card('K'), card('9')],
+    bet,
+    doubled: false,
+    splitAce: false,
+    finished: true,
+    busted: outcome === 'bust',
+    outcome,
+  }))
+  return {
+    shoe: [],
+    drawIndex: 0,
+    hands,
+    activeIndex: hands.length - 1,
+    dealer: [card('K'), card('8')], // stands on 18
+    rules: DEFAULT_ROUND_RULES,
+    status: 'resolved',
+    secondChanceArmed: false,
+    burned: null,
+    dealerFrozen: false,
+    mulliganed: false,
+    discarded: [],
+  }
+}
+
+// Player 5+6=11, free-doubles into a K for 21 over a standing dealer 17. The doubled
+// bet means net chips = 2*bet.
+function doubleWin(bet: number) {
+  return doubleDown(startRound([card('5'), card('6'), card('10', 'hearts'), card('7'), card('K')], bet))
+}
+
+// Same 2*bet win, but reached via the paid Late double (hit 5+3 to 8, then late-double
+// into a K for 21) — so it earns no free-double score boost.
+function lateDoubleWin(bet: number) {
+  return lateDouble(hit(startRound([card('5'), card('3'), card('10', 'hearts'), card('7'), card('3', 'hearts'), card('K')], bet)))
 }
 
 describe('startRun', () => {
@@ -91,6 +132,24 @@ describe('hitTokens', () => {
   it('clamps out-of-range odds', () => {
     expect(hitTokens(-1)).toBe(1)
     expect(hitTokens(2)).toBe(10)
+  })
+})
+
+describe('comboGain', () => {
+  it('nudges the combo by only the floor for a safe hit, more for a risky one', () => {
+    expect(comboGain(0)).toBeCloseTo(0.01) // a 0%-risk (automatic) hit — near-nothing
+    expect(comboGain(1)).toBeCloseTo(0.2) // a certain-bust hit that survived — the most
+  })
+
+  it('scales linearly with bust risk between the floor and the max', () => {
+    expect(comboGain(0.5)).toBeCloseTo(0.01 + 0.5 * 0.19) // 0.105
+    // A real gamble grows the combo far faster than a free safe hit.
+    expect(comboGain(0.6)).toBeGreaterThan(comboGain(0) * 10)
+  })
+
+  it('clamps out-of-range odds', () => {
+    expect(comboGain(-1)).toBeCloseTo(0.01)
+    expect(comboGain(2)).toBeCloseTo(0.2)
   })
 })
 
@@ -287,56 +346,82 @@ describe('Dealer 6 desperation', () => {
   })
 })
 
-describe('win-streak combo (score)', () => {
-  it('multiplies chip score on consecutive wins and tracks the streak', () => {
-    let run = startRun(1) // dealer 1, score x1
-    run = applyRound(run, standWin(10)) // win #1: +10 chips x mult 1.0 x combo 1.0
-    expect(run.score).toBe(10)
-    expect(run.winStreak).toBe(1)
-
-    const afterFirst = run.score
-    run = applyRound(run, standWin(10)) // win #2: combo x1.25 -> round(10 * 1.25) = 13
-    expect(run.score - afterFirst).toBe(13)
-    expect(run.winStreak).toBe(2)
+describe('combo multiplier on resolved hands (score)', () => {
+  // `combo` is now the accumulated bonus fraction: 0.5 → x1.5, 1.0 → x2 (capped).
+  it('multiplies a won hand chip score by the current combo', () => {
+    const run = applyRound({ ...startRun(1), combo: 0.5 }, standWin(10)) // x1.5
+    expect(run.score).toBe(15) // round(10 chips * mult 1.0 * combo 1.5)
   })
 
-  it('resets the streak when the dealer wins a hand', () => {
+  it('multiplies the kill bounty by the current combo', () => {
+    // A dealer 1 on exactly the damage a beat-17 win deals (22), so this win destroys it.
+    // Bounty = 1000 × dealer 1, x1.5 combo = 1500; the +10 chip win adds
+    // round(10 * 1.5) = 15 → 1515.
+    const nearDead = { ...startRun(1), integrity: 22, combo: 0.5 }
+    const run = applyRound(nearDead, standWin(10))
+    expect(run.kills).toEqual([1])
+    expect(run.score).toBe(1515)
+  })
+
+  it('keeps the combo on a won or pushed hand, wipes it on a lost hand', () => {
+    const held = { ...startRun(1), combo: 0.4 }
+    expect(applyRound(held, standWin(10)).combo).toBe(0.4) // a win holds the streak
+    expect(applyRound(held, pushHand(10)).combo).toBe(0.4) // a push holds it (a wash, not a loss)
+    // A stood-and-beaten hand wipes it — safe play earns no protection (no bust needed).
+    expect(applyRound(held, losingHand(10)).combo).toBe(0)
+  })
+
+  it('on a split, resets the combo only when ALL hands lose', () => {
+    const held = { ...startRun(1), combo: 0.4 }
+    expect(applyRound(held, resolvedSplit(['lose', 'bust'])).combo).toBe(0) // every hand lost
+    expect(applyRound(held, resolvedSplit(['lose', 'win'])).combo).toBe(0.4) // one win holds it
+    expect(applyRound(held, resolvedSplit(['bust', 'push'])).combo).toBe(0.4) // a push holds it
+  })
+})
+
+describe('free-double score boost', () => {
+  it('pays a 1.5x score boost when a token-free double wins', () => {
+    const run = applyRound(startRun(1), doubleWin(10)) // net 20 chips x mult 1.0 x combo 1.0 x 1.5
+    expect(run.score).toBe(30)
+    expect(run.chips).toBe(320)
+  })
+
+  it('does not boost a win from the paid Late double', () => {
+    const run = applyRound(startRun(1), lateDoubleWin(10)) // same net 20 chips, no boost
+    expect(run.score).toBe(20)
+    expect(run.chips).toBe(320)
+  })
+})
+
+describe('run stats (score screen)', () => {
+  it('tallies wins, losses (pushes count as neither), and free-double wins', () => {
     let run = startRun(1)
-    run = applyRound(run, standWin(10))
-    run = applyRound(run, standWin(10))
-    expect(run.winStreak).toBe(2)
-    run = applyRound(run, losingHand(10))
-    expect(run.winStreak).toBe(0)
+    run = applyRound(run, standWin(10)) // win
+    run = applyRound(run, doubleWin(10)) // free-double win
+    run = applyRound(run, losingHand(10)) // loss
+    run = applyRound(run, pushHand(10)) // push — neither
+
+    expect(run.handsPlayed).toBe(4)
+    expect(run.handsWon).toBe(2)
+    expect(run.handsLost).toBe(1)
+    expect(run.freeDoubleWins).toBe(1)
+  })
+
+  it('accumulates tokens spent (cumulative, never decreases)', () => {
+    const run = { ...startRun(1), tokens: 100 }
+    const after = spendTokens(spendTokens(run, 30), 20)
+    expect(after.tokensSpent).toBe(50)
+    expect(after.tokens).toBe(50)
   })
 })
 
 describe('score helpers', () => {
-  it('combo multiplier ramps a quarter per win and caps at x3', () => {
-    expect(comboMultiplier(1)).toBe(1)
-    expect(comboMultiplier(2)).toBe(1.25)
-    expect(comboMultiplier(5)).toBe(2)
-    expect(comboMultiplier(9)).toBe(3)
-    expect(comboMultiplier(50)).toBe(3)
-  })
-
-  it('clean-kill factor decays from full to zero with losses', () => {
-    expect(cleanKillFactor(0)).toBe(1)
-    expect(cleanKillFactor(2)).toBeCloseTo(0.8)
-    expect(cleanKillFactor(5)).toBeCloseTo(0.5)
-    expect(cleanKillFactor(10)).toBe(0)
-    expect(cleanKillFactor(14)).toBe(0)
-  })
-})
-
-describe('clean-kill bonus', () => {
-  it('pays a flawless kill a bigger bounty than a sloppy one', () => {
-    // A dealer 1 hand from death; the incoming win destroys it. Same win, same combo,
-    // so the only score difference is the clean-kill helping (base 1000: full vs x0.7).
-    const flawless = { ...startRun(1), integrity: 10, lossesThisDealer: 0 }
-    const sloppy = { ...startRun(1), integrity: 10, lossesThisDealer: 3 }
-    const fk = applyRound(flawless, beatTwentyWin(10))
-    const sk = applyRound(sloppy, beatTwentyWin(10))
-    expect(fk.score - sk.score).toBe(300) // 1000 * 1.0 - round(1000 * 0.7) = 1000 - 700
+  it('combo multiplier is 1 + the accumulated bonus, capped at x2', () => {
+    expect(comboMultiplier(0)).toBe(1) // no combo
+    expect(comboMultiplier(0.1)).toBeCloseTo(1.1)
+    expect(comboMultiplier(0.5)).toBeCloseTo(1.5)
+    expect(comboMultiplier(1)).toBe(2) // cap
+    expect(comboMultiplier(5)).toBe(2) // over cap
   })
 })
 

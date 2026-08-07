@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
-import { getShift, hitTokens, powerupCost } from './run'
+import { comboGain, getShift, hitTokens, powerupCost } from './run'
 import { Session } from './session'
 
 describe('Session', () => {
@@ -58,6 +58,87 @@ describe('Session', () => {
 
     expect(session.snapshot().round!.hands.some((hand) => hand.busted)).toBe(true)
     expect(session.snapshot().run.tokens).toBe(before)
+  })
+
+  it('grows the combo by the hit risk (not the score) and records the risk when a hit survives', () => {
+    const session = new Session(1)
+    session.deal()
+
+    const snap = session.snapshot()
+    expect(snap.lastHitRisk).toBeNull()
+    const risk = bustChanceOnHit(snap.round!)
+    const beforeScore = snap.run.score
+    const beforeCombo = snap.run.combo
+
+    session.hit()
+
+    const after = session.snapshot()
+    expect(after.round!.hands.some((hand) => hand.busted)).toBe(false)
+    expect(after.run.score).toBe(beforeScore) // hits earn NO score
+    expect(after.run.combo).toBeCloseTo(beforeCombo + comboGain(risk)) // ...only combo
+    expect(after.lastHitRisk).toBe(risk)
+  })
+
+  it('resets the combo and leaves the score untouched when a hit busts', () => {
+    const session = new Session(3)
+    session.deal()
+    const before = session.snapshot().run.score
+
+    session.hit()
+
+    const after = session.snapshot()
+    expect(after.round!.hands.some((hand) => hand.busted)).toBe(true)
+    expect(after.run.score).toBe(before)
+    expect(after.run.combo).toBe(0) // the busting hit wiped the streak
+    expect(after.lastHitRisk).toBeNull()
+  })
+
+  it('builds the combo by each hit risk-gain and resets it on a bust', () => {
+    // Seed 1's opening hand survives several hits before busting — walk it up, watching the
+    // combo climb by comboGain(risk) each time, then bust and confirm it snaps back to 0.
+    const session = new Session(1)
+    session.deal()
+    expect(session.snapshot().run.combo).toBe(0)
+
+    let last = 0
+    while (session.snapshot().phase === 'playing') {
+      const risk = bustChanceOnHit(session.snapshot().round!)
+      const before = session.snapshot().run.combo
+      session.hit()
+      const snap = session.snapshot()
+      if (snap.round!.hands.some((h) => h.busted)) {
+        expect(snap.run.combo).toBe(0) // the busting hit reset it
+        break
+      }
+      expect(snap.run.combo).toBeCloseTo(before + comboGain(risk)) // grows by the hit's risk gain
+      last = snap.run.combo
+    }
+    expect(last).toBeGreaterThan(0) // at least one surviving hit built the combo before the bust
+  })
+
+  it('carries the combo across a non-losing hand into the next hand', () => {
+    const session = new Session(1)
+    session.deal()
+    // Build some combo with one surviving hit, then stand it out.
+    session.hit()
+    const combo = session.snapshot().run.combo
+    expect(combo).toBeGreaterThan(0)
+
+    while (session.snapshot().phase === 'playing') {
+      session.stand()
+    }
+    // Seed 1's hand isn't a total loss, so resolution keeps the combo (a LOST hand would
+    // wipe it — that reset path is covered deterministically in run.test).
+    const resolved = session.snapshot()
+    expect(resolved.round!.hands.every((h) => h.outcome === 'lose' || h.outcome === 'bust')).toBe(false)
+    expect(resolved.run.combo).toBe(combo)
+
+    // ...and across the next hand.
+    session.nextHand()
+    if (session.snapshot().phase === 'betting') {
+      session.deal()
+    }
+    expect(session.snapshot().run.combo).toBe(combo)
   })
 
   it('ignores powerup buys the player cannot afford', () => {

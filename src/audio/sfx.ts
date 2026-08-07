@@ -123,6 +123,10 @@ const VACUUM_GAIN = 0.16
 // heal reads as soft restorative light, not a second blast.
 const HEAL_GAIN = 0.2
 
+// Master level of the synth "points roll" (playPointsRoll) — the ticking flutter under
+// the score counter as it climbs. Sustained, so kept quiet under the token-land pings.
+const POINTS_ROLL_GAIN = 0.15
+
 class SfxService {
   private ctx: AudioContext | null = null
   private readonly buffers = new Map<SfxName, AudioBuffer>()
@@ -213,6 +217,70 @@ class SfxService {
     }
     osc.start(t0)
     osc.stop(t0 + dur + 0.02)
+  }
+
+  // A synthesised "points roll": the sound the score counter makes while it ticks up.
+  // A bright tone glides up an octave (tracking the number climbing) while a fast square
+  // LFO gates it into a run of rapid ticks — a slot-machine-style count-up flutter. Lasts
+  // `durationMs` so it covers exactly the visible roll. Fully synthesised (no buffer), and
+  // distinct from the token blips so the score reads as its own reward.
+  playPointsRoll(durationMs: number): void {
+    const ctx = this.context()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    const t0 = ctx.currentTime
+    const dur = Math.max(0.12, durationMs / 1000) // floor so a tiny roll still sounds
+
+    // Master envelope: quick attack, hold, quick release — click-free start and stop.
+    const out = ctx.createGain()
+    out.gain.setValueAtTime(0, t0)
+    out.gain.linearRampToValueAtTime(POINTS_ROLL_GAIN, t0 + 0.02)
+    out.gain.setValueAtTime(POINTS_ROLL_GAIN, t0 + Math.max(0.02, dur - 0.05))
+    out.gain.linearRampToValueAtTime(0, t0 + dur)
+    out.connect(ctx.destination)
+
+    // A fast square LFO drives a gain between 0 and 1, chopping the tone into the ticks
+    // (32/sec) that read as the counter rattling upward.
+    const trem = ctx.createGain()
+    trem.gain.value = 0.5
+    trem.connect(out)
+    const lfo = ctx.createOscillator()
+    lfo.type = 'square'
+    lfo.frequency.value = 32
+    const lfoDepth = ctx.createGain()
+    lfoDepth.gain.value = 0.5
+    lfo.connect(lfoDepth).connect(trem.gain)
+    lfo.start(t0)
+    lfo.stop(t0 + dur + 0.02)
+    lfo.onended = () => {
+      lfo.disconnect()
+      lfoDepth.disconnect()
+      trem.disconnect()
+      out.disconnect()
+    }
+
+    // The tone: a bright triangle gliding up an octave as the number climbs, with a
+    // quiet fifth above for a little sparkle.
+    const voices: { hz: number; wave: OscillatorType; level: number }[] = [
+      { hz: 660, wave: 'triangle', level: 1 },
+      { hz: 990, wave: 'sine', level: 0.4 },
+    ]
+    for (const { hz, wave, level } of voices) {
+      const osc = ctx.createOscillator()
+      osc.type = wave
+      osc.frequency.setValueAtTime(hz, t0)
+      osc.frequency.exponentialRampToValueAtTime(hz * 2, t0 + dur)
+      const v = ctx.createGain()
+      v.gain.value = level
+      osc.connect(v).connect(trem)
+      osc.onended = () => {
+        osc.disconnect()
+        v.disconnect()
+      }
+      osc.start(t0)
+      osc.stop(t0 + dur + 0.02)
+    }
   }
 
   // A synthesised "repair beam": a warm major-chord swell that glides gently upward

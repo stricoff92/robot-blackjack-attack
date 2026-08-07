@@ -26,6 +26,7 @@ import {
   applyRound,
   applyUpgrade,
   abilitiesLocked,
+  bumpCombo,
   dealerHardHitCeiling,
   getShift,
   hasAvailableUpgrade,
@@ -39,7 +40,7 @@ import {
 } from './run'
 import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
 
-const SHOE_DECKS = 6
+export const SHOE_DECKS = 6
 
 // 'choosing-upgrade' holds the deal after a non-final kill until the player picks
 // a roguelite upgrade; in the UI the dealer dies first, the selector shows, then the
@@ -75,6 +76,9 @@ export interface SessionState {
   analysis: Analysis | null
   /** Whether token abilities are locked — the Dealer 6 "honorable duel" (< 20% health). */
   abilitiesLocked: boolean
+  /** The bust risk [0,1] of the hit that just landed and paid points, else null. Set on a
+   *  surviving hit, cleared by the next move — lets the UI caption the reward ("Nice"…). */
+  lastHitRisk: number | null
 }
 
 // Decorrelates the Analyze simulator's RNG from the deal RNG, so running odds
@@ -96,6 +100,9 @@ export class Session {
   private peeked = false
   private foresightCard: Card | null = null
   private analysis: Analysis | null = null
+  // The bust risk of the last surviving hit that paid points (see hit()); cleared by the
+  // next move. Drives the UI's risk caption ("WHOA!"/"Lucky!"/"Nice").
+  private lastHitRisk: number | null = null
   // Set when a kill just advanced the dealer (and the run isn't won): the next
   // hand is gated on a choose-upgrade pick.
   private upgradePending = false
@@ -164,6 +171,7 @@ export class Session {
       foresightCard: this.foresightCard,
       analysis: this.analysis,
       abilitiesLocked: abilitiesLocked(this.run),
+      lastHitRisk: this.lastHitRisk,
     }
   }
 
@@ -203,16 +211,21 @@ export class Session {
     }
     const round = this.requireRound()
     const hitIndex = round.activeIndex
-    // Price the risk before taking it: the odds this hit busts (from public cards)
-    // set how much a surviving hit pays.
+    // Price the risk before taking it: the odds this hit busts (from public cards) set both
+    // the token reward and how much the hit grows the combo.
     const bustChance = bustChanceOnHit(round)
     const tokenMult = round.rules.tokenMultiplier
-    this.act(() => hit(this.requireRound()))
-    // Only reward a hit that keeps the hand alive — a bust earns nothing. The Token
-    // eco multiplier scales it, like every other reward.
+    this.act(() => hit(this.requireRound())) // clears lastHitRisk; re-set below on survival
     if (this.round !== null && !this.round.hands[hitIndex].busted) {
-      this.run = addTokens(this.run, Math.round(hitTokens(bustChance) * tokenMult))
+      // A surviving hit earns NO score — it just grows the combo (risk-weighted, see
+      // comboGain), which multiplies the wins + kills ahead. It still pays tokens (the
+      // powerup economy, scaled by the Token eco multiplier). The risk is stashed for the UI.
+      this.run = bumpCombo(addTokens(this.run, Math.round(hitTokens(bustChance) * tokenMult)), bustChance)
+      this.lastHitRisk = bustChance
     }
+    // A busting hit doesn't reset the combo here — the reset happens at RESOLUTION (run.ts
+    // applyRound) when the whole hand is lost, so a split hand that busts but has a winning
+    // sibling keeps the streak.
   }
 
   stand(): void {
@@ -363,6 +376,7 @@ export class Session {
     this.peeked = false
     this.foresightCard = null
     this.analysis = null
+    this.lastHitRisk = null
     this.upgradePending = false
     this.phase = 'betting'
   }
@@ -372,9 +386,11 @@ export class Session {
       return
     }
     // Any player move dismisses a live Analyze reading (and the stale next-card
-    // preview) — the odds were only valid for the pre-move table.
+    // preview) — the odds were only valid for the pre-move table. The prior hit's
+    // risk caption clears too (hit() re-sets it if THIS move is a surviving hit).
     this.foresightCard = null
     this.analysis = null
+    this.lastHitRisk = null
     this.round = transition()
     if (this.requireRound().status === 'resolved') {
       this.settle()

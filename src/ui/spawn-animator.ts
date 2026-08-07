@@ -84,7 +84,9 @@ export class SpawnAnimation {
   // resting deck into the mouth before the fresh one flies in (a kill / New run — false
   // on the opening intro, which has no old deck). Returns the timestamp the deck is
   // fully unwrapped and ready — the moment the next hand may deal.
-  begin(now: number, cardCount: number, shredOldDeck = false, grand = false): number {
+  // `shredOnly` (game over): shred the table cards but fly NO fresh deck in — the run is
+  // over, so there's no replacement. endAt is just the shred (+ its lingering chunks).
+  begin(now: number, cardCount: number, shredOldDeck = false, grand = false, shredOnly = false): number {
     this.begun = true
     this.t0 = now
     this.n = Math.max(0, cardCount)
@@ -132,6 +134,16 @@ export class SpawnAnimation {
     const deckChunkEnd = this.hasOldDeck
       ? lastDeckCardStart + DECK_CARD_CHUNK_LEAD_MS + DECK_CARD_CHUNK_MS
       : 0
+    if (shredOnly) {
+      // No fresh deck: park the deck timeline past the end so deckState() never fires,
+      // and finish once the shred + its chunks have settled.
+      this.deckFlyStart = Number.POSITIVE_INFINITY
+      this.deckFlyEnd = Number.POSITIVE_INFINITY
+      this.unwrapStart = Number.POSITIVE_INFINITY
+      this.unwrapEnd = Number.POSITIVE_INFINITY
+      this.endAt = Math.max(this.shredEndAt, lastCardChunkEnd, deckChunkEnd)
+      return this.endAt
+    }
     this.endAt = Math.max(this.unwrapEnd, lastCardChunkEnd, deckChunkEnd)
     return this.endAt
   }

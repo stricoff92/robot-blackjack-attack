@@ -48,7 +48,7 @@ const DAMAGE_THRESHOLD = 0.33
 // Steady idle eye-glow; a hit flares it to full, death dims it to zero.
 const BASE_GLOW = 0.7
 
-type Mode = 'none' | 'hit' | 'kill' | 'spawn'
+type Mode = 'none' | 'hit' | 'kill' | 'spawn' | 'walkoff'
 
 export class DealerAnimation implements DealerView, StrikeView {
   private mode: Mode = 'none'
@@ -61,6 +61,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   private hitStart = 0 // impact = t0 + STRIKE_TRAVEL_MS
   private killStart = 0 // t0 for a kill
   private spawnStart = 0 // t0 for a standalone walk-in (page load / new run)
+  private walkoffStart = 0 // t0 for the game-over walk-off (a loss: the dealer leaves)
   private seqEnd = 0 // when the active strike/hit/kill sequence is fully done
   private level = 1 // settled health fraction (drives the low-health eye flicker)
   // Colour identity: which dealer the settled figure is, plus the dealer it was
@@ -144,6 +145,29 @@ export class DealerAnimation implements DealerView, StrikeView {
     this.seqEnd = startAfter + KILL_ARRIVE_MS
   }
 
+  // The dealer strides OFF to the right and leaves the screen — the game-over exit when
+  // the house wins (the mirror of the walk-in, over the same window). It stands in place
+  // until `startAfter`, then walks off. Set the colour identity (setShift) beforehand.
+  walkOff(startAfter: number): void {
+    this.mode = 'walkoff'
+    this.final = false
+    this.walkoffStart = startAfter
+    this.seqEnd = startAfter + KILL_ARRIVE_MS
+  }
+
+  // Walk-off progress (0..1) as the dealer leaves to the right, or null when it's still
+  // standing (before `walkoffStart`) or already gone.
+  leaving(now: number): number | null {
+    if (this.mode !== 'walkoff') {
+      return null
+    }
+    const p = (now - this.walkoffStart) / KILL_ARRIVE_MS
+    if (p < 0 || p >= 1) {
+      return null
+    }
+    return p
+  }
+
   // True while a standalone spawn walk-in is still sliding in (page load / new run).
   isArriving(now: number): boolean {
     return this.arriving(now) !== null
@@ -155,7 +179,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // (0 outside a walk-in). Resets when a fresh walk-in begins. Mirrors the token
   // launch/land edge-tracking — call it exactly once per frame.
   footsteps(now: number): number {
-    const start = this.walkInStart()
+    const start = this.walkClock()
     if (start === null) {
       return 0
     }
@@ -206,6 +230,10 @@ export class DealerAnimation implements DealerView, StrikeView {
       // A deferred walk-in is parked/gone until it actually begins (its start may be
       // scheduled a beat ahead — e.g. while the upgrade selector is still up).
       return now >= this.spawnStart
+    }
+    if (this.mode === 'walkoff') {
+      // Standing (before the walk-off) or striding off; gone once it clears the edge.
+      return now < this.walkoffStart + KILL_ARRIVE_MS
     }
     if (this.mode !== 'kill') {
       return true
@@ -308,6 +336,12 @@ export class DealerAnimation implements DealerView, StrikeView {
     return null
   }
 
+  // The absolute start of the current WALK (in OR off) for footstep timing — both stride
+  // WALK_STEPS times over KILL_ARRIVE_MS. null when neither is in play.
+  private walkClock(): number | null {
+    return this.mode === 'walkoff' ? this.walkoffStart : this.walkInStart()
+  }
+
   // Bright red LED brightness (0..1) for the eye cores on the figure: 1 when
   // healthy, stuttering toward 0 as a low-health dealer's eyes flicker. Shares its
   // flicker signal with eyeGlow so the core and its halo blink in step.
@@ -316,6 +350,14 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   eyeGlow(now: number): number {
+    if (this.mode === 'walkoff') {
+      // The glow sits at the FIXED eye position (drawn on the mask, which doesn't
+      // follow the figure's translate), so dim it out over the first 30% of the walk-off
+      // — before the figure has strode far — rather than leaving a glow behind at centre.
+      const lp = clamp01((now - this.walkoffStart) / KILL_ARRIVE_MS)
+      const ramp = lp < 0.3 ? 1 - lp / 0.3 : 0
+      return BASE_GLOW * ramp * this.flicker(now)
+    }
     if (this.mode === 'spawn') {
       // Ignite as the figure nears home — the same re-ignite curve a kill's
       // replacement uses (only the last 40% of the slide, by when it's ~settled).

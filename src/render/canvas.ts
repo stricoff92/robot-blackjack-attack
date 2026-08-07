@@ -5,6 +5,19 @@
 // cleared and redrawn each frame — the difference between repainting the whole
 // table 60×/sec and just blitting a handful of card sprites.
 
+// High-DPI screens report devicePixelRatio up to 3+; at 3× each full-screen layer
+// is a 9×-area backing store, a steep per-frame fill and memory cost for a crispness
+// gain few players notice. Cap at 2× — near-identical on screen, ~2.25× cheaper to
+// fill per frame on 3× displays, and far less canvas memory across all the layers.
+const MAX_DPR = 2
+
+// The device-pixel ratio the layers actually render at (capped). Offscreen sprite
+// caches (cards, holo-text) build at this scale so their blits stay pixel-crisp
+// against the on-screen backing stores without over-rendering on 3×+ screens.
+export function deviceDpr(): number {
+  return Math.min(window.devicePixelRatio || 1, MAX_DPR)
+}
+
 export interface CanvasLayer {
   readonly canvas: HTMLCanvasElement
   readonly ctx: CanvasRenderingContext2D
@@ -46,7 +59,7 @@ export function createLayeredCanvas(
   }
 
   function resize(): void {
-    const dpr = window.devicePixelRatio || 1
+    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR)
     const width = root.clientWidth
     const height = root.clientHeight
 

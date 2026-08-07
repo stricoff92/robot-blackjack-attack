@@ -16,6 +16,7 @@
 // modelled on the Analyze eye-beam (cards.ts).
 
 import { arch2, smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
+import { cachedGradient } from './gradient-cache'
 import { dealerBox, type Layout } from './scene'
 import type { Point } from './tokens'
 
@@ -42,7 +43,16 @@ interface NexusGeom {
   bob: number // hover-amplitude reference (the base scale)
 }
 
+// nexusGeom is called several times per frame (the body plus each emitter light) but
+// only changes with the layout, so the last result is memoized. Callers treat it as
+// read-only — do not mutate the returned geometry.
+let cachedGeom: NexusGeom | null = null
+let cachedGeomKey = ''
 function nexusGeom(l: Layout): NexusGeom {
+  const key = `${l.width}x${l.height}x${l.edgeY}`
+  if (cachedGeom && cachedGeomKey === key) {
+    return cachedGeom
+  }
   const base = nexusAnchor(l)
   const scale = Math.min(l.width, l.height)
   // Base scale (≈ the old square side); capped small so it doesn't dominate big desktops.
@@ -56,7 +66,9 @@ function nexusGeom(l: Layout): NexusGeom {
   // right; keep the same vertical centre (a full base-scale above the anchor).
   const rightMargin = Math.max(10, l.width * 0.02)
   const a = { x: l.width - rightMargin - w / 2, y: base.y - s }
-  return { a, w, h, r: w * 0.3, lensR, gap, bob: s }
+  cachedGeom = { a, w, h, r: w * 0.3, lensR, gap, bob: s }
+  cachedGeomKey = key
+  return cachedGeom
 }
 
 // The device never rests on the felt — it floats in a slow, perpetual hover.
@@ -158,16 +170,24 @@ export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number)
   const ch = Math.min(w * 0.36, h * 0.1) // corner chamfer
 
   // Body: a chamfered (octagonal) alien-metal casing — cool teal-tinted steel, cross-lit.
-  traceBodyOctagon(ctx, a.x, top, bottom, w, ch)
-  const body = ctx.createLinearGradient(a.x - w * 0.45, top, a.x + w * 0.45, bottom)
-  body.addColorStop(0, '#33424b')
-  body.addColorStop(0.5, '#171f27')
-  body.addColorStop(1, '#0d1218')
+  // Drawn in the body's own local frame (origin at its centre) so the cross-lit gradient
+  // can be cached once and just translated up/down with the hover bob each frame.
+  ctx.save()
+  ctx.translate(a.x, cy)
+  traceBodyOctagon(ctx, 0, -h / 2, h / 2, w, ch)
+  const body = cachedGradient(ctx, `nexus-body:${Math.round(w)}:${Math.round(h)}`, (c) => {
+    const g = c.createLinearGradient(-w * 0.45, -h / 2, w * 0.45, h / 2)
+    g.addColorStop(0, '#33424b')
+    g.addColorStop(0.5, '#171f27')
+    g.addColorStop(1, '#0d1218')
+    return g
+  })
   ctx.fillStyle = body
   ctx.fill()
   ctx.lineWidth = Math.max(1, w * 0.04)
   ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, 0.22)` // an energised teal edge — powered, not inert
   ctx.stroke()
+  ctx.restore()
 
   // A teal energy conduit down the right flank — a pulse flowing toward the emitter, the
   // power feeding the hover thrust.
@@ -214,11 +234,15 @@ function traceBodyOctagon(ctx: CanvasRenderingContext2D, cx: number, top: number
 // A flat-top hexagonal metal bezel framing a lens — a raised ring so the round lens reads
 // as an alien optic set into segmented casing plate.
 function drawHexBezel(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number): void {
+  // Drawn around a local origin at (cx, cy) so the (identical) bezel gradient is built
+  // once and reused for all three lenses across every frame.
+  ctx.save()
+  ctx.translate(cx, cy)
   ctx.beginPath()
   for (let k = 0; k < 6; k++) {
     const ang = (k * Math.PI) / 3 // flat-top hexagon
-    const x = cx + Math.cos(ang) * R
-    const y = cy + Math.sin(ang) * R
+    const x = Math.cos(ang) * R
+    const y = Math.sin(ang) * R
     if (k === 0) {
       ctx.moveTo(x, y)
     } else {
@@ -226,15 +250,19 @@ function drawHexBezel(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: 
     }
   }
   ctx.closePath()
-  const grad = ctx.createLinearGradient(cx, cy - R, cx, cy + R)
-  grad.addColorStop(0, '#3c4952')
-  grad.addColorStop(0.5, '#222a31')
-  grad.addColorStop(1, '#161c22')
+  const grad = cachedGradient(ctx, `nexus-bezel:${Math.round(R)}`, (c) => {
+    const g = c.createLinearGradient(0, -R, 0, R)
+    g.addColorStop(0, '#3c4952')
+    g.addColorStop(0.5, '#222a31')
+    g.addColorStop(1, '#161c22')
+    return g
+  })
   ctx.fillStyle = grad
   ctx.fill()
   ctx.lineWidth = Math.max(1, R * 0.07)
   ctx.strokeStyle = `rgba(${ALIEN_ENERGY}, 0.16)`
   ctx.stroke()
+  ctx.restore()
 }
 
 // A faint teal energy conduit line down one flank — static greeble suggesting a power
@@ -347,28 +375,38 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 }
 
 function drawDimLens(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, s: LensStyle): void {
+  // Drawn around a local origin at (cx, cy) so the upper-left-lit lens gradient can be
+  // cached per (radius, style) and translated to each lens instead of rebuilt per frame.
+  ctx.save()
+  ctx.translate(cx, cy)
+
   // Dark socket the lens is recessed into.
   ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
   ctx.beginPath()
-  ctx.arc(cx, cy, r * 1.14, 0, Math.PI * 2)
+  ctx.arc(0, 0, r * 1.14, 0, Math.PI * 2)
   ctx.fill()
 
-  // The dim lens itself, lit from the upper-left.
-  const lens = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.25, r * 0.1, cx, cy, r)
-  lens.addColorStop(0, s.core)
-  lens.addColorStop(0.55, s.mid)
-  lens.addColorStop(1, s.edge)
+  // The dim lens itself, lit from the upper-left. `s.core` distinguishes the three lens
+  // palettes (red / yellow / holo-off), so it keys the cache alongside the radius.
+  const lens = cachedGradient(ctx, `nexus-lens:${Math.round(r)}:${s.core}`, (c) => {
+    const g = c.createRadialGradient(-r * 0.25, -r * 0.25, r * 0.1, 0, 0, r)
+    g.addColorStop(0, s.core)
+    g.addColorStop(0.55, s.mid)
+    g.addColorStop(1, s.edge)
+    return g
+  })
   ctx.fillStyle = lens
   ctx.beginPath()
-  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.arc(0, 0, r, 0, Math.PI * 2)
   ctx.fill()
 
   // Faint rim so the lens edge catches a little light even when idle.
   ctx.lineWidth = Math.max(1, r * 0.12)
   ctx.strokeStyle = s.rim
   ctx.beginPath()
-  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.arc(0, 0, r, 0, Math.PI * 2)
   ctx.stroke()
+  ctx.restore()
 }
 
 // --- the laser strike (transient, on the fx layer) ---------------------------

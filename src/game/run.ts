@@ -1,7 +1,7 @@
 import { damageForRound } from './integrity'
 import type { Rng } from './random'
 import { handReward } from './rewards'
-import { payout, type Round, type Soft17Rule } from './round'
+import { isWinningHand, payout, type Round, type Soft17Rule } from './round'
 import {
   bumpUpgrade,
   emptyUpgrades,
@@ -30,7 +30,27 @@ import {
 // v14: kill bounty raised (150→1000 ×dealer) so kills dominate score, and clean-kill
 //      decay halved (0.2→0.1) so the clean bonus survives a realistic loss count and
 //      stays reachable on the drawn-out, self-healing late dealers.
-export const RULES_VERSION = 14
+// v15: winning a token-free Double (standard double-down, not the paid Late double
+//      powerup) pays a 1.5x score boost — a reward for the bold, unbought risk.
+// v16: surviving hits now also pay SCORE by bust risk (hitPoints) — a flat 10 up to 50%
+//      risk, then a smoothStart2 ease-in climbing to 1000 at a certain bust.
+// v17: lifetime tallies for the game-over score screen (handsWon/handsLost, tokensSpent,
+//      freeDoubleWins) — display only, no effect on resolution maths.
+// v18: hit-points curve retuned — flat 10 below 40% risk, then smoothStart2 from 10 to 400
+//      (was a 50% floor climbing to 1000).
+// v19: hit points now (a) ramp from a near-zero floor up to 10 across the sub-40% region
+//      instead of a flat 10, and (b) scale by the dealer's score multiplier (Session.hit).
+// v20: the combo is now a unified HIT streak (built +1 per surviving hit, reset on bust)
+//      that multiplies ALL score — hit points, won chip score, and kill bounty — at x1..x2.
+//      Replaces the old win-streak combo (consecutive won hands, reset on any dealer win).
+// v21: hits earn NO points — their sole purpose is to build the combo, now a CONTINUOUS
+//      risk-weighted accumulator (comboGain: safe hit +0.01, riskier hits more) that
+//      multiplies won hands + kills at x1..x2. hitPoints removed.
+// v22: clean-kill bonus removed (it was invisible to the player) — the kill bounty is now
+//      just 1000 × dealer × combo, no per-loss decay. lossesThisDealer dropped.
+// v23: the combo now resets on ANY lost hand (all hands, on a split), not just a bust —
+//      so safe play (standing to protect the streak) no longer hoards the multiplier.
+export const RULES_VERSION = 23
 export const STARTING_CHIPS = 300
 // The run is won by destroying this many dealers; there is no dealer beyond it.
 export const TOTAL_DEALERS = 6
@@ -49,6 +69,18 @@ export function hitTokens(bustChance: number): number {
   return HIT_TOKEN_BASE + Math.round(risk * HIT_TOKEN_MAX_BONUS)
 }
 
+// Hits earn NO points directly — their sole purpose is to build the combo (below). A
+// surviving hit adds `comboGain(risk)` to the combo, weighted by how risky the hit was: a
+// safe hit (0% bust) nudges it by only COMBO_GAIN_FLOOR, a near-certain bust that survived
+// adds the most. So the multiplier is built by taking real risk, not by free safe hits.
+export const COMBO_GAIN_FLOOR = 0.01
+export const COMBO_GAIN_SLOPE = 0.19 // + this × risk (max gain 0.20 at a certain-bust hit)
+
+export function comboGain(bustChance: number): number {
+  const risk = Math.min(1, Math.max(0, bustChance))
+  return COMBO_GAIN_FLOOR + risk * COMBO_GAIN_SLOPE
+}
+
 const DESTRUCTION_SCORE_BASE = 1000
 const HAND_BET_STEP = 0.5
 // On a kill, seed the next dealer's bankroll with this many of its minimum bets,
@@ -60,16 +92,18 @@ const PROTOTYPE_MULTIPLIER_STEP = 1.5
 // keep gaining HP so a jumped-to late dealer is still a real fight.
 const PROTOTYPE_HP_STEP = 45
 
-// Win-streak combo (score only): each consecutive won hand lifts that hand's chip
-// score by COMBO_STEP, capped COMBO_MAX_STEPS steps in. Any dealer-won hand resets
-// the streak; a push leaves it untouched.
-const COMBO_STEP = 0.25
-const COMBO_MAX_STEPS = 8 // caps the multiplier at x3
+// Unified combo (score only): a CONTINUOUS accumulator of risk-weighted surviving hits
+// (see comboGain). `run.combo` holds the accumulated bonus fraction, capped at
+// COMBO_MAX_BONUS; the multiplier is 1 + that. A BUST resets it to 0 (see Session.hit);
+// standing, losing, and winning leave it. The multiplier scales ALL score the streak earns
+// — a won hand's chip score and the kill bounty (hits themselves no longer score). Built in
+// Session.hit; applyRound only READS it.
+const COMBO_MAX_BONUS = 1 // caps the multiplier at x2
 
-// Clean-kill bonus (score only): a kill pays a second helping of its base bounty,
-// shrunk CLEAN_KILL_DECAY per hand lost to that dealer — a flawless kill doubles
-// the bounty, a sloppy one (10+ losses) adds nothing.
-const CLEAN_KILL_DECAY = 0.1
+// Free-double win bonus (score only): a hand won on the standard token-free Double
+// (doubleDown) scores x1.5 — a reward for the bold, unbought risk. The paid Late
+// double powerup is deliberately excluded (buying score would be too cheap).
+const FREE_DOUBLE_SCORE_BONUS = 1.5
 
 // Endgame "honorable duel" on the final dealer. Below these health fractions it stops
 // self-repairing (heal-on-win off), locks the player out of token abilities, and (via
@@ -121,16 +155,24 @@ export interface RunState {
   handsThisDealer: number
   handsPlayed: number
   integrity: number
-  // Consecutive won hands, driving the score combo multiplier; reset by a dealer win.
-  winStreak: number
-  // Hands lost to the current dealer, driving the clean-kill score bonus; reset on kill.
-  lossesThisDealer: number
+  // Accumulated risk-weighted combo bonus since the last lost hand (a continuous 0..1
+  // value), driving the score multiplier (comboMultiplier = 1 + this). Grown by each
+  // surviving hit in Session.hit (comboGain), reset to 0 in applyRound when the whole hand
+  // is lost (all split hands lost); multiplies won hands + kills.
+  combo: number
   // Global token inflation (a fraction): powerup costs are charged at base × (1 + this).
   // Only ever rises, by an amount set at each kill from the shift's token earnings.
   tokenInflation: number
   // Tokens earned against the current dealer, feeding the inflation add; reset on kill.
   tokensThisShift: number
   kills: number[]
+  // Lifetime tallies for the game-over score screen (display only, never gameplay inputs).
+  // handsWon/handsLost feed the win/loss ratio (pushes count as neither); tokensSpent is
+  // cumulative powerup spend; freeDoubleWins counts wins that used the token-free Double.
+  handsWon: number
+  handsLost: number
+  tokensSpent: number
+  freeDoubleWins: number
   over: boolean
   won: boolean
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
@@ -163,11 +205,14 @@ export function startRun(seed: number): RunState {
     handsThisDealer: 0,
     handsPlayed: 0,
     integrity: getShift(1).maxIntegrity,
-    winStreak: 0,
-    lossesThisDealer: 0,
+    combo: 0,
     tokenInflation: 0,
     tokensThisShift: 0,
     kills: [],
+    handsWon: 0,
+    handsLost: 0,
+    tokensSpent: 0,
+    freeDoubleWins: 0,
     over: false,
     won: false,
     upgrades: emptyUpgrades(),
@@ -278,7 +323,7 @@ export function spendTokens(run: RunState, amount: number): RunState {
   if (run.tokens < amount) {
     throw new Error('not enough tokens')
   }
-  return { ...run, tokens: run.tokens - amount }
+  return { ...run, tokens: run.tokens - amount, tokensSpent: run.tokensSpent + amount }
 }
 
 // `rng` sources the heal-on-win roll (only consumed on a dealer-won hand at a
@@ -296,13 +341,25 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
   const playerWon = damage > 0
   const dealerWon = !playerWon && roundHasLoss(round)
 
-  // Win-streak combo lifts an unbroken run of wins' chip score; a dealer win breaks
-  // the streak, a push leaves it as-is.
-  const winStreak = playerWon ? run.winStreak + 1 : dealerWon ? 0 : run.winStreak
+  // The combo (built from surviving hits, see Session.hit) resets when the hand is a total
+  // LOSS — every hand lost or busted, no win/push to hold it. On a split that means all
+  // hands must lose; one winning/pushing hand keeps the streak. So losing a hand (however —
+  // busted or stood-and-beaten) wipes the multiplier, and safe play earns no protection.
+  const comboReset = round.hands.every((hand) => hand.outcome === 'lose' || hand.outcome === 'bust')
+
+  // The combo multiplies ALL score this hand earns — the won chip score here, and the kill
+  // bounty below. Read the pre-reset value (a losing hand scores nothing anyway); the reset
+  // is applied to `run.combo` in the return so it takes effect next hand.
+  const combo = comboMultiplier(run.combo)
+
+  // A win on a token-free Double lifts that hand's chip score by FREE_DOUBLE_SCORE_BONUS
+  // (the paid Late double is excluded — it never sets freeDoubled).
+  const freeDoubleWin = playerWon && round.hands.some((h) => isWinningHand(h) && h.freeDoubled)
+  const doubleBoost = freeDoubleWin ? FREE_DOUBLE_SCORE_BONUS : 1
 
   const roundTokens = tokensForRound(round)
   let chips = run.chips + net
-  let score = run.score + Math.round(chipsWon * shift.scoreMultiplier * comboMultiplier(winStreak))
+  let score = run.score + Math.round(chipsWon * shift.scoreMultiplier * combo * doubleBoost)
   let tokens = run.tokens + roundTokens
   let tokensThisShift = run.tokensThisShift + roundTokens
   let tokenInflation = run.tokenInflation
@@ -318,7 +375,6 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
 
   let shiftIndex = run.shiftIndex
   let handsThisDealer = run.handsThisDealer + 1
-  let lossesThisDealer = run.lossesThisDealer + (dealerWon ? 1 : 0)
   let kills = run.kills
   let won = false
 
@@ -332,14 +388,13 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     // reset the tally for the next dealer.
     tokenInflation += inflationIncrement(shift, tokensThisShift, inflationResistanceFor(run.upgrades))
     tokensThisShift = 0
-    // Base bounty plus a clean-kill helping that shrinks with every hand lost to
-    // this dealer — a flawless kill pays it twice, a sloppy one only once.
+    // Base bounty (1000 × dealer), scaled by the current combo — a kill lands on a won
+    // hand, so the streak still applies.
     const bounty = DESTRUCTION_SCORE_BASE * shiftIndex
-    score += bounty + Math.round(bounty * cleanKillFactor(lossesThisDealer))
+    score += Math.round(bounty * combo)
     kills = [...kills, shiftIndex]
     shiftIndex += 1
     handsThisDealer = 0
-    lossesThisDealer = 0
     integrity = getShift(shiftIndex).maxIntegrity
     if (kills.length >= TOTAL_DEALERS) {
       won = true
@@ -356,9 +411,11 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     shiftIndex,
     handsThisDealer,
     handsPlayed: run.handsPlayed + 1,
+    handsWon: run.handsWon + (playerWon ? 1 : 0),
+    handsLost: run.handsLost + (dealerWon ? 1 : 0),
+    freeDoubleWins: run.freeDoubleWins + (freeDoubleWin ? 1 : 0),
     integrity,
-    winStreak,
-    lossesThisDealer,
+    combo: comboReset ? 0 : run.combo,
     tokenInflation,
     tokensThisShift,
     kills,
@@ -378,19 +435,16 @@ function inflationIncrement(shift: Shift, tokensThisShift: number, resistance: n
   return shift.inflationCap * frac * resistance
 }
 
-// The score multiplier for a hand won at the given win streak: x1 for the first win,
-// climbing COMBO_STEP per consecutive win up to the COMBO_MAX_STEPS cap.
-export function comboMultiplier(winStreak: number): number {
-  if (winStreak <= 1) {
-    return 1
-  }
-  return 1 + Math.min(winStreak - 1, COMBO_MAX_STEPS) * COMBO_STEP
+// The unified score multiplier for the given accumulated combo bonus (0..): x1 at no
+// combo, climbing with the risk-weighted hits banked, capped at x2 (COMBO_MAX_BONUS).
+export function comboMultiplier(combo: number): number {
+  return 1 + Math.min(Math.max(combo, 0), COMBO_MAX_BONUS)
 }
 
-// The clean-kill bonus fraction: full at zero losses, decaying CLEAN_KILL_DECAY per
-// hand lost to the dealer, floored at zero.
-export function cleanKillFactor(lossesThisDealer: number): number {
-  return Math.max(0, 1 - lossesThisDealer * CLEAN_KILL_DECAY)
+// Add a surviving hit's risk-weighted gain to the combo, capped at COMBO_MAX_BONUS. Score
+// only — the hit itself pays nothing; it just grows the multiplier for the wins/kills ahead.
+export function bumpCombo(run: RunState, bustChance: number): RunState {
+  return { ...run, combo: Math.min(COMBO_MAX_BONUS, run.combo + comboGain(bustChance)) }
 }
 
 // HP a healing dealer repairs on a win: a random amount in the shift's [min, max]

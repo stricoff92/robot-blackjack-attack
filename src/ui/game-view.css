@@ -31,24 +31,146 @@
   display: block;
 }
 
-/* Token-inflation readout ("prices +X%"), pinned top-right. Hidden until inflation
- * rises above 0. A muted warning tint so it reads as "your tokens buy less now"
- * without shouting. */
-.hud-inflation {
+/* Arcade points counter, pinned top-right. The number rolls + swells as it ticks
+ * (updatePointsCounter); the "+N" reward delta flashes just beneath it. */
+.hud-points {
   position: absolute;
-  top: 14px;
+  top: 12px;
   right: 14px;
-  padding: 5px 11px;
-  border-radius: 9px;
-  background: rgba(180, 58, 58, 0.92);
-  color: #ffffff;
-  font: 800 18px system-ui, -apple-system, sans-serif;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  text-align: right;
   pointer-events: none;
 }
 
-.hud-inflation.is-hidden {
-  display: none;
+.hud-points__count {
+  display: inline-block;
+  font: 800 34px system-ui, -apple-system, sans-serif;
+  color: #ffffff;
+  /* No pill any more — a strong dark shadow keeps the white legible over any felt. */
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7), 0 0 3px rgba(0, 0, 0, 0.85);
+  transform-origin: 100% 50%; /* swell toward the pinned right edge, never off-screen */
+}
+
+/* The "+N" reward delta under the counter, then a caption under that. Both sit in normal
+ * flow below the count (right-aligned) so they stack; both are invisible at rest and play
+ * a one-shot keyframe on .is-flashing. The count's swell is a transform, so it never
+ * nudges these. */
+.hud-points__delta {
+  margin-top: 5px;
+  font: 800 28px system-ui, -apple-system, sans-serif;
+  color: #ffffff;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.75), 0 0 3px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transform-origin: 100% 50%;
+  white-space: nowrap;
+}
+
+/* The combo "×M.MM" rides the white "+base" delta in yellow (a gold glow to pop it off the
+ * white number). Inherits the delta's size/weight and its fade/scale (it's a child). */
+.hud-points__mult {
+  color: #ffd633;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 8px rgba(255, 190, 60, 0.55);
+}
+
+/* Reward caption ("Double!", "WHOA!"…): fades in/out with the delta (same 1100ms
+ * timeline) so they live and die together, with a gentler scale so longer words don't
+ * jump. */
+.hud-points__comment {
+  margin-top: 2px;
+  font: 800 20px system-ui, -apple-system, sans-serif;
+  color: #ffd633;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 8px rgba(255, 190, 60, 0.5);
+  opacity: 0;
+  transform-origin: 100% 50%;
+  white-space: nowrap;
+}
+
+.hud-points__comment.is-flashing {
+  animation: points-comment 1100ms ease-out forwards;
+}
+
+/* Mirrors points-delta's timeline (fade in ~12%, hold to 73%, fade out to 100%) so the
+ * caption is in lockstep with the delta, but with a milder scale-in. */
+@keyframes points-comment {
+  0% {
+    opacity: 0;
+    transform: scale(1.3);
+  }
+  12% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  73% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+.hud-points__delta.is-flashing {
+  /* Fade + scale IN, then HOLD (forwards) — the reward stays up until the next hand clears
+   * it (game-view drops .is-flashing on the next-hand transition), so it never fades early. */
+  animation: points-delta 320ms ease-out forwards;
+}
+
+/* Fade + big scale-in (2 → 1) over 320ms, ending at full opacity; `forwards` holds it there
+ * indefinitely. No fade-out keyframe — the JS removes the class to hide it. */
+@keyframes points-delta {
+  0% {
+    opacity: 0;
+    transform: scale(2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Info button beside the dealer's head: a small teal "glass" disc with an italic-serif
+ * "i". Toggles the nexus's spec-sheet projection (ruleset + token inflation). Size,
+ * font-size and position are set inline from the dealer's on-screen box (positionInfoButton),
+ * so it tracks the figure across screen sizes; this rule owns the look. Matches the
+ * nexus's alien-teal energy. */
+.hud-info {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  color: rgba(196, 246, 241, 0.96);
+  font: italic 700 21px ui-serif, Georgia, "Times New Roman", serif;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease;
+  z-index: 4;
+}
+
+.hud-info:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+}
+
+.hud-info:active {
+  transform: scale(0.92);
+}
+
+/* Pressed / projecting: lit solid teal, so it reads as the nexus actively projecting. */
+.hud-info.is-active {
+  color: #06232a;
+  border-color: rgba(184, 250, 244, 0.9);
+  background: radial-gradient(circle at 35% 30%, rgba(150, 246, 236, 0.98), rgba(96, 220, 210, 0.98));
+  box-shadow: 0 0 16px rgba(116, 236, 224, 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
 }
 
 /* Only the game-over banner uses this now (the win/loss/push result is drawn on
@@ -417,6 +539,31 @@ button.is-hidden,
     width: auto;
   }
 
+  .hud-points {
+    top: 8px;
+    right: 10px;
+  }
+
+  .hud-points__count {
+    font-size: 27px;
+  }
+
+  .hud-points__delta {
+    font-size: 23px;
+  }
+
+  .hud-points__comment {
+    font-size: 16px;
+  }
+
+  .hud-info {
+    bottom: 10px;
+    left: 10px;
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+
   .hud-message {
     font-size: 19px;
   }
@@ -505,5 +652,35 @@ button.is-hidden,
 
   .upgrade-btn__effect {
     font-size: 13px;
+  }
+}
+
+/* Larger screens: scale the points counter + its "+N" delta up so the score reads big
+ * from across the room (the base sizes suit a laptop; a desktop monitor can take more). */
+@media (min-width: 1200px) {
+  .hud-points__count {
+    font-size: 44px;
+  }
+
+  .hud-points__delta {
+    font-size: 35px;
+  }
+
+  .hud-points__comment {
+    font-size: 25px;
+  }
+}
+
+@media (min-width: 1700px) {
+  .hud-points__count {
+    font-size: 56px;
+  }
+
+  .hud-points__delta {
+    font-size: 42px;
+  }
+
+  .hud-points__comment {
+    font-size: 30px;
   }
 }

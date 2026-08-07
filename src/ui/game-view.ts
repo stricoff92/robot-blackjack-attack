@@ -5,9 +5,9 @@ import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
-import { DESTROY_TOKEN, isLastCall, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
-import { Session, type SessionState } from '../game/session'
-import { nextTierLabel, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
+import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
+import { Session, SHOE_DECKS, type SessionState } from '../game/session'
+import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
 import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
@@ -18,6 +18,9 @@ import { drawHealthBar } from '../render/health'
 import { drawHoloRays, drawStrikeFx, nexusYellowLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
+import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
+import { drawScoreSheet, type ScoreReadout } from '../render/score-sheet'
+import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
@@ -31,7 +34,7 @@ import { MulliganAnimation } from './mulligan-animator'
 import { NexusAnimation } from './nexus-animator'
 import { PeekFlipAnimation, PEEK_FLIP_MS } from './peek-animator'
 import { ReturnAnimation } from './return-animator'
-import { TokenAnimation } from './token-animator'
+import { FLY_MS, TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
 import { sfx } from '../audio/sfx'
 
@@ -79,6 +82,16 @@ const TOKEN_TONE_STAGGER_MS = 45
 // How long a dismissed Analyze reading takes to flicker out.
 const ANALYSIS_FADE_MS = 300
 
+// How long the info-button spec-sheet projection takes to flicker out when toggled off
+// (mirror of the strike-on; see specRender + render/spec-sheet.ts).
+const SPEC_FADE_MS = 320
+
+// The nexus's combo-multiplier projection (middle of the felt, on a hit): how long the
+// number rolls from its old value to the new one, how long it holds, and the fade-out.
+const COMBO_TICK_MS = 380
+const COMBO_HOLD_MS = 780
+const COMBO_PROJ_FADE_MS = 340
+
 // How many light rays the holo projector fans onto each number it projects.
 const HOLO_RAYS_PER = 5
 
@@ -104,6 +117,9 @@ const SHRED_ARRIVE_OVERLAP = 140
 // landed and settled before the selector takes over the screen, plus a breath.
 const UPGRADE_REVEAL_LEAD = 1400
 const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
+// Game over: beat after the ending hand's cards settle before the dealer sucks them up
+// and shreds them (a win → laser death; a loss → walk-off), then projects the score.
+const END_SHRED_GAP = 200
 // A picked upgrade plays a dismiss animation (darkness + card fade, chosen button
 // scales up) before the pick commits. Kept in sync with .upgrade-panel.is-dismissing.
 const UPGRADE_DISMISS_MS = 350
@@ -170,6 +186,35 @@ class GameView {
   // the bankroll snaps on a decrease (a bet/loss is an instant cost).
   private readonly tokenTicker = new CountTicker(0, true)
   private readonly bankrollTicker = new CountTicker()
+  // The points counter rolls UP only. It's held at its pre-resolve value (heldScore)
+  // from the moment a hand resolves until that hand's reward tokens land at the token
+  // counter, then released to run.score — so points always rise AFTER the token reward,
+  // never before. `pendingScoreDelta` is the "+N" flashed underneath on release;
+  // `scoreReleaseAt` is a fallback so a token-less win (a chips-only push) still ticks.
+  private readonly scoreTicker = new CountTicker()
+  private heldScore: number | null = null
+  private pendingScoreDelta = 0
+  // The combo multiplier that produced this reward — carried to the release so the middle-
+  // of-felt projection can show "base +N / ×mult" as the effective points tick into the
+  // total top-right. 1 = no combo (projection just shows the base).
+  private pendingMult = 1
+  private scoreReleaseAt = 0
+  // The combo multiplier the nexus is projecting into the middle of the felt on a HIT, or
+  // null when nothing is up. It ticks `from`→`to` up (tone 'up') on a survived hit, or back
+  // to ×1.00 ('down') on a bust. Nothing shows until `startAt` — the drawn card's settle
+  // (anim.animEnd) — so it never reveals the outcome before the flip. From startAt it ticks
+  // over COMBO_TICK_MS, holds to `hideAt`, then fades COMBO_PROJ_FADE_MS. (Hand-end points
+  // are NOT projected — that read as chips; they show as the top-right "+base ×mult" delta.)
+  private comboProj: {
+    from: number
+    to: number
+    tone: ComboProjection['tone']
+    startAt: number
+    hideAt: number
+  } | null = null
+  // Edge tracker: true while the points counter is mid-roll, so the ticking sound fires
+  // once when a roll starts (not every frame it runs).
+  private pointsRolling = false
   private readonly stage: Stage
   private raf = 0
   private lastAnimating = false
@@ -210,6 +255,21 @@ class GameView {
   // over ANALYSIS_FADE_MS instead of vanishing; null once faded.
   private analysisFadeOut: SessionState['analysis'] = null
   private analysisFadeStart = 0
+  // The info-button spec sheet the nexus projects onto the felt (token inflation + the
+  // active ruleset). `specShownAt` is when it was toggled on (drives the flicker-in);
+  // `specHideStart` when it was toggled off (drives the mirror flicker-out). At most one
+  // is non-null — both null means nothing is projected. See toggleSpec / specRender.
+  private specShownAt: number | null = null
+  private specHideStart: number | null = null
+  // Game-over score screen: `scoreRevealAt` is when the nexus starts projecting the run
+  // summary (once the ending cards are sucked up) — 0 until scheduled; `scoreRevealed`
+  // latches true at that moment (edge → re-sync so the New-run button appears). See
+  // beginEndGame / scoreRender. `endShredDone` suppresses the settled-card redraw so the
+  // shredded cards stay gone. `spawnShredOnly` marks a shred with no fresh deck flying in.
+  private scoreRevealAt = 0
+  private scoreRevealed = false
+  private endShredDone = false
+  private spawnShredOnly = false
   // Every projected-number box actually drawn this frame (counts, chip amounts, analysis
   // rows). The number-drawing calls append here, and drawHoloProjection fires a ray fan at
   // each — so a ray exists iff its number is on screen, at exactly its position. Cleared at
@@ -272,6 +332,10 @@ class GameView {
   // but held out of the counter (no flight, no number bump) until the player
   // calls the next hand — the same deferral the payout chips use.
   private heldTokens = 0
+  // Last values written to the token counter's DOM, so updateTokenCounter can skip the
+  // write when nothing changed (it's called every frame).
+  private lastTokenText = ''
+  private lastTokenTransform = ''
   private messageEl!: HTMLElement
   private hintEl!: HTMLElement
   private buttons!: Record<string, HTMLButtonElement>
@@ -279,8 +343,18 @@ class GameView {
   private nsfBadges!: Record<string, HTMLElement>
   // Per-powerup cost-pill number spans, rewritten each frame to the inflated price.
   private costPills!: Record<string, HTMLElement>
-  // The "prices +X%" token-inflation readout (hidden while inflation is 0).
-  private inflationEl!: HTMLElement
+  // The arcade points counter (top-right): the number span (swelled as it rolls), the
+  // "+N" delta that flashes underneath each time it starts ticking, and a caption below
+  // that that fades in/out with the delta ("Double!", risk taunts…).
+  private pointsCountEl!: HTMLElement
+  private pointsDeltaEl!: HTMLElement
+  private pointsCommentEl!: HTMLElement
+  // Last values written to the points counter's DOM, so updatePointsCounter can skip the
+  // write when nothing changed (it's called every frame, like the token counter).
+  private lastPointsText = ''
+  private lastPointsTransform = ''
+  // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
+  private infoBtnEl!: HTMLButtonElement
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
   private powersEl!: HTMLElement
   private actionsEl!: HTMLElement
@@ -309,6 +383,7 @@ class GameView {
     // Show the opening balances immediately (no roll up from zero on load).
     this.tokenTicker.set(this.displayedTokens(now()))
     this.bankrollTicker.set(this.displayedBankroll())
+    this.scoreTicker.set(this.displayedScore())
     // Seed the health bar + dealer to the opening integrity so a dealer that starts
     // partway damaged (the dealerHealth dev override) shows the right fill and eye
     // flicker from the first frame — the first deal doesn't sync them (no damage yet).
@@ -450,8 +525,9 @@ class GameView {
     const ctx = canvas.layers.cards.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
     // Start the frame's projected-number collection fresh; drawHands / drawAnalysis (here)
-    // and drawChips (next) append to it, and drawMask fires the ray fans at it.
-    this.frameProjections = []
+    // and drawChips (next) append to it, and drawMask fires the ray fans at it. Reuse the
+    // array (truncate, don't reallocate) so a settled frame produces no garbage here.
+    this.frameProjections.length = 0
     // Every back drawn this frame uses the current dealer's deck colour.
     this.applyDeckColor(timestamp)
 
@@ -467,7 +543,10 @@ class GameView {
       if (this.spawnHasOldDeck) {
         drawOldDeckShred(ctx, layout, dealerColors(this.deckColorShift, timestamp).back, this.spawn, timestamp)
       }
-      drawSpawnDeck(ctx, layout, dealerColors(shift, timestamp).back, this.spawn, timestamp)
+      // A game-over shred flies no fresh deck in — it just chews the table cards.
+      if (!this.spawnShredOnly) {
+        drawSpawnDeck(ctx, layout, dealerColors(shift, timestamp).back, this.spawn, timestamp)
+      }
     } else if (this.deckOnCards) {
       // While gathering/shuffling, the deck lives on this layer so it can slide
       // out to the centre (in front of the dealer) and split for the riffle.
@@ -483,9 +562,11 @@ class GameView {
       } else {
         drawShoe(ctx, x, rest.y, rest.w, rest.h)
       }
-    } else if (this.rgbActive()) {
-      // The RGB dealer's resting deck stays on this per-frame layer so its colour
-      // keeps cycling (the static table layer would freeze it between repaints).
+    } else if (this.rgbActive() && !this.deckHidden) {
+      // The RGB dealer's resting deck stays on this per-frame layer so its colour keeps
+      // cycling (the static table layer would freeze it between repaints). Suppressed while
+      // the deck is hidden (a ceremony flew/shredded it) — otherwise at game over, once the
+      // shred finishes, this branch would redraw the just-shredded RGB deck (it reappears).
       const rest = shoeAnchor(layout)
       drawShoe(ctx, rest.x, rest.y, rest.w, rest.h)
     }
@@ -498,12 +579,18 @@ class GameView {
       drawPeekCard(ctx, layout, this.peekCard, this.peekFlip.progress(timestamp))
     }
 
-    // During a dealer-spawn ceremony the ending round's cards are being sucked into
-    // the new dealer's mouth + shredded (drawn here), not laid out settled.
-    if (this.spawn.isAnimating(timestamp) && this.collectRound) {
+    // During a dealer-spawn ceremony the ending round's cards are being sucked into the new
+    // dealer's mouth + shredded (drawn here), not laid out settled. But NOT while the deal
+    // animator is still flying cards in: at game over `beginEndGame` schedules the shred the
+    // same frame the final hand resolves, so `spawn.isAnimating` goes true before those cards
+    // (the dealer's draw-out, or a busting card) have flown from the deck. Keep drawing them
+    // via drawHands until they settle (anim idle), then the shred takes over — same card
+    // positions (tableCards ≡ drawHands), so no pop. (Normal ceremonies run with anim idle.)
+    if (this.spawn.isAnimating(timestamp) && this.collectRound && !this.anim.isAnimating(timestamp)) {
       drawShred(ctx, layout, this.collectRound, this.spawn, timestamp)
-    } else {
-      // Fall back to the retained ending round while its cards are gathering.
+    } else if (!this.endShredDone) {
+      // Fall back to the retained ending round while its cards are gathering / flying in.
+      // Skipped once a game-over shred has finished — those cards were sucked up and stay gone.
       const round = this.state.round ?? this.collectRound
       if (round) {
         const revealHole = this.state.phase !== 'playing' || this.state.peeked
@@ -544,6 +631,28 @@ class GameView {
     const ar = this.analysisRender(timestamp)
     if (ar) {
       this.frameProjections.push(...drawAnalysis(ctx, layout, ar.a, ar.age, ar.fade, timestamp))
+    }
+
+    // The info-button spec sheet the nexus projects: the ruleset + token inflation,
+    // centred on the felt, flickering in like the Analyze readout. Its panel box goes
+    // into frameProjections so the holo lens fans its rays onto it (drawMask).
+    const sr = this.specRender(timestamp)
+    if (sr) {
+      this.frameProjections.push(...drawSpecSheet(ctx, layout, sr.spec, sr.age, sr.fade, timestamp))
+    }
+
+    // The game-over score screen the nexus projects once the cards are sucked up. Its box
+    // joins frameProjections so the holo lens fans its rays onto it, like the spec sheet.
+    const scr = this.scoreRender(timestamp)
+    if (scr) {
+      this.frameProjections.push(...drawScoreSheet(ctx, layout, scr.readout, scr.age, 1, timestamp))
+    }
+
+    // The combo multiplier the nexus projects big in the middle of the felt — ticking up on
+    // a hit, down on a bust, or holding a hand's "base +N / ×mult" payout.
+    const cp = this.comboProjRender(timestamp)
+    if (cp) {
+      this.frameProjections.push(...drawComboProjection(ctx, layout, cp.proj, cp.age, cp.fade, timestamp))
     }
   }
 
@@ -591,6 +700,131 @@ class GameView {
     }
     const life = 1 - (timestamp - this.analysisFadeStart) / ANALYSIS_FADE_MS
     return life > 0 ? { a: this.analysisFadeOut, fade: life } : null
+  }
+
+  // The spec sheet to paint this frame (flickering in, or out on dismiss), with the age
+  // + fade the panel/text share — or null when nothing's projected. The data is rebuilt
+  // each frame (cheap: it's only up when toggled, and the state is static meanwhile).
+  private specRender(timestamp: number): { spec: SpecReadout; age: number; fade: number } | null {
+    if (this.specShownAt !== null) {
+      return { spec: this.buildSpec(), age: timestamp - this.specShownAt, fade: 1 }
+    }
+    if (this.specHideStart !== null) {
+      const life = 1 - (timestamp - this.specHideStart) / SPEC_FADE_MS
+      if (life <= 0) {
+        this.specHideStart = null
+        return null
+      }
+      // Rewind the strike age (mirror flicker) and fade to nothing on dismiss.
+      return { spec: this.buildSpec(), age: SPEC_STRIKE_MS * life, fade: life }
+    }
+    return null
+  }
+
+  // The game-over score screen to project this frame, or null until the ending cards have
+  // been sucked up (scoreRevealAt). It only flickers IN — it stays up until the New run
+  // resets the phase, so there's no dismiss/fade-out to mirror.
+  private scoreRender(timestamp: number): { readout: ScoreReadout; age: number } | null {
+    if (this.state.phase !== 'over' || this.scoreRevealAt <= 0 || timestamp < this.scoreRevealAt) {
+      return null
+    }
+    return { readout: this.buildScore(), age: timestamp - this.scoreRevealAt }
+  }
+
+  // The run summary the score screen shows: the final points, hands played, the win/loss
+  // tally (pushes count as neither), tokens spent on powerups, and successful free doubles.
+  private buildScore(): ScoreReadout {
+    const run = this.state.run
+    return {
+      title: 'GAME OVER',
+      rows: [
+        { label: 'POINTS', value: String(run.score) },
+        { label: 'HANDS PLAYED', value: String(run.handsPlayed) },
+        { label: 'WIN / LOSS', value: `${run.handsWon} / ${run.handsLost}` },
+        { label: 'TOKENS SPENT', value: String(run.tokensSpent) },
+      ],
+    }
+  }
+
+  // Build the projected ruleset: the token inflation plus the dealer's active house
+  // rules and the player's roguelite mods, as abbreviated feature flags (CPU-style).
+  // Uses the live round's rules when a hand is up, else the rules the next deal will
+  // apply (so it reads correctly at the betting screen too).
+  private buildSpec(): SpecReadout {
+    const { run, round } = this.state
+    const shiftIndex = Math.min(run.shiftIndex, TOTAL_DEALERS)
+    const shift = getShift(shiftIndex)
+    const rules =
+      round?.rules ??
+      ({
+        ...rulesForUpgrades(run.upgrades),
+        dealerSoft17: shift.dealerSoft17,
+        dealerHardHitCeiling: dealerHardHitCeiling(run),
+      } as RoundRules)
+
+    const flags: SpecFlag[] = []
+    const house = (text: string): void => void flags.push({ text, kind: 'house' })
+    const player = (text: string): void => void flags.push({ text, kind: 'player' })
+
+    // Table baseline + the dealer's draw rules.
+    house(`${SHOE_DECKS}DECK`)
+    house('H16') // the dealer always hits a hard 16 or below
+    if (rules.dealerSoft17 === 'hit') {
+      house('H17')
+    } else if (rules.dealerSoft17 === 'smart') {
+      house('H17_when_behind')
+    } else {
+      house('S17')
+    }
+    // The final dealer's desperation hard-hit ceiling (17 normally; rises as it's wounded).
+    if (rules.dealerHardHitCeiling > 17) {
+      house(`H${rules.dealerHardHitCeiling}_when_behind`)
+    }
+    // Blackjack payout — a house baseline unless a Payout upgrade lifts it in the
+    // player's favour (then it reads as a green player mod).
+    const bj = `BJ_${rules.blackjackPayoutNumerator}:${rules.blackjackPayoutDenominator}`
+    if (rules.blackjackPayoutNumerator / rules.blackjackPayoutDenominator > 1.5) {
+      player(bj)
+    } else {
+      house(bj)
+    }
+    if (rules.allowSplit) {
+      house('SPLIT_TO_4') // may split/resplit up to 4 hands (round.ts MAX_HANDS)
+    }
+    // Heal-on-win: a late dealer repairs this HP range whenever it beats the player.
+    if (shift.healOnWin[1] > 0) {
+      house(`HEAL_ON_WIN_${shift.healOnWin[0]}-${shift.healOnWin[1]}`)
+    }
+    if (shift.minBetPct > 0) {
+      house(`BET_FLOOR_${Math.round(shift.minBetPct * 100)}%`)
+    }
+    if (this.state.abilitiesLocked) {
+      house('NO_ABILITIES')
+    }
+
+    // Player roguelite mods (Sabotage / Payout / Tokens), all working in the player's
+    // favour — drawn in green.
+    if (rules.dealerNaturalRefundRatio > 0) {
+      player(`REFUND_${Math.round(rules.dealerNaturalRefundRatio * 100)}%`)
+    }
+    if (rules.voidDealer21) {
+      player('VOID_D21')
+    }
+    if (rules.hijackDealerNatural) {
+      player('HIJACK_BJ')
+    }
+    if (rules.pushWinsToPlayer) {
+      player('PUSH_WINS')
+    }
+    if (rules.tokenMultiplier > 1) {
+      // ×1.10 → "TOKEN_x1.1", ×1.18 → "TOKEN_x1.18" (drop a trailing zero).
+      player(`TOKEN_x${rules.tokenMultiplier.toFixed(2).replace(/0$/, '')}`)
+    }
+    if (run.upgrades.tokenEco > 0) {
+      player('INFLATION_RESIST')
+    }
+
+    return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags }
   }
 
   // Each hand's outcome (Win/Lose/Push/Bust + amount), one entry per player hand,
@@ -646,10 +880,15 @@ class GameView {
   private drawHealth(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.hud.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
-    // Dealers left to defeat, counting the one in front of the player — so the
-    // final dealer shows a single pip. (shiftIndex is 1-based and runs one past
-    // TOTAL_DEALERS on a win, hence the clamp to zero.)
-    const dealersLeft = Math.max(0, TOTAL_DEALERS - this.state.run.shiftIndex + 1)
+    // Dealers left to defeat, counting the one in front of the player — so the final dealer
+    // shows a single pip. (shiftIndex is 1-based and runs one past TOTAL_DEALERS on a win,
+    // hence the clamp to zero.) During a WIN game-over, shiftIndex has already advanced past
+    // the last dealer, but it's still on screen drawing out — hold its pip until the score
+    // screen shows (scoreRevealed), or the pips dropping to 0 would spoil the win early.
+    const dealersLeft =
+      this.state.run.won && this.state.phase === 'over' && !this.scoreRevealed
+        ? 1
+        : Math.max(0, TOTAL_DEALERS - this.state.run.shiftIndex + 1)
     drawHealthBar(ctx, layout, this.health, timestamp, dealersLeft, TOTAL_DEALERS)
   }
 
@@ -698,15 +937,151 @@ class GameView {
   // frame while anything is in motion, and on each state sync.
   private updateTokenCounter(now: number): void {
     this.tokenTicker.retarget(this.displayedTokens(now), now)
-    this.tokenCountEl.textContent = String(this.tokenTicker.value(now))
+    // This runs every frame (even at rest). Only touch the DOM when the value or swell
+    // actually changes, so a settled counter isn't rewriting its text node + transform
+    // 60×/sec (each write invalidates style/layout).
+    const text = String(this.tokenTicker.value(now))
+    if (text !== this.lastTokenText) {
+      this.tokenCountEl.textContent = text
+      this.lastTokenText = text
+    }
     const scale = this.tokenTicker.scale(now)
-    this.tokensEl.style.transform = scale === 1 ? '' : `scale(${scale})`
+    const transform = scale === 1 ? '' : `scale(${scale})`
+    if (transform !== this.lastTokenTransform) {
+      this.tokensEl.style.transform = transform
+      this.lastTokenTransform = transform
+    }
+  }
+
+  // The points to show: the pre-resolve value while a reward is still landing (heldScore),
+  // otherwise the live run total. The ticker rolls up to whatever this returns.
+  private displayedScore(): number {
+    return this.heldScore ?? this.state.run.score
+  }
+
+  // Point the score counter at what should be shown now, then paint the ticker's value +
+  // swell — mirrors updateTokenCounter. Called every frame and on each state sync.
+  private updatePointsCounter(now: number): void {
+    this.scoreTicker.retarget(this.displayedScore(), now)
+    // A roll just began — play the ticking flutter for exactly as long as it runs. The
+    // edge flag keeps it to one play per roll (this runs every frame + on each sync).
+    const rolling = this.scoreTicker.isAnimating(now)
+    if (rolling && !this.pointsRolling) {
+      sfx.playPointsRoll(this.scoreTicker.remainingMs(now))
+    }
+    this.pointsRolling = rolling
+    const text = String(this.scoreTicker.value(now))
+    if (text !== this.lastPointsText) {
+      this.pointsCountEl.textContent = text
+      this.lastPointsText = text
+    }
+    const scale = this.scoreTicker.scale(now)
+    const transform = scale === 1 ? '' : `scale(${scale})`
+    if (transform !== this.lastPointsTransform) {
+      this.pointsCountEl.style.transform = transform
+      this.lastPointsTransform = transform
+    }
+  }
+
+  // Hold the points counter frozen at `prevScore` until the reward tokens land, then it
+  // releases to run.score with a "+delta" flash (the EFFECTIVE, already-multiplied points).
+  // `mult` is the combo that produced it — carried for the middle-of-felt reward projection,
+  // NOT the top-right (which shows total + effective delta only). `releaseAt` is a fallback
+  // in case no token ever lands to trigger the release (a chips-only win).
+  private holdScoreReward(prevScore: number, delta: number, mult: number, releaseAt: number): void {
+    this.heldScore = prevScore
+    this.pendingScoreDelta = delta
+    this.pendingMult = mult
+    this.scoreReleaseAt = releaseAt
+  }
+
+  // Release the held score: the reward tokens have landed, so let the counter roll up to
+  // run.score (the effective total) and flash the "+base ×mult" breakdown top-right.
+  private releaseHeldScore(): void {
+    const delta = this.pendingScoreDelta
+    const mult = this.pendingMult
+    this.heldScore = null
+    this.pendingScoreDelta = 0
+    this.pendingMult = 1
+    this.scoreReleaseAt = 0
+    if (delta > 0) {
+      this.flashPointsDelta(delta, mult)
+    }
+  }
+
+  // Flash the reward top-right: the BASE points (white) with the combo "×mult" (yellow) that
+  // multiplied them — "+200 ×1.5" — while the counter above ticks up by the effective total
+  // (base × mult). `delta` is the effective gain, so base = round(delta / mult). Fades + pops
+  // via the .is-flashing keyframes; restart the animation (drop class → reflow → re-add) so
+  // back-to-back rewards replay instead of freezing.
+  private flashPointsDelta(delta: number, mult: number): void {
+    const base = mult > 1 ? Math.round(delta / mult) : delta
+    this.pointsDeltaEl.textContent = `+${base}`
+    if (mult > 1) {
+      const mx = element('span', 'hud-points__mult')
+      mx.textContent = `  ×${mult.toFixed(2)}`
+      this.pointsDeltaEl.appendChild(mx)
+    }
+    restartAnimation(this.pointsDeltaEl, 'is-flashing')
+    // The old risk/Double caption line is retired — keep it clear if a prior one lingers.
+    this.pointsCommentEl.classList.remove('is-flashing')
+  }
+
+  // Project a hit's combo tick into the middle of the felt: the multiplier rolls `from`→`to`
+  // ('up' on a survived hit, 'down' to ×1.00 on a bust). Held back until `startAt` — the
+  // drawn card's settle — so it never spoils the outcome before the flip. Then holds + fades.
+  private showComboTick(from: number, to: number, tone: 'up' | 'down', startAt: number): void {
+    this.comboProj = { from, to, tone, startAt, hideAt: startAt + COMBO_TICK_MS + COMBO_HOLD_MS }
+  }
+
+  // Trigger a combo tick from a state change: a surviving hit grew the combo (tick up), or a
+  // bust reset it (tick down to ×1.00). Held back to the card's settle (anim.animEnd, or now
+  // if already settled) so it doesn't reveal survived/busted before the card flips. Skips
+  // New-run/game-over transitions (prevPhase/phase 'over'), which zero the combo silently.
+  private updateComboProjection(prevCombo: number, prevPhase: SessionState['phase'], now: number): void {
+    const combo = this.state.run.combo
+    const startAt = Math.max(now, this.anim.animEnd) // after the drawn card is revealed
+    if (combo > prevCombo) {
+      this.showComboTick(comboMultiplier(prevCombo), comboMultiplier(combo), 'up', startAt)
+    } else if (combo < prevCombo && prevPhase !== 'over' && this.state.phase !== 'over') {
+      this.showComboTick(comboMultiplier(prevCombo), comboMultiplier(0), 'down', startAt)
+    }
+  }
+
+  // The combo projection to paint this frame (multiplier ticked toward its target, plus the
+  // strike-in age + fade), or null when it hasn't appeared yet (before startAt), nothing is
+  // up, or the game-over score sheet owns the felt. Clears itself once the fade-out completes.
+  private comboProjRender(now: number): { proj: ComboProjection; age: number; fade: number } | null {
+    const p = this.comboProj
+    if (!p || this.state.phase === 'over' || now < p.startAt) {
+      return null
+    }
+    let fade = 1
+    if (now >= p.hideAt) {
+      fade = 1 - (now - p.hideAt) / COMBO_PROJ_FADE_MS
+      if (fade <= 0) {
+        this.comboProj = null
+        return null
+      }
+    }
+    const tickT = Math.min(1, Math.max(0, (now - p.startAt) / COMBO_TICK_MS))
+    const eased = 1 - (1 - tickT) * (1 - tickT) * (1 - tickT) // smoothEnd3 (ease-out)
+    const mult = p.from + (p.to - p.from) * eased
+    return { proj: { mult, tone: p.tone }, age: now - p.startAt, fade }
   }
 
   // Animation loop: runs while cards are in motion, then parks itself. Only the
   // cards layer is touched; the overlay is synced only on the animate→idle edge.
   private readonly frame = (timestamp: number): void => {
     this.anim.setNow(timestamp)
+    // Game over: the ending cards have just finished being sucked up. Latch the reveal
+    // (before drawCards, so the shredded cards stay gone this frame), start projecting
+    // the score screen, and re-sync so the New-run button appears.
+    if (this.scoreRevealAt > 0 && !this.scoreRevealed && timestamp >= this.scoreRevealAt) {
+      this.scoreRevealed = true
+      this.endShredDone = true
+      this.syncOverlay(timestamp)
+    }
     // A card just launched from the shoe (one entry per fresh flight this frame) —
     // fire the draw sfx for each. Glides (split originals) are excluded upstream.
     const drawn = this.anim.drawnCards(timestamp).length
@@ -731,6 +1106,11 @@ class GameView {
       }
       const showerMs = Math.max(1, icons - 1) * TOKEN_TONE_STAGGER_MS
       this.tokenTicker.retarget(this.displayedTokens(timestamp), timestamp, showerMs)
+      // The hand's reward tokens have reached the counter — now let the points catch up
+      // (they were held at the pre-resolve value so they rise AFTER the reward, per spec).
+      if (this.heldScore !== null) {
+        this.releaseHeldScore()
+      }
     }
     // The fresh deck's shrink-wrap: read the same unwrap fraction the renderer uses
     // and fire the tear-open sfx as it begins peeling (unwrap leaves 0), then the
@@ -824,6 +1204,13 @@ class GameView {
     this.drawFx(canvas, layout, timestamp)
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter(timestamp)
+    // Fallback release: a token-less win (a chips-only push earns points but flies no
+    // tokens, so nothing lands to trigger the tick above) still ticks once its reward
+    // would have arrived.
+    if (this.heldScore !== null && this.scoreReleaseAt > 0 && timestamp >= this.scoreReleaseAt) {
+      this.releaseHeldScore()
+    }
+    this.updatePointsCounter(timestamp)
 
     const sequenceAnimating =
       this.anim.isAnimating(timestamp) ||
@@ -953,8 +1340,13 @@ class GameView {
         enabled: (s) => !!s.round && canSplit(s.round) && affordsExtra(s),
         shortFunds: (s) => !!s.round && canSplit(s.round) && !affordsExtra(s),
       },
-      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session.nextHand(), visible: (s) => s.phase === 'resolved', enabled: yes },
-      { key: 'restart', label: 'New run', group: 'action', act: () => this.session.restart(), visible: (s) => s.phase === 'over', enabled: yes },
+      // Also shown (disabled) through the game-over draw-out/shred, so the bottom row looks
+      // exactly like any resolving hand — an EMPTY row (no Next hand) would spoil that this
+      // was the final hand. It swaps to New run once the score screen shows (scoreRevealed).
+      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session.nextHand(), visible: (s) => s.phase === 'resolved' || (this.state.phase === 'over' && !this.scoreRevealed), enabled: (s) => s.phase === 'resolved' },
+      // Shown only once the game-over sequence has projected the score screen (the cards
+      // are sucked up, the dealer destroyed / gone) — not the instant the run ends.
+      { key: 'restart', label: 'New run', group: 'action', act: () => this.session.restart(), visible: () => this.state.phase === 'over' && this.scoreRevealed, enabled: yes },
       {
         key: 'analyze',
         label: 'Analyze',
@@ -1068,7 +1460,7 @@ class GameView {
 
   private buildOverlay(): void {
     const tokens = this.buildTokenCounter()
-    this.inflationEl = element('div', 'hud-inflation is-hidden')
+    const points = this.buildPointsCounter()
     this.messageEl = element('div', 'hud-message')
     this.hintEl = element('div', 'hud-powerhint')
     const powers = element('div', 'hud-powerups')
@@ -1120,9 +1512,83 @@ class GameView {
       ;(def.group === 'power' ? powers : actions).appendChild(button)
     }
 
+    // The info button sits in the bottom-left corner (fixed via CSS); pressing it toggles
+    // the nexus's spec-sheet projection.
+    this.infoBtnEl = this.buildInfoButton()
+
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage.overlay.append(tokens, this.inflationEl, this.messageEl, powers, actions, this.buildUpgradePanel())
+    this.stage.overlay.append(tokens, points, this.infoBtnEl, this.messageEl, powers, actions, this.buildUpgradePanel())
+
+    // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
+    // on the info button itself, whose own click handler toggles it. pointerdown fires
+    // before the button's click, and specShownAt is only set on that click, so the tap
+    // that OPENS the sheet never immediately closes it.
+    this.stage.container.addEventListener('pointerdown', (e) => {
+      if (this.specShownAt !== null && e.target instanceof Node && !this.infoBtnEl.contains(e.target)) {
+        this.dismissSpec()
+      }
+    })
+  }
+
+  // The info button: a small circular "i" pinned to the left of the dealer's head. A
+  // click toggles the nexus spec-sheet projection (the ruleset + token inflation).
+  private buildInfoButton(): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.className = 'hud-info'
+    btn.textContent = 'i'
+    btn.title = 'Show the dealer ruleset + token inflation'
+    btn.setAttribute('aria-label', 'Show the dealer ruleset and token inflation')
+    btn.addEventListener('click', () => this.toggleSpec())
+    return btn
+  }
+
+  // Pin the info button just left of the dealer's head, vertically centred on it, and
+  // size it to the head so it tracks the figure across screen sizes. Coordinates are in
+  // CSS pixels — the overlay shares the canvas's box (see tokenTarget).
+  // Toggle the nexus spec-sheet projection on or off, arming its flicker-in / -out.
+  private toggleSpec(): void {
+    const t = now()
+    if (this.specShownAt !== null) {
+      this.specHideStart = t // flicker out from full
+      this.specShownAt = null
+    } else {
+      this.specShownAt = t // flicker in
+      this.specHideStart = null
+    }
+    this.infoBtnEl.classList.toggle('is-active', this.specShownAt !== null)
+    // Give the readout the whole felt: hide the powerup + action columns while it's up
+    // (they'd otherwise crowd it on narrow/mobile layouts). Restored when it's dismissed.
+    this.applyHudColumns(this.state)
+    sfx.play('ability') // the nexus powering up its projector
+    this.ensureLoop()
+  }
+
+  // Fade the spec sheet out if it's up — any real game action dismisses it, so it never
+  // lingers over a live hand.
+  private dismissSpec(): void {
+    if (this.specShownAt !== null) {
+      this.specHideStart = now()
+      this.specShownAt = null
+      this.infoBtnEl.classList.remove('is-active')
+      this.applyHudColumns(this.state) // bring the button columns back
+    }
+  }
+
+  // Show/hide the powerup + action button columns and the info button. Both columns hide
+  // while the choose-upgrade card is up (its modal owns the screen) or the spec sheet is
+  // projected (the readout wants the full felt). On the GAME-OVER SCREEN the powerups + info
+  // button hide too (no abilities to use, nothing to inspect) — but NOT until the score
+  // screen actually shows (`scoreRevealed`): the phase flips to 'over' the instant the final
+  // hand resolves, and hiding then would drop the buttons while the dealer is still drawing
+  // out (spoiling the outcome). Until then they stay visible-but-disabled, like any resolving
+  // hand. The actions column always stays so the New-run button can appear.
+  private applyHudColumns(s: SessionState): void {
+    const modal = s.phase === 'choosing-upgrade' || this.specShownAt !== null
+    const over = s.phase === 'over' && this.scoreRevealed
+    this.powersEl.classList.toggle('is-hidden', modal || over)
+    this.actionsEl.classList.toggle('is-hidden', modal)
+    this.infoBtnEl.classList.toggle('is-hidden', over)
   }
 
   // The choose-upgrade card: a title and one big coloured button per upgrade path,
@@ -1186,11 +1652,27 @@ class GameView {
     return el
   }
 
+  // The arcade points counter, pinned top-right: the rolling number (swelled while it
+  // ticks) with the "+N" reward delta flashing just beneath it. Only the number swells;
+  // the delta is a sibling, so it isn't dragged by the count's swell transform.
+  private buildPointsCounter(): HTMLElement {
+    const el = element('div', 'hud-points')
+    this.pointsCountEl = element('div', 'hud-points__count')
+    this.pointsDeltaEl = element('div', 'hud-points__delta')
+    this.pointsCommentEl = element('div', 'hud-points__comment')
+    el.append(this.pointsCountEl, this.pointsDeltaEl, this.pointsCommentEl)
+    return el
+  }
+
   private run(mutate: () => void): void {
+    // Any game action closes the spec projection so it never hangs over a live hand.
+    this.dismissSpec()
     const prevPhase = this.state.phase
     const prevRound = this.state.round
     const prevChips = this.state.run.chips
     const prevTokens = this.state.run.tokens
+    const prevScore = this.state.run.score
+    const prevCombo = this.state.run.combo
     const prevIntegrity = this.state.run.integrity
     const prevShift = this.state.run.shiftIndex
     const prevAnalysis = this.state.analysis
@@ -1242,6 +1724,15 @@ class GameView {
       // The win tokens were already awarded on the resolve (they flew in behind the
       // won chips). A New run (from 'over') just drops the withheld final reward.
       this.heldTokens = 0
+      // The reward "+base ×mult" delta holds (no fade) until THIS moment — the player
+      // clicked Next hand — so clear it now. Also drop any reward that hadn't flashed yet
+      // (a fast click before its tokens landed): release the held score to the total so the
+      // counter isn't stuck, without a late flash bleeding into the next hand.
+      this.pointsDeltaEl.classList.remove('is-flashing')
+      this.heldScore = null
+      this.pendingScoreDelta = 0
+      this.pendingMult = 1
+      this.scoreReleaseAt = 0
 
       const isKill =
         !!this.pendingAttack && prevPhase === 'resolved' && this.pendingAttack.toShift > this.pendingAttack.fromShift
@@ -1260,6 +1751,16 @@ class GameView {
       // balance down (a full reset isn't a "spend").
       if (newRun) {
         this.tokenTicker.set(this.displayedTokens(t))
+        // The fresh run zeroes the score: clear any held reward + flash and snap the
+        // counter to 0 rather than rolling the whole total down.
+        this.heldScore = null
+        this.pendingScoreDelta = 0
+        this.pendingMult = 1
+        this.scoreReleaseAt = 0
+        this.comboProj = null // drop any lingering combo projection
+        this.pointsDeltaEl.classList.remove('is-flashing')
+        this.pointsCommentEl.classList.remove('is-flashing')
+        this.scoreTicker.set(this.displayedScore())
       }
 
       if (this.pendingAttack && prevPhase === 'resolved') {
@@ -1286,7 +1787,7 @@ class GameView {
             // A kill with no upgrade to pick (every path maxed): the replacement walks
             // in (part of playAttack), its mouth shreds the old cards while a fresh
             // wrapped deck flies in — no riffle. The next hand waits for the ceremony.
-            this.dealAfter = this.beginSpawn(prevRound, pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
+            this.dealAfter = this.beginSpawn(pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
           } else {
             // Same dealer, just damaged: gather the cards back + riffle after the laser.
             this.anim.collect(prevRound, attackEnd + GATHER_GAP)
@@ -1297,15 +1798,23 @@ class GameView {
         // tokens already flew on the resolve; the yellow just eases out of its glow.
         this.fireLaser(t, attackStart, isKill)
       } else if (newRun) {
-        // A New run: the fresh run's opening dealer walks in and presents a new deck,
-        // shredding whatever cards the old run left on the table. No laser (no attack).
+        // A New run: the fresh run's opening dealer walks in and presents a new deck. The
+        // old run's table cards were already shredded at game over, so there are none left
+        // to chew — clear collectRound (beginSpawn then shreds only the resting deck), and
+        // reset the game-over state so the fresh run starts clean. No laser (no attack).
         this.pendingAttack = null
         this.deckColorIncoming = null
+        this.collectRound = null
+        this.endShredDone = false
+        this.scoreRevealAt = 0
+        this.scoreRevealed = false
         this.health.set(integrity, shiftIndex)
         this.dealer.setLevel(integrity, shiftIndex)
         this.dealer.setShift(shiftIndex)
         this.dealer.spawn(t) // a standalone walk-in (no preceding death)
-        this.dealAfter = this.beginSpawn(prevRound, shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+        // The old run's cards + deck were already shredded at game over — shred nothing,
+        // just fly the fresh deck in.
+        this.dealAfter = this.beginSpawn(shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, false)
       } else {
         // No deferred damage (a losing/pushing hand): gather the cards right away and
         // refresh the health + dealer state now.
@@ -1383,28 +1892,20 @@ class GameView {
         // by the flip-down so the top card flips face-down before it's drawn.
         this.anim.sync(prevPhase, this.state, t + dealLead)
       }
-      // A winning hand damages the dealer, but the nexus LASER doesn't fire yet:
-      // it's deferred to the Next-hand click, after the token reward (see the
-      // Next-hand branch above). The exception is the final kill / game end
-      // (phase 'over'), where there's no Next hand — so the attack plays now.
+      // A winning hand damages the dealer, but the nexus LASER doesn't fire yet: it's
+      // deferred to the Next-hand click, after the token reward (see the Next-hand branch
+      // above). The exception is the final blow ('over'), which ends the run — its
+      // shred → laser death is run by beginEndGame below, not deferred to a Next hand.
+      const enteringOver = this.state.phase === 'over' && prevPhase !== 'over'
       const damaged = integrity < prevIntegrity || shiftIndex > prevShift
-      if (damaged) {
-        if (this.state.phase === 'over') {
-          const attackStart = this.anim.animEnd
-          this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, attackStart)
-          // No Next hand (and no reward tokens) on the final blow: the red muzzle
-          // blasts for the laser, then fades. No yellow flare. The last dealer dies,
-          // so this is always a kill (shift advanced) — the explosion sound plays.
-          this.fireLaser(t, attackStart, shiftIndex > prevShift)
-        } else {
-          this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
-          // The nexus now holds a reward + strike to deliver: light both emitters in
-          // anticipation and hold the glow until the player calls the next hand. It
-          // starts only once the cards have SETTLED (anim.animEnd), not at the
-          // action — otherwise a natural blackjack, which resolves right off the
-          // deal, would have the nexus charging before the cards even land.
-          this.nexus.anticipate(this.anim.animEnd)
-        }
+      if (damaged && !enteringOver) {
+        this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
+        // The nexus now holds a reward + strike to deliver: light both emitters in
+        // anticipation and hold the glow until the player calls the next hand. It
+        // starts only once the cards have SETTLED (anim.animEnd), not at the
+        // action — otherwise a natural blackjack, which resolves right off the
+        // deal, would have the nexus charging before the cards even land.
+        this.nexus.anticipate(this.anim.animEnd)
       }
       // A late dealer that BEAT the player repairs itself (heal-on-win): integrity
       // rose with no shift change. The YELLOW emitter fires a heal beam and the bar
@@ -1423,6 +1924,8 @@ class GameView {
       // Reward tokens for a surviving hit fly up right away; the win reward is
       // handled below, timed to the chips.
       this.scheduleTokens(prevPhase, prevTokens)
+      // A surviving hit earns NO score now — it just grew the combo, projected as a tick in
+      // the middle of the felt (updateComboProjection, at the end of run()).
       // On resolve, freeze the bankroll at its pre-settle *available* value (the
       // live bet is on the table); it releases to the new total once the payout
       // chips land on the next hand.
@@ -1434,13 +1937,33 @@ class GameView {
         // Only a normal resolve pays the counter; a final blow ('over') ends the run.
         if (this.state.phase === 'resolved' && this.state.round) {
           this.awardWinTokens(this.state.round, this.chips.animEnd + TOKEN_SPAWN_DELAY)
+          // Hold the points counter at its pre-resolve value; it releases and ticks up
+          // once those reward tokens land (see the landed() loop), so points rise right
+          // behind the reward. scoreReleaseAt is a fallback for a token-less win.
+          const gained = this.state.run.score - prevScore
+          if (gained > 0) {
+            // The combo multiplier that boosted this win + any kill — carried for the felt
+            // reward projection (base +N / ×mult); the top-right shows the effective +N.
+            const mult = comboMultiplier(this.state.run.combo)
+            const releaseAt = this.chips.animEnd + TOKEN_SPAWN_DELAY + FLY_MS + 200
+            this.holdScoreReward(prevScore, gained, mult, releaseAt)
+          }
         }
       } else if (prevPhase === 'betting') {
         this.heldChips = null
       }
+      // Game over: once the ending hand's cards settle, the dealer sucks them up + shreds
+      // them, then is destroyed (a win: laser death) or walks off (a loss), and the nexus
+      // projects the score screen. Fires for a bust-out loss too (no damage this hand).
+      if (enteringOver) {
+        this.beginEndGame(prevScore, prevIntegrity, prevShift, integrity, shiftIndex, t)
+      }
     }
 
     this.syncOverlay(t) // reflect the new state immediately (disable while animating)
+    // A hit grew the combo → project the multiplier ticking up in the middle of the felt; a
+    // bust → tick it back to ×1.00. (No-op when the combo didn't change.)
+    this.updateComboProjection(prevCombo, prevPhase, t)
     this.lastAnimating =
       this.anim.isAnimating(t) ||
       this.chips.isAnimating(t) ||
@@ -1497,10 +2020,13 @@ class GameView {
       return
     }
 
-    // Final blow: the run is ending, so the last hand's reward is withheld from the
-    // count and simply dropped when it resets — never flown to the counter.
+    // Final blow: the run is ending, so the last hand's reward is withheld from the count and
+    // simply dropped when it resets — never flown to the counter. On a WIN that includes the
+    // +40 kill bounty (already in run.tokens), so withhold it too — otherwise the top-left
+    // count ticks up by 40 during the draw-out, spoiling the win.
     if (phase === 'over' && prevPhase !== 'over') {
-      this.heldTokens = winTokensTotal(round)
+      const killBounty = this.state.run.won ? Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run)) : 0
+      this.heldTokens = winTokensTotal(round) + killBounty
     }
   }
 
@@ -1527,18 +2053,25 @@ class GameView {
   // dealer's mouth starting at `shredStart`, then fly in a fresh wrapped deck in the
   // incoming dealer's colour (committed to the static table when it lands — see the
   // frame loop). Returns the timestamp the deck is ready, so the next deal can wait.
-  private beginSpawn(prevRound: Round, incomingShift: number, shredStart: number): number {
+  // `shredOldDeck` is true for a kill (the beaten dealer's resting deck is chewed too),
+  // false for a New run after game over (the old run's deck was already shredded at game
+  // over, so there's nothing resting to chew — only the fresh deck flies in).
+  private beginSpawn(incomingShift: number, shredStart: number, shredOldDeck = true): number {
     this.spawnIncomingShift = incomingShift
+    this.spawnShredOnly = false // a real ceremony: the fresh deck flies in
     // The previous dealer's resting deck moves off the static table onto the cards layer
     // so it can be sucked into the new dealer's mouth; the static deck stays hidden until
     // the fresh one lands + commits (frame settle). Draw it resting there right away.
-    this.spawnHasOldDeck = true
+    this.spawnHasOldDeck = shredOldDeck
     this.deckHidden = true
     const canvas = this.stage.canvas
     this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
-    const cardCount = prevRound.dealer.length + prevRound.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
+    // The table cards to shred are whatever `collectRound` holds (null on a game-over New
+    // run — they were already shredded at game over, so nothing is chewed there).
+    const src = this.collectRound
+    const cardCount = src ? src.dealer.length + src.hands.reduce((sum, hand) => sum + hand.cards.length, 0) : 0
     // The final dealer gets the grander, slower deck ceremony.
-    return this.spawn.begin(shredStart, cardCount, true, incomingShift >= TOTAL_DEALERS)
+    return this.spawn.begin(shredStart, cardCount, shredOldDeck, incomingShift >= TOTAL_DEALERS)
   }
 
   // The front half of an upgrade-granting kill: the laser fires, the dealer breaks
@@ -1568,7 +2101,7 @@ class GameView {
     this.dealer.spawn(walkInStart)
     this.health.refill(c.incomingIntegrity, c.incomingShift, walkInStart)
     this.deckColorIncoming = null
-    this.dealAfter = this.beginSpawn(c.prevRound, c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+    this.dealAfter = this.beginSpawn(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
 
   // Blast the nexus's red muzzle for the laser beam at `attackStart` (from `t`, the
@@ -1589,22 +2122,86 @@ class GameView {
   // Returns when the sequence finishes — a plain hit, or the full death → walk-in
   // → recharge on a kill — so the next deal can wait for it. The +40 kill token
   // flies from the nexus once the old dealer is fully destroyed.
-  private playAttack(fromI: number, fromS: number, toI: number, toS: number, startAfter: number): number {
+  // `emitBounty` flies the +40 kill token from the nexus (default). At GAME OVER it's false:
+  // the run is ending, so the bounty is withheld from the count (see scheduleTokens) and the
+  // counter never shows it — flying it would double-count against that withholding.
+  private playAttack(fromI: number, fromS: number, toI: number, toS: number, startAfter: number, emitBounty = true): number {
     const final = this.state.run.won || toS > TOTAL_DEALERS
     this.health.sync(fromI, fromS, toI, toS, startAfter)
     this.dealer.sync(fromI, fromS, toI, toS, startAfter, final)
     if (toS > fromS) {
-      const canvas = this.stage.canvas
-      const layout = computeLayout(canvas.width, canvas.height)
-      const liftoff = startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS
-      // The kill bounty flies scaled by the Token eco multiplier, matching the
-      // credited amount (run.ts). The upgrade pick comes after this, so the current
-      // run's multiplier is the one that applied to this bounty.
-      const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
-      this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
+      if (emitBounty) {
+        const canvas = this.stage.canvas
+        const layout = computeLayout(canvas.width, canvas.height)
+        const liftoff = startAfter + KILL_DEATH_LEAD_MS + KILL_DYING_MS
+        // The kill bounty flies scaled by the Token eco multiplier, matching the
+        // credited amount (run.ts). The upgrade pick comes after this, so the current
+        // run's multiplier is the one that applied to this bounty.
+        const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
+        this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
+      }
       return startAfter + KILL_TOTAL_MS
     }
     return startAfter + HIT_TOTAL_MS
+  }
+
+  // The game-over sequence. Once the ending hand's cards settle, the dealer sucks BOTH the
+  // table cards AND its resting deck into its mouth and shreds them — exactly the shred a
+  // beaten dealer's ceremony plays, but with NO fresh deck flying in (the run is over).
+  // Then — a win: the nexus laser fires and the final dealer breaks apart; a loss: the
+  // dealer strides off to the right (footsteps). The instant everything is shredded the
+  // nexus starts projecting the score screen and the New-run button appears (scoreRevealAt
+  // / the frame loop's reveal edge).
+  private beginEndGame(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, shiftIndex: number, t: number): void {
+    const round = this.state.round
+    if (!round) {
+      return
+    }
+    this.collectRound = round // the cards drawShred sucks into the mouth
+    this.endShredDone = false
+    this.spawnShredOnly = true
+    this.spawnIncomingShift = null
+    // Shred the resting deck too (like a kill ceremony): move it off the static table onto
+    // the cards layer (deckHidden + repaint) so drawOldDeckShred can suck it into the mouth.
+    this.spawnHasOldDeck = true
+    this.deckHidden = true
+    const canvas = this.stage.canvas
+    this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
+
+    // Settle the table chips FIRST: a loss flies the bet to the house (beside the dealer), a
+    // win collects the winnings to the bankroll. Everything else waits for them — so on a
+    // loss the bet reaches the dealer before it shreds + walks off. Start once the cards have
+    // landed AND any resolve animation (the winnings flying in on a win) has finished. The
+    // bankroll count stays frozen at its resolve value (heldChips) — there's no next hand.
+    const chipStart = Math.max(this.anim.animEnd, this.chips.animEnd)
+    this.chips.clear(round, chipStart)
+
+    const cardCount = round.dealer.length + round.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
+    const shredStart = this.chips.animEnd + END_SHRED_GAP
+    // shredOldDeck=true (chew the deck), shredOnly=true (no fresh deck flies in).
+    const shredEnd = this.spawn.begin(shredStart, cardCount, true, false, true)
+    if (this.state.run.won) {
+      // The final boss is destroyed the moment its own shredder finishes with the cards:
+      // the laser fires and the figure breaks apart (final → no walk-in). The +40 bounty is
+      // NOT flown (emitBounty=false) — it's withheld from the count (scheduleTokens), so the
+      // run-ending count stays frozen and the token counter can't spoil the win.
+      this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, shredEnd, false)
+      this.fireLaser(t, shredEnd, true)
+    } else {
+      // The house won: the dealer turns and strides off to the right once the cards are gone.
+      this.dealer.walkOff(shredEnd)
+    }
+    // Freeze the score counter at its pre-kill value until the score screen shows (shredEnd):
+    // the win's chip score + kill bounty are already in run.score, and letting the top-right
+    // counter roll up during the dealer's draw-out would spoil the win. releaseAt = shredEnd
+    // rolls it up (and flashes the +delta) exactly as the score screen appears.
+    const gained = this.state.run.score - prevScore
+    if (gained > 0) {
+      this.holdScoreReward(prevScore, gained, comboMultiplier(this.state.run.combo), shredEnd)
+    }
+    // Once the cards are sucked up, project the score screen + reveal the New-run button.
+    this.scoreRevealAt = shredEnd
+    this.scoreRevealed = false
   }
 
   // Sync overlay text + button state. While cards are in motion, buttons are
@@ -1622,18 +2219,13 @@ class GameView {
       this.bustBlock.isAnimating(timestamp) ||
       this.nexus.isHealing(timestamp)
 
-    // Point the counter at its current value (tokens still flying are withheld);
-    // the frame loop rolls it up as they land.
+    // Point the counters at their current values (rewards still flying are withheld);
+    // the frame loop rolls them up as they land.
     this.updateTokenCounter(timestamp)
+    this.updatePointsCounter(timestamp)
     this.messageEl.textContent = animating ? '' : this.buildMessage()
     this.hintEl.textContent = animating ? '' : this.buildHint()
     this.syncUpgradePanel(s, animating, timestamp)
-
-    // Token inflation: show the running "prices +X%" (only once it has risen), and
-    // let the cost pills below reflect it.
-    const inflationPct = Math.round(s.run.tokenInflation * 100)
-    this.inflationEl.textContent = `prices +${inflationPct}%`
-    this.inflationEl.classList.toggle('is-hidden', inflationPct <= 0)
 
     for (const def of this.defs) {
       const button = this.buttons[def.key]
@@ -1681,8 +2273,9 @@ class GameView {
     }
     this.upgradeShown = reveal
     this.upgradeEl.classList.toggle('is-hidden', !reveal)
-    this.powersEl.classList.toggle('is-hidden', choosing)
-    this.actionsEl.classList.toggle('is-hidden', choosing)
+    // The columns hide for the upgrade card OR the spec sheet (centralised so the two
+    // never fight over is-hidden).
+    this.applyHudColumns(s)
     if (!choosing) {
       return
     }
@@ -1701,12 +2294,8 @@ class GameView {
       const bet = nextBet(run)
       return isLastCall(run) ? `Last call — all in (${bet})` : `Bet ${bet}`
     }
-    // The win/loss/push result is drawn on the canvas beside the winning count.
-    if (phase === 'over') {
-      return run.won
-        ? `You dismantled all ${TOTAL_DEALERS} dealers — score ${run.score}`
-        : `The house shuts you down — score ${run.score}`
-    }
+    // Game over: the summary is projected onto the felt (the nexus score screen), not
+    // shown as a banner — so no message here.
     return ''
   }
 
@@ -1790,6 +2379,15 @@ function element(tag: string, className: string): HTMLElement {
   const node = document.createElement(tag)
   node.className = className
   return node
+}
+
+// Restart a one-shot CSS animation on `el`: drop the class, force a reflow so the animation
+// resets, then re-add it — lets the same element replay its keyframes back-to-back instead
+// of freezing after the first play.
+function restartAnimation(el: HTMLElement, className: string): void {
+  el.classList.remove(className)
+  void el.offsetWidth
+  el.classList.add(className)
 }
 
 // A fresh <img> for the token icon. Every instance shares the one imported

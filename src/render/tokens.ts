@@ -6,8 +6,10 @@
 // hit, or a winning hand), arcs up-and-over, and shrinks into the top-left token
 // counter. The count itself is credited by the caller as each burst lands.
 
+import { deviceDpr } from './canvas'
 import { smoothStart2, smoothStep } from './easing'
 import type { Layout } from './scene'
+import { createSpriteCanvas } from './sprite-canvas'
 import { tokenAspect, tokenImage } from './token-sprite'
 
 export interface Point {
@@ -49,14 +51,24 @@ export function drawTokens(
   }
   const h = tokenHeight(l)
   const w = h * tokenAspect()
+  // The shadowed token sprite is baked once (see getTokenSprite); every icon this frame
+  // blits it instead of re-running a per-icon shadowBlur (Firefox's slowest canvas op).
+  const sprite = getTokenSprite(w, h)
   for (const b of bursts) {
-    drawBurst(ctx, b, target, w, h)
+    drawBurst(ctx, b, target, w, h, sprite)
   }
 }
 
 const ICON_LAG = 0.05 // per-icon head start, so a burst's sprites trail slightly
 
-function drawBurst(ctx: CanvasRenderingContext2D, b: TokenBurst, target: Point, w: number, h: number): void {
+function drawBurst(
+  ctx: CanvasRenderingContext2D,
+  b: TokenBurst,
+  target: Point,
+  w: number,
+  h: number,
+  sprite: TokenSprite | null,
+): void {
   const { from } = b
   const dist = Math.hypot(target.x - from.x, target.y - from.y)
   const lift = dist * 0.18 // how high the arc bows above the straight line
@@ -84,7 +96,7 @@ function drawBurst(ctx: CanvasRenderingContext2D, b: TokenBurst, target: Point, 
     const alpha = p < 0.12 ? p / 0.12 : p > 0.85 ? 1 - (p - 0.85) / 0.15 : 1
     const rot = (b.spin - 0.5) * 0.6 + e * (0.5 + b.spin) * (i % 2 === 0 ? 1 : -1)
 
-    drawToken(ctx, x, y, w * scale, h * scale, rot, alpha)
+    drawToken(ctx, x, y, w * scale, h * scale, rot, alpha, sprite)
   }
 }
 
@@ -96,6 +108,7 @@ function drawToken(
   h: number,
   rot: number,
   alpha: number,
+  sprite: TokenSprite | null,
 ): void {
   if (alpha <= 0) {
     return
@@ -104,16 +117,54 @@ function drawToken(
   ctx.globalAlpha = clamp01(alpha)
   ctx.translate(cx, cy)
   ctx.rotate(rot)
-  const img = tokenImage()
-  if (img) {
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
-    ctx.shadowBlur = h * 0.14
-    ctx.shadowOffsetY = h * 0.05
-    ctx.drawImage(img, -w / 2, -h / 2, w, h)
+  if (sprite) {
+    // Blit the pre-shadowed sprite, scaled from its baked base size down to this icon's
+    // current size (w shrinks as it lands). The token is centred in the sprite, so the
+    // whole padded bitmap is drawn centred on the origin.
+    const s = w / sprite.cw
+    const dw = sprite.dw * s
+    const dh = sprite.dh * s
+    ctx.drawImage(sprite.canvas, -dw / 2, -dh / 2, dw, dh)
   } else {
     drawVectorToken(ctx, w, h)
   }
   ctx.restore()
+}
+
+// The token image with its soft drop shadow baked in, so the flight loop never runs a
+// per-icon shadowBlur. Built once at the unscaled flight size and blitted scaled; keyed
+// by that size + dpr, so a resize rebuilds it. Null until the token image has loaded
+// (drawToken falls back to the vector coin until then).
+interface TokenSprite {
+  canvas: HTMLCanvasElement
+  cw: number // baked token width (CSS px), the blit's scale reference
+  dw: number // full sprite width incl. shadow padding (CSS px)
+  dh: number // full sprite height incl. shadow padding (CSS px)
+}
+
+let tokenSpriteCache: (TokenSprite & { key: string }) | null = null
+
+function getTokenSprite(w: number, h: number): TokenSprite | null {
+  const img = tokenImage()
+  if (!img) {
+    return null
+  }
+  const dpr = deviceDpr()
+  const key = `${Math.round(h)}@${dpr}`
+  if (!tokenSpriteCache || tokenSpriteCache.key !== key) {
+    const padX = w * 0.3
+    const padY = h * 0.3 // room for the blur (h*0.14) + downward offset (h*0.05)
+    const dw = w + padX * 2
+    const dh = h + padY * 2
+    const { canvas, ctx } = createSpriteCanvas(Math.round(dw * dpr), Math.round(dh * dpr))
+    ctx.scale(dpr, dpr)
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
+    ctx.shadowBlur = h * 0.14
+    ctx.shadowOffsetY = h * 0.05
+    ctx.drawImage(img, padX, padY, w, h)
+    tokenSpriteCache = { canvas, cw: w, dw, dh, key }
+  }
+  return tokenSpriteCache
 }
 
 // Fallback token (a small gold coin) shown only until power.png loads.

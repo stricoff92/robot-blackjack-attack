@@ -69,6 +69,12 @@ export class CountTicker {
     return now < this.end
   }
 
+  // Milliseconds until the current roll settles (0 at rest) — lets a caller run a
+  // sound for exactly as long as the number is visibly ticking.
+  remainingMs(now: number): number {
+    return Math.max(0, this.end - now)
+  }
+
   // The integer to show this frame.
   value(now: number): number {
     return Math.round(this.from + (this.target - this.from) * this.progress(now))

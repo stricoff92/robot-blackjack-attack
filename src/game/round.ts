@@ -65,6 +65,10 @@ export interface PlayerHand {
   // that the Payout upgrade paid out. Pays chips like a win but deals no damage
   // and no reward tokens (see rewards.ts).
   chipsOnly?: boolean
+  // Set when this hand was doubled via the standard, token-free Double (doubleDown),
+  // as opposed to the paid Late double powerup. Winning a free-doubled hand earns a
+  // score boost (see run.ts FREE_DOUBLE_SCORE_BONUS).
+  freeDoubled?: boolean
 }
 
 export interface Round {
@@ -156,12 +160,12 @@ export function doubleDown(round: Round): Round {
   if (activeHand(round).cards.length !== 2) {
     throw new Error('can only double on the first two cards')
   }
-  return applyDouble(round)
+  return applyDouble(round, true)
 }
 
 export function lateDouble(round: Round): Round {
   requirePlayerTurn(round)
-  return applyDouble(round)
+  return applyDouble(round, false)
 }
 
 export function split(round: Round): Round {
@@ -298,7 +302,7 @@ function finalizeSplitHand(hand: PlayerHand, splittingAces: boolean): PlayerHand
   return hand
 }
 
-function applyDouble(round: Round): Round {
+function applyDouble(round: Round, free: boolean): Round {
   const active = activeHand(round)
   const cards = [...active.cards, round.shoe[round.drawIndex]]
   const busted = isBust(cards)
@@ -307,6 +311,7 @@ function applyDouble(round: Round): Round {
     cards,
     bet: active.bet * 2,
     doubled: true,
+    freeDoubled: free,
     finished: true,
     busted,
     outcome: busted ? 'bust' : null,

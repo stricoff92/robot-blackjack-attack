@@ -53,6 +53,12 @@ export function isRgbDealer(shiftIndex: number): boolean {
   return shiftIndex >= RGB_DEALER
 }
 
+// The fixed dealers' colour kits are constant per shiftIndex, but dealerColors is
+// called several times per frame (deck colour, bowtie, spawn cross-fade), so they're
+// built once and reused. The RGB dealer is time-varying and never cached here. Bounded
+// naturally: only the handful of fixed dealer indices ever land in this map.
+const fixedColorsCache = new Map<number, DealerColors>()
+
 // The colour kit for the dealer at `shiftIndex` (1-based). `now` only matters for
 // the RGB dealer, whose colour advances with time.
 export function dealerColors(shiftIndex: number, now: number): DealerColors {
@@ -70,12 +76,18 @@ export function dealerColors(shiftIndex: number, now: number): DealerColors {
       back: rgbDeck(deckRgb, `rgb${step}`, 1, RGB_DEALER * 2654435761),
     }
   }
+  const cached = fixedColorsCache.get(shiftIndex)
+  if (cached) {
+    return cached
+  }
   const hue = DEALER_HUES[clampIndex(shiftIndex)]
-  return {
+  const colors: DealerColors = {
     bowtie: bowtie(hue),
     bowtieKnot: bowtieKnot(hue),
     back: deckColors(hue, `d${shiftIndex}`, techFor(shiftIndex), shiftIndex * 2654435761),
   }
+  fixedColorsCache.set(shiftIndex, colors)
+  return colors
 }
 
 // How advanced the dealer's board looks: dealer 1 is crudest (0), the last fixed

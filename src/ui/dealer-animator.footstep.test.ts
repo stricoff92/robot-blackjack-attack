@@ -69,4 +69,36 @@ describe('walk-in footsteps', () => {
     }
     expect(steps).toHaveLength(0)
   })
+
+  it('the game-over walk-off strides off with WALK_STEPS footsteps', () => {
+    const anim = new DealerAnimation()
+    const t0 = 8000
+    anim.walkOff(t0)
+    expect(stepTimes(anim, t0)).toHaveLength(WALK_STEPS)
+  })
+})
+
+describe('game-over walk-off', () => {
+  it('stands until the start, then leaves the screen, then is gone', () => {
+    const anim = new DealerAnimation()
+    const t0 = 8000
+    anim.walkOff(t0)
+    // Before it starts: standing in place (alive, no leave progress yet).
+    expect(anim.alive(t0 - 100)).toBe(true)
+    expect(anim.leaving(t0 - 100)).toBeNull()
+    // Striding off: leave progress ramps 0 → 1, still alive/on-screen.
+    expect(anim.leaving(t0)).toBeCloseTo(0, 6)
+    expect(anim.leaving(t0 + KILL_ARRIVE_MS / 2)).toBeCloseTo(0.5, 2)
+    expect(anim.alive(t0 + KILL_ARRIVE_MS / 2)).toBe(true)
+    // Once it clears the edge: gone (not drawn), no leave progress.
+    expect(anim.alive(t0 + KILL_ARRIVE_MS + 1)).toBe(false)
+    expect(anim.leaving(t0 + KILL_ARRIVE_MS + 1)).toBeNull()
+  })
+
+  it('is not a walk-IN — arriving() never fires during a walk-off', () => {
+    const anim = new DealerAnimation()
+    anim.walkOff(2000)
+    expect(anim.arriving(2000 + KILL_ARRIVE_MS / 2)).toBeNull()
+    expect(anim.isArriving(2000 + KILL_ARRIVE_MS / 2)).toBe(false)
+  })
 })

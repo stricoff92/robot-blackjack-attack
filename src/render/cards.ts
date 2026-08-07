@@ -9,7 +9,9 @@ import type { Card } from '../game/deck'
 import { evaluateHand } from '../game/hand'
 import { isDealerHijacked, type Round } from '../game/round'
 import { activeCardBack, blitCard, getCardSprite } from './card-sprite'
+import { deviceDpr } from './canvas'
 import { smoothEnd3, smoothStart2, smoothStep } from './easing'
+import { blitGlowLabel, getGlowLabelSprite } from './holo-text-sprite'
 import type { HoloRayTarget } from './nexus'
 import type { CardBack } from './palette'
 import { dealerBox, feltTopEdgeY, type Layout } from './scene'
@@ -748,16 +750,12 @@ export function drawHoloText(
   style: HoloTextStyle,
   now: number,
 ): void {
-  ctx.save()
-  ctx.globalAlpha *= holoFlicker(now)
-  ctx.shadowColor = style.glow
-  ctx.shadowBlur = size * 0.5
-  ctx.fillStyle = style.bloom
-  ctx.fillText(text, x, y)
-  ctx.shadowBlur = size * 0.14
-  ctx.fillStyle = style.core
-  ctx.fillText(text, x, y)
-  ctx.restore()
+  // The glow (two shadowBlur passes) is expensive and identical frame to frame, so it's
+  // baked into a cached sprite; only the per-frame holoFlicker pulse stays live, applied
+  // as the blit alpha on top of the caller's current globalAlpha. The caller's font +
+  // alignment + baseline are read straight off the context, exactly as fillText used them.
+  const sprite = getGlowLabelSprite(text, ctx.font, size, style, ctx.textAlign, ctx.textBaseline, deviceDpr())
+  blitGlowLabel(ctx, sprite, x, y, holoFlicker(now))
 }
 
 // One tossed card's flip + fly progress; produced by the mulligan animator (ui)
