@@ -47,10 +47,15 @@ import {
 //      risk-weighted accumulator (comboGain: safe hit +0.01, riskier hits more) that
 //      multiplies won hands + kills at x1..x2. hitPoints removed.
 // v22: clean-kill bonus removed (it was invisible to the player) — the kill bounty is now
-//      just 1000 × dealer × combo, no per-loss decay. lossesThisDealer dropped.
+//      just 400 × dealer × combo, no per-loss decay. lossesThisDealer dropped.
 // v23: the combo now resets on ANY lost hand (all hands, on a split), not just a bust —
 //      so safe play (standing to protect the streak) no longer hoards the multiplier.
-export const RULES_VERSION = 23
+// v24: points rescaled for a tighter (mobile-friendly) score ceiling — the per-dealer
+//      scoreMultiplier curve is flattened (was 1..5.5, now 1..1.7) since bet size already
+//      grows ~40x across dealers, so the multiplier no longer needs to do the heavy lifting;
+//      and the kill bounty base drops 1000 -> 400 so bounties don't dominate the smaller
+//      totals. Blackjack still scores via chips (3:2 + upgrades), deliberately unchanged.
+export const RULES_VERSION = 24
 export const STARTING_CHIPS = 300
 // The run is won by destroying this many dealers; there is no dealer beyond it.
 export const TOTAL_DEALERS = 6
@@ -81,7 +86,7 @@ export function comboGain(bustChance: number): number {
   return COMBO_GAIN_FLOOR + risk * COMBO_GAIN_SLOPE
 }
 
-const DESTRUCTION_SCORE_BASE = 1000
+const DESTRUCTION_SCORE_BASE = 400
 const HAND_BET_STEP = 0.5
 // On a kill, seed the next dealer's bankroll with this many of its minimum bets,
 // so the escalating min-bet ladder stays survivable instead of starving the run.
@@ -188,11 +193,11 @@ export interface RunState {
 // so a stumble against it costs progress, not just chips.
 const SHIFT_TABLE: readonly Shift[] = [
   { index: 1, minBet: 20, maxBet: 200, scoreMultiplier: 1.0, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
-  { index: 2, minBet: 40, maxBet: 350, scoreMultiplier: 1.5, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
-  { index: 3, minBet: 80, maxBet: 550, scoreMultiplier: 2.0, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
-  { index: 4, minBet: 160, maxBet: 850, scoreMultiplier: 3.0, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
-  { index: 5, minBet: 320, maxBet: 1700, scoreMultiplier: 4.0, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
-  { index: 6, minBet: 640, maxBet: 2750, scoreMultiplier: 5.5, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
+  { index: 2, minBet: 40, maxBet: 350, scoreMultiplier: 1.1, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
+  { index: 3, minBet: 80, maxBet: 550, scoreMultiplier: 1.2, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
+  { index: 4, minBet: 160, maxBet: 850, scoreMultiplier: 1.35, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
+  { index: 5, minBet: 320, maxBet: 1700, scoreMultiplier: 1.5, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
+  { index: 6, minBet: 640, maxBet: 2750, scoreMultiplier: 1.7, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
 ]
 
 export function startRun(seed: number): RunState {
@@ -388,7 +393,7 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     // reset the tally for the next dealer.
     tokenInflation += inflationIncrement(shift, tokensThisShift, inflationResistanceFor(run.upgrades))
     tokensThisShift = 0
-    // Base bounty (1000 × dealer), scaled by the current combo — a kill lands on a won
+    // Base bounty (400 × dealer), scaled by the current combo — a kill lands on a won
     // hand, so the streak still applies.
     const bounty = DESTRUCTION_SCORE_BASE * shiftIndex
     score += Math.round(bounty * combo)

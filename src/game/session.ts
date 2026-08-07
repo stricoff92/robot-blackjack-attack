@@ -1,5 +1,5 @@
 import { createShoe, shuffle, type Card, type Rank } from './deck'
-import { cardValue } from './hand'
+import { cardValue, isBlackjack } from './hand'
 import { bustChanceOnHit, computeAnalysis, type Analysis, type Knowledge } from './odds'
 import { POWERUPS, type PowerupId } from './powerups'
 import { createRng, type Rng } from './random'
@@ -180,7 +180,7 @@ export class Session {
       return
     }
     const bet = nextBet(this.run)
-    const shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
+    const shoe = this.shuffleShoe()
     if (this.forcePairs) {
       forcePlayerPair(shoe, this.forcePairRank)
     }
@@ -203,6 +203,24 @@ export class Session {
     } else {
       this.phase = 'playing'
     }
+  }
+
+  // Shuffle a fresh 6-deck shoe for the deal. Dealer 1 carries an invisible guard rail:
+  // if the shuffle would deal the dealer a natural blackjack (an opening two-card 21 —
+  // shoe[2]+shoe[3] — that the player can't out-win), the shoe is discarded and reshuffled
+  // until it doesn't, so the very first dealer never opens on an unbeatable natural (see the
+  // rules doc §2). Later dealers get an honest shuffle. Reshuffling only advances the deal
+  // RNG, so the run stays fully deterministic for its seed. A natural is rare (~4.8%), so
+  // this almost never reshuffles more than once and can't loop forever (the shoe always has
+  // non-natural openings). Runs before the dev switches so forceDealerNatural still wins.
+  private shuffleShoe(): Card[] {
+    let shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
+    if (this.run.shiftIndex === 1) {
+      while (isBlackjack([shoe[2], shoe[3]])) {
+        shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
+      }
+    }
+    return shoe
   }
 
   hit(): void {

@@ -32,6 +32,13 @@ const EYE_OFF = '#2a0d0d' // dark socket shown when a flickering eye blinks off
 const BROW = '#232838'
 const HOOD = '#070a10'
 const GRILLE = '#0b0e15'
+// Victorian bullion-gold epaulets on the final dealer's shoulders. A metallic ramp
+// (bright crown → deep shadow) reads as polished brass against the dark figure, with
+// a near-black edge so the gold separates cleanly from the torso.
+const EPAULET_HI = '#f8e58c'
+const EPAULET_MID = '#cfa63c'
+const EPAULET_LO = '#7d5e18'
+const EPAULET_EDGE = '#4f3d10'
 
 // The walk-in gait: the figure takes this many steps crossing from the edge to its
 // spot, dipping (bobbing DOWN) once per footfall. The footfalls are evenly spaced in
@@ -50,6 +57,11 @@ export interface DealerView {
   // Take-damage reaction: a white flash (0..1) and a small positional jitter.
   // shakeX/shakeY are in headR-fraction units — the renderer scales by headR.
   hit(now: number): { flash: number; shakeX: number; shakeY: number }
+  // Ambient low-health tremor: a small positional shudder (headR-fraction units, like
+  // hit's shake) that fades in below 50% health and grows stronger + longer toward death.
+  // Fires on an organic, un-scheduled cadence, capped at ~1/sec. Zero when healthy or
+  // mid-transition (death / walk-in / walk-off).
+  tremor(now: number): { x: number; y: number }
   // Death fall-apart progress (0..1), or null when not dying.
   dying(now: number): number | null
   // Walk-in progress (0..1), or null when not arriving.
@@ -114,9 +126,11 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
     const bob = Math.abs(Math.sin(leaving * Math.PI * WALK_STEPS)) * d.headR * WALK_BOB
     ctx.translate(travel * slide, bob)
   }
-  // Take-damage jitter (small; applied after the walk-in translate). The animator
-  // reports shake in headR-fraction units, so scale it to pixels here.
-  ctx.translate(hit.shakeX * d.headR, hit.shakeY * d.headR)
+  // Take-damage jitter + the ambient low-health tremor (both small, applied after the
+  // walk-in translate). The animator reports both in headR-fraction units, so scale to
+  // pixels here. The tremor is zero mid-transition, so this stays a no-op during a walk-in.
+  const tremor = view.tremor(now)
+  ctx.translate((hit.shakeX + tremor.x) * d.headR, (hit.shakeY + tremor.y) * d.headR)
 
   // The bowtie's colour is this dealer's identity (RGB dealers shimmer with `now`).
   const shift = view.figureShift(now)
@@ -178,24 +192,17 @@ function drawFigure(
 ): void {
   ctx.save()
 
-  // The final dealer carries a heavier frame: a wider torso under a broad shoulder
-  // yoke that juts past it, for an imposing, hulking silhouette. The head, eyes, and
-  // laser/heal impact all stay head-anchored (unchanged), so only the body bulks up.
-  const widen = imposing ? d.headR * 0.42 : 0
-  const bodyLeft = d.bodyLeft - widen
-  const bodyRight = d.bodyRight + widen
-
   ctx.fillStyle = TORSO
   ctx.beginPath()
-  ctx.roundRect(bodyLeft, d.bodyTop, bodyRight - bodyLeft, d.baseY - d.bodyTop, d.headR * 0.18)
+  ctx.roundRect(d.bodyLeft, d.bodyTop, d.bodyRight - d.bodyLeft, d.baseY - d.bodyTop, d.headR * 0.18)
   ctx.fill()
 
   if (imposing) {
-    const overhang = d.headR * 0.4
-    const yokeH = d.headR * 0.78
-    ctx.beginPath()
-    ctx.roundRect(bodyLeft - overhang, d.bodyTop, bodyRight - bodyLeft + overhang * 2, yokeH, d.headR * 0.28)
-    ctx.fill()
+    // The final dealer wears ceremonial epaulets — an old-guard officer. Anchored well
+    // inboard of the torso's top corners so the pair sits close together across the
+    // shoulders rather than flaring out to the arms.
+    const shoulderInset = d.headR * -0.16
+    drawEpaulets(ctx, d, d.bodyLeft + shoulderInset, d.bodyRight - shoulderInset, d.bodyTop)
   }
 
   ctx.fillStyle = HEAD
@@ -351,6 +358,86 @@ function drawBowtie(ctx: CanvasRenderingContext2D, d: DealerBox, bowtie: string,
   ctx.roundRect(d.cx - knot, cy - knot, knot * 2, knot * 2, knot * 0.4)
   ctx.fill()
   ctx.restore()
+}
+
+// Old-school Victorian dress epaulets on each shoulder of the imposing final dealer:
+// a gold shoulder board capped at its outer end by an oval crescent, with a skirt of
+// bullion fringe (many thin hanging gold strands) beneath it. Mirrored per side.
+// `leftX`/`rightX` are the shoulder anchor points, `topY` the torso top edge — the
+// epaulets ride on those corners.
+function drawEpaulets(ctx: CanvasRenderingContext2D, d: DealerBox, leftX: number, rightX: number, topY: number): void {
+  drawEpaulet(ctx, d.headR, -1, leftX, topY)
+  drawEpaulet(ctx, d.headR, 1, rightX, topY)
+}
+
+// One epaulet. `sx` is the side (-1 left, +1 right); `shoulderX` the shoulder anchor on
+// that side; `topY` the torso top. The board runs INWARD (toward the neck) from the
+// crescent, which sits at the outer shoulder point with the fringe hanging beneath it.
+function drawEpaulet(ctx: CanvasRenderingContext2D, r: number, sx: number, shoulderX: number, topY: number): void {
+  const boardLen = r * 0.66
+  const boardH = r * 0.3
+  const boardTop = topY - r * 0.02
+  const outerX = shoulderX + sx * r * 0.06 // cap a touch past the shoulder point
+  const innerX = shoulderX - sx * boardLen // run inward toward the collar
+  const left = Math.min(outerX, innerX)
+  const width = Math.abs(outerX - innerX)
+
+  // Metallic ramp, cached per size. Coords are baked in the figure's local space; the
+  // whole dealer is translated as a unit during walk-in/tremor, so the sheen tracks it.
+  const grad = cachedGradient(ctx, `epaulet:${Math.round(r)}:${Math.round(boardTop)}`, (c) => {
+    const g = c.createLinearGradient(0, boardTop, 0, boardTop + boardH + r * 0.6)
+    g.addColorStop(0, EPAULET_HI)
+    g.addColorStop(0.42, EPAULET_MID)
+    g.addColorStop(1, EPAULET_LO)
+    return g
+  })
+
+  // The crescent is a flattened oval (wider than tall) — the classic epaulet pad, not
+  // a ball. Its half-width bounds the fringe so no strand ever pokes out past it.
+  const crescentCX = shoulderX - sx * r * 0.16
+  const crescentCY = boardTop + boardH * 0.5
+  const crescentRX = r * 0.42
+  const crescentRY = r * 0.28
+
+  // Bullion fringe first, so the board + crescent overlap the strand tops (the fringe
+  // reads as spilling out from under the crescent). Many thin strands; a gentle length
+  // arch (longest in the middle) skirts the bottom. The span stays well inside the
+  // oval's half-width so the outermost strands hang UNDER it, never beyond its edge.
+  ctx.fillStyle = grad
+  const strands = 11
+  const fringeSpan = crescentRX * 2 * 0.78
+  const fringeW = r * 0.028
+  const fringeTop = crescentCY + crescentRY * 0.4
+  for (let i = 0; i < strands; i++) {
+    const t = i / (strands - 1)
+    const fx = crescentCX - fringeSpan / 2 + t * fringeSpan
+    const len = r * 0.48 * (0.7 + 0.3 * Math.sin(t * Math.PI))
+    ctx.beginPath()
+    ctx.roundRect(fx - fringeW / 2, fringeTop, fringeW, len, fringeW * 0.5)
+    ctx.fill()
+  }
+
+  ctx.strokeStyle = EPAULET_EDGE
+  ctx.lineWidth = Math.max(1, r * 0.03)
+
+  // The shoulder board (strap).
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.roundRect(left, boardTop, width, boardH, boardH * 0.45)
+  ctx.fill()
+  ctx.stroke()
+
+  // The oval crescent at the outer end.
+  ctx.beginPath()
+  ctx.ellipse(crescentCX, crescentCY, crescentRX, crescentRY, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.stroke()
+
+  // A bright button/pip fastening the crescent's centre.
+  ctx.fillStyle = EPAULET_HI
+  ctx.beginPath()
+  ctx.arc(crescentCX, crescentCY, crescentRY * 0.34, 0, Math.PI * 2)
+  ctx.fill()
 }
 
 // A white additive over-exposure of the figure on impact, fading with `flash`.

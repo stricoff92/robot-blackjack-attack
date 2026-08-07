@@ -104,11 +104,11 @@ describe('startRun', () => {
 
 describe('getShift', () => {
   it('reads the fixed ladder for early shifts', () => {
-    expect(getShift(4)).toMatchObject({ minBet: 160, maxBet: 850, scoreMultiplier: 3 })
+    expect(getShift(4)).toMatchObject({ minBet: 160, maxBet: 850, scoreMultiplier: 1.35 })
   })
 
   it('extrapolates prototype units beyond the table', () => {
-    expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, scoreMultiplier: 7, maxIntegrity: 265 })
+    expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, scoreMultiplier: 3.2, maxIntegrity: 265 })
   })
 })
 
@@ -355,12 +355,12 @@ describe('combo multiplier on resolved hands (score)', () => {
 
   it('multiplies the kill bounty by the current combo', () => {
     // A dealer 1 on exactly the damage a beat-17 win deals (22), so this win destroys it.
-    // Bounty = 1000 × dealer 1, x1.5 combo = 1500; the +10 chip win adds
-    // round(10 * 1.5) = 15 → 1515.
+    // Bounty = 400 × dealer 1, x1.5 combo = 600; the +10 chip win adds
+    // round(10 * 1.5) = 15 → 615.
     const nearDead = { ...startRun(1), integrity: 22, combo: 0.5 }
     const run = applyRound(nearDead, standWin(10))
     expect(run.kills).toEqual([1])
-    expect(run.score).toBe(1515)
+    expect(run.score).toBe(615)
   })
 
   it('keeps the combo on a won or pushed hand, wipes it on a lost hand', () => {

@@ -34,6 +34,11 @@ const HEAD: HoloTextStyle = { glow: 'rgba(150, 245, 245, 0.95)', bloom: 'rgba(17
 const AMBER: HoloTextStyle = { glow: 'rgba(255, 198, 110, 0.92)', bloom: 'rgba(255, 206, 125, 0.5)', core: 'rgba(255, 238, 195, 0.86)' }
 const DIM: HoloTextStyle = { glow: 'rgba(120, 220, 230, 0.7)', bloom: 'rgba(120, 220, 230, 0.34)', core: 'rgba(180, 236, 240, 0.66)' }
 
+// The gap between a row's label and its right-aligned value, in multiples of the row font
+// size (≈ 4 monospace characters). Enough to read as a table, without the cavern the old
+// fixed-fraction column stretched between the short labels and shorter values.
+const LABEL_VALUE_GAP = 2.5
+
 // Monospace so the rows line up like a terminal readout.
 function monoFont(px: number, weight = 700): string {
   return `${weight} ${px}px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace`
@@ -63,8 +68,26 @@ export function drawScoreSheet(
   const scale = Math.min(l.width, l.height)
   const titlePx = clamp(scale * 0.03, 16, 28)
   const rowPx = clamp(scale * 0.02, 12, 19)
-  // The row column width: labels left-aligned, values right-aligned within it.
-  const contentW = Math.min(l.width * 0.7, 360)
+  // Size the row column to its CONTENT — the widest label, a readable gap, the widest value
+  // — rather than a fixed slab of screen width. The old fixed column (70% of width) left a
+  // cavern between the short labels and shorter values, and on mobile pushed the board's
+  // right edge up against the mid-right table nexus, so the holo lens raked its rays across
+  // a box that nearly touched it. A snug column both closes that gap and pulls the right
+  // edge inward, clear of the nexus, so the projected ray fan reads cleanly. Widths are
+  // measured at the unscaled rowPx/titlePx — text width scales linearly, so the ×f below
+  // stays exact. The column also stays wide enough to span the centred heading (so its ray
+  // fan covers the whole readout), and is capped so it can't clip on a very narrow screen.
+  ctx.font = monoFont(rowPx)
+  let labelW = 0
+  let valueW = 0
+  for (const row of readout.rows) {
+    labelW = Math.max(labelW, ctx.measureText(row.label).width)
+    valueW = Math.max(valueW, ctx.measureText(row.value).width)
+  }
+  ctx.font = monoFont(titlePx, 800)
+  const titleW = ctx.measureText(readout.title).width
+  const rowsW = labelW + rowPx * LABEL_VALUE_GAP + valueW
+  const contentW = Math.min(Math.max(rowsW, titleW), l.width * 0.9, 360)
 
   // Vertical budget: the heading block, a gap, then the label/value rows. Shrink to fit
   // the band so it never spills into the counts.

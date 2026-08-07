@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { isBlackjack } from './hand'
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
@@ -236,6 +237,64 @@ describe('Session', () => {
       if (snap.phase === 'playing') {
         expect(canSplit(snap.round!)).toBe(true)
       }
+    })
+  })
+
+  describe('Dealer 1 natural-blackjack guard rail', () => {
+    // The dealer's opening two cards; startRound seeds round.dealer as [shoe[2], shoe[3]]
+    // and only appends to it when the dealer draws, so the first two are always the deal.
+    const openingDealerCards = (session: Session) => session.snapshot().round!.dealer.slice(0, 2)
+
+    it('never deals Dealer 1 a natural blackjack, on any seed', () => {
+      // ~4.8% of honest shuffles open on a dealer natural, so across this many first
+      // deals a broken guard rail would surface dozens — this asserts none do.
+      for (let seed = 1; seed <= 800; seed += 1) {
+        const session = new Session(seed)
+        session.deal()
+        expect(isBlackjack(openingDealerCards(session))).toBe(false)
+      }
+    })
+
+    it('holds the guard across every hand of the Dealer 1 fight', () => {
+      // Play a single run's worth of hands while it stays on Dealer 1 — each deal
+      // reshuffles, so the guard has to fire on every one, not just the first.
+      const session = new Session(4242)
+      for (let hand = 0; hand < 40; hand += 1) {
+        const snap = session.snapshot()
+        if (snap.phase === 'over' || snap.run.shiftIndex !== 1) break
+        if (snap.phase === 'betting') {
+          session.deal()
+          expect(isBlackjack(openingDealerCards(session))).toBe(false)
+          continue
+        }
+        if (snap.phase === 'resolved') {
+          session.nextHand()
+          continue
+        }
+        session.stand()
+      }
+    })
+
+    it('leaves later dealers unguarded — a Dealer 2 natural is still possible', () => {
+      // The rail is Dealer 1 only. Jump straight to Dealer 2 and confirm at least one
+      // seed opens on an (honest) dealer natural, proving the guard doesn't leak past D1.
+      let sawNatural = false
+      for (let seed = 1; seed <= 300 && !sawNatural; seed += 1) {
+        const session = new Session(seed, { startDealer: 2 })
+        session.deal()
+        if (isBlackjack(openingDealerCards(session))) {
+          sawNatural = true
+        }
+      }
+      expect(sawNatural).toBe(true)
+    })
+
+    it('stays deterministic — the same seed reshuffles to the same guarded shoe', () => {
+      const a = new Session(4242)
+      const b = new Session(4242)
+      a.deal()
+      b.deal()
+      expect(a.snapshot().round!.shoe).toEqual(b.snapshot().round!.shoe)
     })
   })
 })

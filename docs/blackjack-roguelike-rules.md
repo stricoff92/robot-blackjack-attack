@@ -8,6 +8,8 @@ A solo, free-to-play web game. You sit down across from a machine that deals bla
 >
 > Keep the riff at the name level. Don't reproduce the pastel-and-dolphins look or license anything near that soundtrack — a nod is fine, a costume is a takedown.
 
+> **Revision note (2026-08-07, first-dealer guard rail).** Added an invisible guard rail on **Dealer 1**: it can never be dealt a **natural blackjack** (§2). When the shoe is shuffled for a Dealer 1 hand, a shuffle whose opening deal would hand the dealer a two-card 21 is silently discarded and reshuffled until it doesn't — so a brand-new run can't lose its first hand to an unbeatable natural before the player has done anything. The rail is Dealer 1 only; every later dealer shuffles honestly. Reshuffling only advances the seeded deal RNG, so runs stay fully deterministic and reproducible (§13). No resolution or reward maths changed, so `RULES_VERSION` is untouched.
+>
 > **Revision note (2026-08-06, bet-ladder + peek pass).** Playtest still showed a player reaching the end too reliably, so two levers tightened:
 > - **Min-bet ladder doubled per dealer** (§3): 10/15/25/40/90/150 → **20/40/80/160/320/640**, with the wealth floor steepened to 0/10/12/15/18/**25%**. Max bets held at 200–2,750, so the bet *range* compresses on the later dealers. Thinner 300-chip bankroll + higher variance = more bust-outs, hardest early where runs actually end. The per-kill grant (3× the next min, §4) rises with it, so the floor climbs without starving the run.
 > - **Peek Dealer 60 → 150** (§7): repriced to parity with Peek Deck — hole-card knowledge shapes every decision of the hand, the single biggest EV leak in basic strategy, so it earns the top tier rather than a discount. `RULES_VERSION` → 13.
@@ -88,6 +90,8 @@ Standard, with the fiddly bits trimmed:
 - Split up to three times (four hands max); split aces receive one card each and cannot be re-split
 - **No insurance.** It's a trap bet that teaches nothing and clutters the UI
 - **No surrender** at baseline (see Open Questions)
+
+**Dealer 1 never draws a natural blackjack — an invisible guard rail.** A fresh run shouldn't be able to lose its very first hand to a dealt dealer 21 before the player has made a single decision, so the first dealer is quietly protected: whenever the shoe is shuffled for a Dealer 1 hand, a shuffle whose opening deal would give the dealer a two-card natural is discarded and reshuffled until it doesn't. The player is never told — it just never happens on Dealer 1. It applies to *every* Dealer 1 hand (each is a fresh shuffle), and to Dealer 1 only; every dealer from 2 on shuffles honestly and can open on a natural. Because reshuffling merely advances the same seeded deal RNG, the run stays fully deterministic and reproducible (§13). (A dealer *hitting* to 21 is untouched — this rail is only about the two-card natural, the one blackjack a player can't out-draw.)
 
 *(The engine keeps these as configurable `RoundRules` — e.g. dealer-hits-soft-17, 6:5 payout — but the defaults above are the only ones in play. Roguelike upgrades (§8) can bend some of them mid-run: the Payout path raises the blackjack rate (2:1, then 3:1) and later pays pushes out to the player, and the Sabotage path rewrites how the dealer's natural — and any dealer 21 — resolves.)*
 

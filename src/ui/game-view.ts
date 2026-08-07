@@ -13,8 +13,8 @@ import type { LayeredCanvas } from '../render/canvas'
 import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawTableMarkings } from '../render/chips'
+import { drawDamageFx } from '../render/damage-fx'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
-import { drawHealthBar } from '../render/health'
 import { drawHoloRays, drawStrikeFx, nexusYellowLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
@@ -28,7 +28,6 @@ import { CountTicker } from './count-ticker'
 import { BustBlockAnimation } from './bust-block-animator'
 import { DealAnimation } from './deal-animator'
 import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS, STRIKE_TRAVEL_MS } from './dealer-animator'
-import { HealthAnimation } from './health-animator'
 import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
 import { NexusAnimation } from './nexus-animator'
@@ -57,13 +56,12 @@ const UPGRADE_ICONS: Record<UpgradePath, string> = {
 // and the felt/rail ('table') so the rail overlaps its lower body (and death
 // debris) — it reads as standing behind the table. Chips sit ABOVE cards so
 // flying chips (deal / payout) pass in front of the cards; the bet chips rest in
-// the betting circle well below the cards, so nothing overlaps at rest. The HUD
-// (dealer health bar) sits above that. 'fx' carries the nexus laser strike (above
-// the table + cards, below the reward tokens that fly up to the counter). The
-// 'mask' layer is on top of everything: a darkness that the Analyze projection
-// lights through, and the dealer's emissive eye glow (the HTML button/counter
-// overlay sits above it, so those stay bright).
-const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'hud', 'fx', 'tokens', 'mask'] as const
+// the betting circle well below the cards, so nothing overlaps at rest. 'fx'
+// carries the nexus laser strike (above the table + cards, below the reward tokens
+// that fly up to the counter). The 'mask' layer is on top of everything: a darkness
+// that the Analyze projection lights through, and the dealer's emissive eye glow
+// (the HTML button/counter overlay sits above it, so those stay bright).
+const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'fx', 'tokens', 'mask'] as const
 
 // When a reward's tokens lift off, relative to the card motion settling
 // (anim.animEnd): a hit's token waits a short beat after its card lands, and a
@@ -164,7 +162,6 @@ class GameView {
   private readonly scene = new Scene()
   private readonly anim = new DealAnimation()
   private readonly chips = new ChipAnimation()
-  private readonly health = new HealthAnimation()
   private readonly dealer = new DealerAnimation()
   private readonly tokens = new TokenAnimation()
   private readonly mulligan = new MulliganAnimation()
@@ -384,10 +381,9 @@ class GameView {
     this.tokenTicker.set(this.displayedTokens(now()))
     this.bankrollTicker.set(this.displayedBankroll())
     this.scoreTicker.set(this.displayedScore())
-    // Seed the health bar + dealer to the opening integrity so a dealer that starts
-    // partway damaged (the dealerHealth dev override) shows the right fill and eye
-    // flicker from the first frame — the first deal doesn't sync them (no damage yet).
-    this.health.set(this.state.run.integrity, this.state.run.shiftIndex)
+    // Seed the dealer to the opening integrity so a dealer that starts partway damaged
+    // (the dealerHealth dev override) shows the right eye flicker + damage sparks from the
+    // first frame — the first deal doesn't sync it (no damage yet).
     this.dealer.setLevel(this.state.run.integrity, this.state.run.shiftIndex)
     // Seed the dealer's colour identity + the deck colour to the opening dealer (which
     // may be a later one via the `dealer` dev override), so the bowtie and card backs
@@ -457,7 +453,6 @@ class GameView {
     this.drawDealerFigure(canvas, layout, t)
     this.drawCards(canvas, layout, t)
     this.drawChips(canvas, layout, t)
-    this.drawHealth(canvas, layout, t)
     this.drawTokens(canvas, layout, t)
     this.drawMask(canvas, layout, t)
     this.drawFx(canvas, layout, t)
@@ -500,9 +495,28 @@ class GameView {
   }
 
   // The dealer layer: the animated robot figure, below the rail so its lower body
-  // and death debris tuck behind the table.
+  // and death debris tuck behind the table. A wounded dealer (< 75% health) also sparks
+  // and smokes here — the diegetic replacement for the old health bar — over the figure
+  // but still behind the rail, so downward sparks tuck away like the lower body does.
   private drawDealerFigure(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    drawDealer(canvas.layers.dealer.ctx, layout, this.dealer, timestamp)
+    const ctx = canvas.layers.dealer.ctx
+    drawDealer(ctx, layout, this.dealer, timestamp)
+    // Only while the figure is STANDING at its home spot — the burst origins are the
+    // resting figure, so sparks must not show while it's dying, walking in, or off.
+    if (this.dealerStanding(timestamp)) {
+      drawDamageFx(ctx, layout, this.dealer.damageBursts(timestamp))
+    }
+  }
+
+  // The dealer is upright at its mark (not mid-death, walk-in, or walk-off) — the only
+  // time the health-driven damage sparks track the figure, so the only time they draw.
+  private dealerStanding(now: number): boolean {
+    return (
+      this.dealer.alive(now) &&
+      this.dealer.dying(now) === null &&
+      this.dealer.arriving(now) === null &&
+      this.dealer.leaving(now) === null
+    )
   }
 
   // The fx layer: the floating nexus device body (hovering with the frame clock),
@@ -731,12 +745,13 @@ class GameView {
     return { readout: this.buildScore(), age: timestamp - this.scoreRevealAt }
   }
 
-  // The run summary the score screen shows: the final points, hands played, the win/loss
-  // tally (pushes count as neither), tokens spent on powerups, and successful free doubles.
+  // The run summary the score screen shows: the outcome heading (VICTORY on a win — every
+  // dealer beaten — else BANKRUPT), the final points, hands played, the win/loss tally
+  // (pushes count as neither), and tokens spent on powerups.
   private buildScore(): ScoreReadout {
     const run = this.state.run
     return {
-      title: 'GAME OVER',
+      title: run.won ? 'VICTORY' : 'BANKRUPT',
       rows: [
         { label: 'POINTS', value: String(run.score) },
         { label: 'HANDS PLAYED', value: String(run.handsPlayed) },
@@ -872,24 +887,6 @@ class GameView {
     const chips = this.bankrollTicker.value(timestamp)
     const chipsScale = this.bankrollTicker.scale(timestamp)
     this.frameProjections.push(...drawChips(ctx, layout, { chips, chipsScale, round }, this.chips, timestamp))
-  }
-
-  // The HUD layer: the dealer's vertical health bar, with the dealer-remaining
-  // pip column beside it. It's static at rest, so it only repaints on resize, on
-  // the animation loop, and once when things settle.
-  private drawHealth(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.hud.ctx
-    ctx.clearRect(0, 0, layout.width, layout.height)
-    // Dealers left to defeat, counting the one in front of the player — so the final dealer
-    // shows a single pip. (shiftIndex is 1-based and runs one past TOTAL_DEALERS on a win,
-    // hence the clamp to zero.) During a WIN game-over, shiftIndex has already advanced past
-    // the last dealer, but it's still on screen drawing out — hold its pip until the score
-    // screen shows (scoreRevealed), or the pips dropping to 0 would spoil the win early.
-    const dealersLeft =
-      this.state.run.won && this.state.phase === 'over' && !this.scoreRevealed
-        ? 1
-        : Math.max(0, TOTAL_DEALERS - this.state.run.shiftIndex + 1)
-    drawHealthBar(ctx, layout, this.health, timestamp, dealersLeft, TOTAL_DEALERS)
   }
 
   // The top layer: reward tokens flying up to the counter. Cleared and left blank
@@ -1197,7 +1194,6 @@ class GameView {
     const layout = computeLayout(canvas.width, canvas.height)
     this.drawCards(canvas, layout, timestamp)
     this.drawChips(canvas, layout, timestamp)
-    this.drawHealth(canvas, layout, timestamp)
     this.drawTokens(canvas, layout, timestamp)
     this.drawMask(canvas, layout, timestamp)
     this.drawDealerFigure(canvas, layout, timestamp)
@@ -1584,7 +1580,12 @@ class GameView {
   // out (spoiling the outcome). Until then they stay visible-but-disabled, like any resolving
   // hand. The actions column always stays so the New-run button can appear.
   private applyHudColumns(s: SessionState): void {
-    const modal = s.phase === 'choosing-upgrade' || this.specShownAt !== null
+    // Gate on the card being SHOWN (`upgradeShown`), not the raw `choosing-upgrade` phase:
+    // the phase flips the instant a kill resolves, but the card is deferred until the
+    // dealer's death settles — hiding on the phase would yank the columns away mid-death
+    // (jarring), so instead they stay visible-but-disabled through the death and vanish as
+    // the card slides in.
+    const modal = this.upgradeShown || this.specShownAt !== null
     const over = s.phase === 'over' && this.scoreRevealed
     this.powersEl.classList.toggle('is-hidden', modal || over)
     this.actionsEl.classList.toggle('is-hidden', modal)
@@ -1808,7 +1809,6 @@ class GameView {
         this.endShredDone = false
         this.scoreRevealAt = 0
         this.scoreRevealed = false
-        this.health.set(integrity, shiftIndex)
         this.dealer.setLevel(integrity, shiftIndex)
         this.dealer.setShift(shiftIndex)
         this.dealer.spawn(t) // a standalone walk-in (no preceding death)
@@ -1822,7 +1822,6 @@ class GameView {
         this.pendingAttack = null
         this.deckColorIncoming = null
         this.dealAfter = 0
-        this.health.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
         this.dealer.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
       }
     } else {
@@ -1916,8 +1915,8 @@ class GameView {
       if (healed && this.state.phase === 'resolved') {
         const healStart = this.anim.animEnd + HEAL_GAP
         this.nexus.heal(healStart)
-        this.health.heal(prevIntegrity, prevShift, integrity, shiftIndex, healStart)
-        // Steady the eye-flicker to the repaired level (a no-op unless it was low).
+        // Steady the eye-flicker + damage sparks to the repaired level (fewer/none as the
+        // dealer climbs back above the FX threshold).
         this.dealer.setLevel(integrity, shiftIndex)
         sfx.playHeal(Math.max(0, healStart - t) / 1000)
       }
@@ -2075,10 +2074,9 @@ class GameView {
   }
 
   // The front half of an upgrade-granting kill: the laser fires, the dealer breaks
-  // apart (no walk-in), the health bar drains, and the +40 bounty flies from the nexus —
-  // but the replacement is held back for playArrival. Returns when the figure is gone.
+  // apart (no walk-in), and the +40 bounty flies from the nexus — but the replacement is
+  // held back for playArrival. Returns when the figure is gone.
   private playDeath(fromI: number, fromS: number, toI: number, toS: number, startAfter: number): number {
-    this.health.drain(startAfter)
     this.dealer.sync(fromI, fromS, toI, toS, startAfter, false, false) // death only, no walk-in
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
@@ -2089,8 +2087,8 @@ class GameView {
   }
 
   // The back half of an upgrade-granting kill, run when the player picks: after a beat
-  // the replacement dealer walks in (its bar refilling), its mouth shreds the old cards
-  // + resting deck, and a fresh wrapped deck flies in. The next deal waits for it all.
+  // the replacement dealer walks in, its mouth shreds the old cards + resting deck, and a
+  // fresh wrapped deck flies in. The next deal waits for it all.
   private playArrival(t: number): void {
     const c = this.pendingCeremony!
     this.pendingCeremony = null
@@ -2099,7 +2097,6 @@ class GameView {
     this.dealer.setLevel(c.incomingIntegrity, c.incomingShift)
     this.dealer.setShift(c.incomingShift)
     this.dealer.spawn(walkInStart)
-    this.health.refill(c.incomingIntegrity, c.incomingShift, walkInStart)
     this.deckColorIncoming = null
     this.dealAfter = this.beginSpawn(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
@@ -2127,7 +2124,6 @@ class GameView {
   // counter never shows it — flying it would double-count against that withholding.
   private playAttack(fromI: number, fromS: number, toI: number, toS: number, startAfter: number, emitBounty = true): number {
     const final = this.state.run.won || toS > TOTAL_DEALERS
-    this.health.sync(fromI, fromS, toI, toS, startAfter)
     this.dealer.sync(fromI, fromS, toI, toS, startAfter, final)
     if (toS > fromS) {
       if (emitBounty) {

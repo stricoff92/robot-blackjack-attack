@@ -10,6 +10,7 @@
 // its drain/pause/refill to them (they can't drift apart).
 
 import { maxIntegrityFor } from '../game/run'
+import type { DamageBurstState } from '../render/damage-fx'
 import { arch2, smoothEnd2, smoothStart2 } from '../render/easing'
 import { WALK_STEPS, type DealerView } from '../render/dealer'
 import type { StrikeView } from '../render/nexus'
@@ -48,6 +49,31 @@ const DAMAGE_THRESHOLD = 0.33
 // Steady idle eye-glow; a hit flares it to full, death dims it to zero.
 const BASE_GLOW = 0.7
 
+// Diegetic damage FX (sparks + smoke bursting off the figure — the diegetic stand-in
+// for the removed health bar). Separate from the eye flicker: it begins EARLIER (below
+// FX_THRESHOLD, not DAMAGE_THRESHOLD) and its bursts fire faster as health nears zero.
+// Purely time-quantized — burst k fires at k·interval — so, like the flicker, it keeps
+// no particle state: a frame's bursts are a pure function of `now` (survives a resize,
+// the loop, and the frozen-clock probe).
+const FX_THRESHOLD = 0.75 // no sparks/smoke at or above 75% health
+const FX_MAX_INTERVAL = 1100 // ms between bursts just under the threshold (sparse)
+const FX_MIN_INTERVAL = 230 // ms between bursts near death (bursts stay distinct, not a stream)
+const FX_BURST_LIFE = 1200 // a burst is finished (dropped) once it ages past this
+
+// Damage tremors: intermittent whole-figure shudders that fade in below 50% health and get
+// MORE FREQUENT toward death (down to ~1/sec) — but every shudder shakes at the SAME,
+// always-noticeable magnitude. Damage reads through the RATE, not the strength: a faint
+// shudder isn't worth showing, so instead of scaling the amplitude down near the top we just
+// space the (full-strength) shudders further apart. Each fires as a short pulse on an
+// interval that scales LINEARLY with damage, its time nudged by a hashed jitter so the
+// cadence looks random, not metronomic. Pure function of `now` (matches the spark bursts).
+const TREMOR_THRESHOLD = 0.5 // no tremors at or above 50% health
+const TREMOR_MAX_INTERVAL = 4000 // ms between shudders just below 50% health (rare)
+const TREMOR_MIN_INTERVAL = 1200 // ms between shudders near death (the ~1/sec floor)
+const TREMOR_JITTER = 0.25 // each shudder's time is nudged ± this fraction of the interval (random-looking cadence)
+const TREMOR_PULSE_MS = 350 // how long one shudder lasts (a cos hump swells it in then out)
+const TREMOR_AMP = 0.11 // shudder magnitude in headR-fraction units — CONSTANT, so every one is clearly visible
+
 type Mode = 'none' | 'hit' | 'kill' | 'spawn' | 'walkoff'
 
 export class DealerAnimation implements DealerView, StrikeView {
@@ -63,7 +89,12 @@ export class DealerAnimation implements DealerView, StrikeView {
   private spawnStart = 0 // t0 for a standalone walk-in (page load / new run)
   private walkoffStart = 0 // t0 for the game-over walk-off (a loss: the dealer leaves)
   private seqEnd = 0 // when the active strike/hit/kill sequence is fully done
-  private level = 1 // settled health fraction (drives the low-health eye flicker)
+  private level = 1 // health fraction AFTER the pending strike lands (drives flicker/sparks/tremor)
+  // The FX show `prevLevel` until `levelAt`, then `level`: a deferred laser's health drop must
+  // NOT blank the sparks/tremor/flicker at the button click — they hold the old level right up
+  // until the beam strikes (`levelAt` = impact). See sync() / currentLevel().
+  private prevLevel = 1
+  private levelAt = 0
   // Colour identity: which dealer the settled figure is, plus the dealer it was
   // BEFORE the current kill (the one dying) — so figureShift() can flip the bowtie
   // colour to the replacement exactly when it walks in.
@@ -88,6 +119,9 @@ export class DealerAnimation implements DealerView, StrikeView {
     final = false,
     walkIn = true,
   ): void {
+    // Hold whatever level is showing now until the strike lands (levelAt), so a deferred
+    // laser doesn't blank the sparks/tremor/flicker the instant it's scheduled at the click.
+    this.prevLevel = this.level
     this.level = clamp01(Math.max(0, nextIntegrity) / maxIntegrityFor(nextShift))
 
     if (nextShift > prevShift) {
@@ -97,6 +131,7 @@ export class DealerAnimation implements DealerView, StrikeView {
       this.strikeStart = startAfter
       this.hitStart = startAfter + STRIKE_TRAVEL_MS
       this.killStart = startAfter
+      this.levelAt = this.hitStart // FX keep the old low level right up until the beam strikes
       // A death-only kill ends when the figure is gone; a bundled kill runs on through
       // the empty beat + the replacement's walk-in.
       this.seqEnd = startAfter + (walkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
@@ -109,6 +144,7 @@ export class DealerAnimation implements DealerView, StrikeView {
       this.mode = 'hit'
       this.strikeStart = startAfter
       this.hitStart = startAfter + STRIKE_TRAVEL_MS
+      this.levelAt = this.hitStart // the added damage shows when the beam lands, not at the click
       // Keep the loop alive until the slower of the hit effects and the brow
       // roll-back finishes (the deal gate stays on HIT_TOTAL_MS — see above).
       this.seqEnd = startAfter + Math.max(HIT_TOTAL_MS, STRIKE_TRAVEL_MS + BROW_FEAR_TOTAL_MS)
@@ -117,6 +153,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     // No damage this action (deal, loss, push): leave the figure idle.
     this.mode = 'none'
     this.seqEnd = 0
+    this.levelAt = 0 // no strike scheduled; prevLevel == level anyway
   }
 
   // Snap the settled health fraction to a given integrity without playing a hit —
@@ -125,6 +162,9 @@ export class DealerAnimation implements DealerView, StrikeView {
   // that dealer's max.
   setLevel(integrity: number, shift: number): void {
     this.level = clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
+    // An instant set (load / new run / heal / arrival): no strike to wait for.
+    this.prevLevel = this.level
+    this.levelAt = 0
   }
 
   // Snap the figure's colour identity to a given dealer without any death/walk-in —
@@ -203,7 +243,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     if (this.mode !== 'none' && now < this.seqEnd) {
       return true
     }
-    return this.damageIntensity() > 0
+    return this.damageIntensity(now) > 0
   }
 
   // True across the whole kill, so buttons stay disabled for the entire death →
@@ -221,6 +261,27 @@ export class DealerAnimation implements DealerView, StrikeView {
   // Used to hold the next deal until the laser + any death choreography finishes.
   isAttacking(now: number): boolean {
     return this.mode !== 'none' && now < this.seqEnd
+  }
+
+  // The damage bursts (sparks + smoke) erupting off the figure this frame: empty at or
+  // above FX_THRESHOLD health, otherwise one entry per burst still within its life window,
+  // firing faster as health nears zero. Time-quantized off `now` (no persisted state); the
+  // renderer draws each from its age + seed. The CALLER gates drawing on the figure
+  // standing at its home spot (not dying/arriving/leaving), so bursts never show detached
+  // during a transition — here we only report what the health level calls for.
+  damageBursts(now: number): DamageBurstState[] {
+    const power = this.damageFxIntensity(now)
+    if (power <= 0) {
+      return []
+    }
+    const interval = FX_MIN_INTERVAL + (FX_MAX_INTERVAL - FX_MIN_INTERVAL) * (1 - power)
+    const first = Math.max(0, Math.ceil((now - FX_BURST_LIFE) / interval))
+    const last = Math.floor(now / interval)
+    const bursts: DamageBurstState[] = []
+    for (let k = first; k <= last; k++) {
+      bursts.push({ age: now - k * interval, power, seed: k })
+    }
+    return bursts
   }
 
   // --- DealerView --------------------------------------------------------------
@@ -264,6 +325,54 @@ export class DealerAnimation implements DealerView, StrikeView {
       shakeX: Math.sin(p * Math.PI * 8) * amp,
       shakeY: Math.cos(p * Math.PI * 6) * amp * 0.6,
     }
+  }
+
+  // The ambient low-health tremor offset for this frame (headR-fraction units, summed with
+  // the hit shake by the renderer). Fires as discrete, always-noticeable pulses whose spacing
+  // shrinks with damage. Off above 50% health and mid-transition (death / walk-in / walk-off
+  // — the figure is moving as a whole then).
+  tremor(now: number): { x: number; y: number } {
+    if (this.dying(now) !== null || this.arriving(now) !== null || this.leaving(now) !== null) {
+      return NO_TREMOR
+    }
+    const power = this.tremorIntensity(now)
+    if (power <= 0) {
+      return NO_TREMOR
+    }
+    // Shudders fire as discrete pulses spaced by an interval that shrinks LINEARLY with
+    // damage. Each slot's pulse is nudged off `k·interval` by a hashed jitter, so check the
+    // nearest few slots to see whether one's pulse is live right now (they never overlap —
+    // the pulse is far shorter than the smallest interval).
+    const interval = TREMOR_MAX_INTERVAL + (TREMOR_MIN_INTERVAL - TREMOR_MAX_INTERVAL) * power
+    const k = Math.round(now / interval)
+    for (let kk = k - 1; kk <= k + 1; kk++) {
+      const center = (kk + TREMOR_JITTER * (latticeHash(kk) - 0.5)) * interval
+      const dt = now - center
+      if (Math.abs(dt) >= TREMOR_PULSE_MS / 2) {
+        continue
+      }
+      // Swell in then out over the pulse (a cos hump: 0 at the edges → 1 at the centre) so it
+      // ramps rather than popping on. The peak magnitude is CONSTANT — never scaled by health.
+      const env = 0.5 * (1 + Math.cos((dt / (TREMOR_PULSE_MS / 2)) * Math.PI))
+      const amp = TREMOR_AMP * env
+      // A fast rattle: two incommensurate sines per axis at different phases, so the figure
+      // shudders in a little Lissajous scribble rather than sliding along one line. y is
+      // damped (it rocks more side-to-side than up-down).
+      const rx = 0.5 * (Math.sin(now * 0.13) + Math.sin(now * 0.207 + 1.3))
+      const ry = 0.5 * (Math.sin(now * 0.11 + 2.1) + Math.sin(now * 0.233 + 4.7))
+      return { x: rx * amp, y: ry * amp * 0.7 }
+    }
+    return NO_TREMOR
+  }
+
+  // Tremor intensity, 0..1: 0 at/above 50% health, ramping linearly to 1 as it empties. Sets
+  // how far the shudder interval is compressed toward its ~1/sec floor (NOT the magnitude).
+  private tremorIntensity(now: number): number {
+    const level = this.currentLevel(now)
+    if (level >= TREMOR_THRESHOLD) {
+      return 0
+    }
+    return clamp01((TREMOR_THRESHOLD - level) / TREMOR_THRESHOLD)
   }
 
   // Scared-brow reaction (0 = resting angry brows, 1 = full worried tilt). Snaps up
@@ -440,14 +549,33 @@ export class DealerAnimation implements DealerView, StrikeView {
     return this.mode === 'hit' || this.mode === 'kill'
   }
 
-  // How badly the dealer's eyes are failing (0 = healthy, 1 = near death), from the
-  // settled health fraction: 0 at/above the damage threshold, ramping to 1 as it
+  // The health fraction the damage FX should reflect right now: the previously-shown level
+  // until a scheduled strike lands (`levelAt`), then the new level. This is what keeps a
+  // deferred laser's drop from blanking the effects at the click — they hold until impact.
+  private currentLevel(now: number): number {
+    return now >= this.levelAt ? this.level : this.prevLevel
+  }
+
+  // How badly the dealer's eyes are failing (0 = healthy, 1 = near death), from the health
+  // fraction currently in effect: 0 at/above the damage threshold, ramping to 1 as it
   // approaches empty. Drives both the flicker and whether the loop keeps ticking.
-  private damageIntensity(): number {
-    if (this.level <= 0 || this.level >= DAMAGE_THRESHOLD) {
+  private damageIntensity(now: number): number {
+    const level = this.currentLevel(now)
+    if (level <= 0 || level >= DAMAGE_THRESHOLD) {
       return 0
     }
-    return clamp01((DAMAGE_THRESHOLD - this.level) / DAMAGE_THRESHOLD)
+    return clamp01((DAMAGE_THRESHOLD - level) / DAMAGE_THRESHOLD)
+  }
+
+  // Damage-FX intensity, 0..1: 0 at/above FX_THRESHOLD, ramping to 1 as health empties.
+  // Sets the spark/smoke burst frequency + density. Unlike damageIntensity() (the eye
+  // flicker) it does NOT zero out at level 0 — a near-dead standing dealer sparks hardest.
+  private damageFxIntensity(now: number): number {
+    const level = this.currentLevel(now)
+    if (level >= FX_THRESHOLD) {
+      return 0
+    }
+    return clamp01((FX_THRESHOLD - level) / FX_THRESHOLD)
   }
 
   // Eye-flicker multiplier (0..1): 1 when healthy, an irregular on/off stutter once
@@ -456,7 +584,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // shallow dim. The signal is summed incommensurate sines (time-driven, so it
   // flickers smoothly rather than jittering per frame).
   private flicker(now: number): number {
-    const k = this.damageIntensity()
+    const k = this.damageIntensity(now)
     if (k <= 0) {
       return 1
     }
@@ -485,7 +613,16 @@ export class DealerAnimation implements DealerView, StrikeView {
 }
 
 const NO_HIT = { flash: 0, shakeX: 0, shakeY: 0 }
+const NO_TREMOR = { x: 0, y: 0 }
 
 function clamp01(t: number): number {
   return t < 0 ? 0 : t > 1 ? 1 : t
+}
+
+// Deterministic [0,1] hash of an integer slot — jitters each tremor pulse off its `k·interval`
+// slot so the cadence looks random rather than metronomic. `Math.sin` hashing (never
+// Math.random), a pure function of the slot index, matching the house effect style.
+function latticeHash(n: number): number {
+  const s = Math.sin(n * 127.1) * 43758.5453
+  return s - Math.floor(s)
 }
