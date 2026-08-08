@@ -71,7 +71,6 @@ export interface SessionState {
   round: Round | null
   phase: Phase
   peeked: boolean
-  foresightCard: Card | null
   /** Live Analyze readout, shown until the next action clears it. */
   analysis: Analysis | null
   /** Whether token abilities are locked — the Dealer 6 "honorable duel" (< 20% health). */
@@ -98,7 +97,6 @@ export class Session {
   private round: Round | null = null
   private phase: Phase = 'betting'
   private peeked = false
-  private foresightCard: Card | null = null
   private analysis: Analysis | null = null
   // The bust risk of the last surviving hit that paid points (see hit()); cleared by the
   // next move. Drives the UI's risk caption ("WHOA!"/"Lucky!"/"Nice").
@@ -168,7 +166,6 @@ export class Session {
       round: this.round,
       phase: this.phase,
       peeked: this.peeked,
-      foresightCard: this.foresightCard,
       analysis: this.analysis,
       abilitiesLocked: abilitiesLocked(this.run),
       lastHitRisk: this.lastHitRisk,
@@ -188,7 +185,6 @@ export class Session {
       forceDealerNaturalCards(shoe)
     }
     this.peeked = false
-    this.foresightCard = null
     this.analysis = null
     // Fold the run's unlocked upgrades AND the current dealer's house rules (late
     // dealers hit soft 17) into this round's rules.
@@ -267,16 +263,6 @@ export class Session {
     this.peeked = true
   }
 
-  buyForesight(): void {
-    if (!this.canBuy('foresight')) {
-      return
-    }
-    const round = this.requireRound()
-    this.analysis = null
-    this.run = spendTokens(this.run, this.costOf('foresight'))
-    this.foresightCard = round.shoe[round.drawIndex]
-  }
-
   // Read the odds and hold them in `analysis` until the next action clears them.
   // Blocked while a reading is already up, so it can't be paid for twice. Uses a
   // dedicated RNG so the simulation never touches the deal sequence.
@@ -286,13 +272,11 @@ export class Session {
     }
     const round = this.requireRound()
     this.run = spendTokens(this.run, this.costOf('analyze'))
-    // Fold in whatever the player has already peeked: the dealer's hole card
-    // (Peek Dealer) and/or the next card in the shoe (Peek Deck). Both sharpen the
-    // odds — a known hole is used outright, a known next card makes the outcome
-    // certain — so paying for more information buys a more accurate reading.
+    // Fold in the dealer's hole card if Peek Dealer has revealed it: a known hole
+    // is used outright instead of averaged over, so paying for more information
+    // buys a more accurate reading.
     const knowledge: Knowledge = {
       hole: this.peeked ? round.dealer[1] : null,
-      nextCard: this.foresightCard,
     }
     this.analysis = computeAnalysis(round, knowledge, this.analysisRandom)
   }
@@ -337,8 +321,6 @@ export class Session {
     }
     this.analysis = null
     this.run = spendTokens(this.run, this.costOf('mulligan'))
-    // The peeked next card is dealt into the fresh hand, so the stale preview clears.
-    this.foresightCard = null
     this.round = mulligan(this.requireRound())
     if (this.requireRound().status === 'resolved') {
       this.settle()
@@ -350,9 +332,6 @@ export class Session {
       return
     }
     this.analysis = null
-    // The returned card becomes the new top of the shoe, so any Peek Deck preview
-    // (which pointed at the old top) is now stale — drop it.
-    this.foresightCard = null
     this.run = spendTokens(this.run, this.costOf('return'))
     this.round = returnCard(this.requireRound())
     // Return auto-stands, which can hand the turn to the dealer and resolve the
@@ -392,7 +371,6 @@ export class Session {
     this.run = this.freshRun(seed)
     this.round = null
     this.peeked = false
-    this.foresightCard = null
     this.analysis = null
     this.lastHitRisk = null
     this.upgradePending = false
@@ -403,10 +381,9 @@ export class Session {
     if (this.phase !== 'playing') {
       return
     }
-    // Any player move dismisses a live Analyze reading (and the stale next-card
-    // preview) — the odds were only valid for the pre-move table. The prior hit's
-    // risk caption clears too (hit() re-sets it if THIS move is a surviving hit).
-    this.foresightCard = null
+    // Any player move dismisses a live Analyze reading — the odds were only valid
+    // for the pre-move table. The prior hit's risk caption clears too (hit()
+    // re-sets it if THIS move is a surviving hit).
     this.analysis = null
     this.lastHitRisk = null
     this.round = transition()

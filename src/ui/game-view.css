@@ -152,7 +152,7 @@
   cursor: pointer;
   box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
   pointer-events: auto;
-  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
   z-index: 4;
 }
 
@@ -200,6 +200,7 @@
   gap: 8px;
   max-width: 44vw;
   pointer-events: none;
+  transition: opacity 0.5s ease;
 }
 
 .hud-powerhint {
@@ -323,6 +324,7 @@
   justify-content: center;
   flex-wrap: wrap;
   padding: 0 12px;
+  transition: opacity 0.5s ease;
 }
 
 .hud-actions button {
@@ -368,6 +370,23 @@ button.is-hidden,
 .hud-powerups.is-hidden,
 .hud-actions.is-hidden {
   display: none;
+}
+
+/* The initial tap-to-start opening only: the button groups (powerups, actions, info) stay
+ * hidden through the dealer walk-in + first deal, then fade in once that hand is fully dealt.
+ * Opacity (not display) so it eases in with the same 0.5s the groups transition; pointer-events
+ * off — including the child buttons, which re-enable themselves under a `pointer-events: none`
+ * parent — so the invisible buttons can't be hit. Added at construction, removed once (never
+ * re-added) by revealOpeningButtons, so only the opening sequence is gated. */
+.hud-powerups.opening-hidden,
+.hud-actions.opening-hidden,
+.hud-info.opening-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.hud-powerups.opening-hidden button,
+.hud-actions.opening-hidden button {
+  pointer-events: none;
 }
 
 /* An armed powerup (e.g. Bust Block) pulses gold to show it's live. It overrides
@@ -531,11 +550,11 @@ button.is-hidden,
     top: 8px;
     left: 10px;
     gap: 6px;
-    font-size: 25px;
+    font-size: 21px;
   }
 
   .hud-tokens__icon {
-    height: 31px;
+    height: 26px;
     width: auto;
   }
 
@@ -570,7 +589,7 @@ button.is-hidden,
 
   .hud-powerups {
     left: 10px;
-    top: 60px;
+    top: 48px;
     gap: 6px;
   }
 
@@ -683,4 +702,24 @@ button.is-hidden,
   .hud-points__comment {
     font-size: 30px;
   }
+}
+
+/* Tap-to-play catcher: a TRANSPARENT full-screen layer that captures the opening tap so the
+ * full scene (and the nexus's projected "TAP TO START") shows through. Removed on first tap. */
+.intro-catch {
+  position: absolute;
+  inset: 0;
+  z-index: 20; /* above the canvas layers + button overlay, until the first tap removes it */
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action
+ * buttons, info button) is hidden — only the table + the nexus's projected "TAP TO START" show.
+ * It fades in on the tap. */
+.stage__overlay {
+  transition: opacity 0.5s ease;
+}
+.stage__overlay.hud-hidden {
+  opacity: 0;
 }

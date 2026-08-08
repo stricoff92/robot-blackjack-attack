@@ -88,7 +88,9 @@ export interface Round {
   discarded: Card[]
 }
 
-const MAX_HANDS = 4
+// Splitting is capped at 2 hands total (one split, no resplits) — a UI/UX
+// constraint on how many hands the table can lay out and play through at once.
+const MAX_HANDS = 2
 const DEALER_STANDS_AT = 17
 
 export function startRound(shoe: Card[], bet: number, rules: RoundRules = DEFAULT_ROUND_RULES): Round {

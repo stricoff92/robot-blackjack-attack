@@ -3,16 +3,17 @@ import './game-view.css'
 import { readDebugFlags } from '../game/debug'
 import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, handNet, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
-import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
+import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
 import { Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawPeekCard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
-import { drawChips, drawTableMarkings } from '../render/chips'
+import { drawChips, drawPlayerPile, drawTableMarkings } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
 import { drawHoloRays, drawStrikeFx, nexusYellowLight, type HoloRayTarget } from '../render/nexus'
@@ -21,6 +22,7 @@ import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
 import { drawScoreSheet, type ScoreReadout } from '../render/score-sheet'
 import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
+import { drawTapToStart } from '../render/tap-to-start'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
@@ -31,11 +33,12 @@ import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL
 import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
 import { NexusAnimation } from './nexus-animator'
-import { PeekFlipAnimation, PEEK_FLIP_MS } from './peek-animator'
 import { ReturnAnimation } from './return-animator'
 import { FLY_MS, TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
 import { sfx } from '../audio/sfx'
+import { music } from '../audio/music'
+import { angryGrowlPattern, evilLaughPattern, voice, voiceSeedFor } from '../audio/voice'
 
 // The token icon, imported once so Vite fingerprints the URL and the browser
 // fetches it a single time on load; every <img> that references it (the token
@@ -115,6 +118,20 @@ const SHRED_ARRIVE_OVERLAP = 140
 // landed and settled before the selector takes over the screen, plus a breath.
 const UPGRADE_REVEAL_LEAD = 1400
 const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
+// Tolerance (ms) for matching a walk-in/off's derived start stamp frame-to-frame, so its
+// entrance voice fires once. Far above the ~1ms float jitter, far below the seconds between
+// two real entrances.
+const VOICE_START_EPS = 200
+// The dealer (2–6) laughs as the cards deal when the player shoves ALL-IN and the table is
+// still above this integrity fraction (a healthy house savouring a desperate gamble).
+const ALLIN_LAUGH_HEALTH = 0.25
+// "On the ropes": a dealer walking in laughs (mocks) instead of growling when the player would
+// go bankrupt within this many losing hands AND is holding fewer than this many tokens.
+const ROPES_HANDS = 3
+const ROPES_TOKENS = 250
+// After the tap-to-start tap, the "TAP TO START" projection fades out over this window before
+// the scene starts (walk-in + HUD + first deal) — a short beat so the tap doesn't snap the game in.
+const TAP_FADE_MS = 300
 // Game over: beat after the ending hand's cards settle before the dealer sucks them up
 // and shreds them (a win → laser death; a loss → walk-off), then projects the score.
 const END_SHRED_GAP = 200
@@ -169,7 +186,6 @@ class GameView {
   // The Bust Block shield's reveal: the caught busting card is shown, then swept
   // off, before any replacement is dealt.
   private readonly bustBlock = new BustBlockAnimation()
-  private readonly peekFlip = new PeekFlipAnimation()
   // The dealer-spawn ceremony: shred the previous dealer's cards into the new
   // dealer's mouth, then fly in a fresh shrink-wrapped deck + tear off the plastic.
   private readonly spawn = new SpawnAnimation()
@@ -217,14 +233,19 @@ class GameView {
   private lastAnimating = false
   // Edge tracker for the dealer-death pause: when it clears, buttons re-enable.
   private lastDealerBlocking = false
+  // Start-timestamps of the walk-in / walk-off we last voiced, so the growl/laugh fires
+  // exactly ONCE per entrance/exit. Keyed on the START stamp (derived as now − progress·dur)
+  // rather than a boolean edge, because the loop re-runs a frame at a slightly different clock
+  // (the frozen-clock probe) — a boolean edge double-fires there. Matched with a tolerance:
+  // the derived start jitters ~1ms across frames (float rounding of `progress`), while two
+  // real entrances are seconds apart, so VOICE_START_EPS cleanly separates them.
+  private lastWalkInStart = -1e9
+  private lastWalkOffStart = -1e9
   // The card being returned (flips + flies back to the deck) and where it set off.
   private returnCardData: { card: Card; from: Point } | null = null
   // The busting card the Bust Block shield caught, with the hand + slot it's shown
   // on. Drawn (over the settled hand) while `bustBlock` animates.
   private bustBlockData: { handIndex: number; cardIndex: number; card: Card } | null = null
-  // The Peek Deck card, retained so it can keep drawing through its flip-DOWN
-  // (which plays after `foresightCard` has already cleared on the next move).
-  private peekCard: Card | null = null
   // Damage/kill deferred from the resolve to the Next-hand click: the laser fires
   // AFTER the token reward flies, and the cards gather back into the deck only once
   // it's done. `dealAfter` is the timestamp the next deal waits for while the laser
@@ -321,6 +342,26 @@ class GameView {
   private introHoldStart = 0
   private introPrevFrame = 0
   private introSteadyFrames = 0
+  // False until the player's first tap. The opening plays on load, then the game HOLDS the first
+  // deal (and projects "TAP TO START" from the nexus) until this flips — the tap also unlocks the
+  // audio contexts (context.ts/main.ts window listeners), so all gameplay sound is on. Set in
+  // buildIntroScreen's tap handler.
+  private started = false
+  // When the "TAP TO START" projection first appeared (for its strike-in), or 0 while hidden.
+  private tapShownAt = 0
+  // When the player tapped to start, or 0 before the tap. During [tapAt, tapAt + TAP_FADE_MS) the
+  // projection fades out; at the end `started` flips and the scene begins. The catcher is held
+  // for the whole beat so a second tap can't slip through to the (still-hidden) HUD.
+  private tapAt = 0
+  private introCatcher: HTMLElement | null = null
+  // False until the FIRST bet flies from the chip stack to the bet spot (the first deal): the
+  // bankroll count stays off (just the decorative pile) until then, then turns on for good.
+  private betFlown = false
+  // Latches true once the OPENING hand's cards have fully landed. Until then, every projected
+  // count (card totals + chip amounts) is held back so they appear together at the end of the
+  // deal rather than trickling in one-by-one amid the tap-to-start light rays. First hand only;
+  // once latched, later hands reveal their counts per-card/per-lane as usual (firstHandCountsHidden).
+  private openingCountsShown = false
 
   private readonly defs: ButtonDef[]
   private tokensEl!: HTMLElement
@@ -406,7 +447,70 @@ class GameView {
       const canvas = this.stage.canvas
       this.drawChips(canvas, computeLayout(canvas.width, canvas.height), now())
     })
+    this.buildIntroScreen() // tap-to-play gate: unlocks audio + releases the opening on first tap
     this.ensureLoop() // drive the opening ceremony, then auto-deal the first hand
+  }
+
+  // The tap-to-play gate. Until the first tap, ONLY the table + the nexus's projected "TAP TO
+  // START" show — the dealer stays parked off-screen (the intro-hold gate in frame()) and the
+  // HUD overlay (counters + buttons) is hidden. A TRANSPARENT full-screen catcher captures the
+  // tap; that gesture unlocks the audio contexts + starts music (context.ts/main.ts window
+  // listeners), then the dealer walks in (with sound), the HUD fades in, and the first hand
+  // deals. Not a menu.
+  private buildIntroScreen(): void {
+    const catcher = element('div', 'intro-catch')
+    this.introCatcher = catcher
+    this.stage.container.appendChild(catcher)
+    this.stage.overlay.classList.add('hud-hidden') // hide counters + buttons during the intro
+    // The button groups stay hidden a beat LONGER than the rest of the HUD: on the tap the
+    // counters fade in, but the powerups / action / info buttons hold back through the dealer
+    // walk-in + first deal, then fade in once that hand is fully dealt (revealOpeningButtons).
+    this.powersEl.classList.add('opening-hidden')
+    this.actionsEl.classList.add('opening-hidden')
+    this.infoBtnEl.classList.add('opening-hidden')
+    const tap = (): void => {
+      if (this.tapAt > 0) {
+        return // already tapping (mid fade-out)
+      }
+      // Record the tap; the frame loop fades "TAP TO START" out over TAP_FADE_MS, then flips
+      // `started` (releasing the walk-in + deal + HUD). Audio unlocks now via the window listeners.
+      this.tapAt = now()
+      window.removeEventListener('keydown', tap)
+    }
+    catcher.addEventListener('pointerdown', tap)
+    window.addEventListener('keydown', tap)
+  }
+
+  // The "TAP TO START" projection this frame — its strike-in age + a fade (1 while waiting,
+  // winding 1 → 0 over TAP_FADE_MS after the tap). Null once the scene has started.
+  private tapToStartRender(timestamp: number): { age: number; fade: number } | null {
+    if (this.started) {
+      this.tapShownAt = 0
+      return null
+    }
+    if (this.tapShownAt === 0) {
+      this.tapShownAt = timestamp
+    }
+    const fade = this.tapAt > 0 ? Math.max(0, 1 - (timestamp - this.tapAt) / TAP_FADE_MS) : 1
+    return { age: timestamp - this.tapShownAt, fade }
+  }
+
+  // Whether the projected counts (card totals + chip amounts) should be held off the felt
+  // this frame. True only for the VERY FIRST hand while its cards are still in flight, so the
+  // counts don't pop in piecemeal (dealer total, then player total, then the bet/bankroll) amid
+  // the fading tap-to-start rays — they all reveal together the instant the deal settles. Once
+  // that first deal lands, `openingCountsShown` latches and this returns false forever after.
+  private firstHandCountsHidden(now: number): boolean {
+    return !this.openingCountsShown && this.anim.isAnimating(now)
+  }
+
+  // Fade the button groups (powerups, action bar, info button) in — done once, the frame the
+  // opening hand finishes dealing, so the buttons appear together with its projected counts
+  // rather than sitting live through the walk-in + deal. A no-op after that (the class is gone).
+  private revealOpeningButtons(): void {
+    this.powersEl.classList.remove('opening-hidden')
+    this.actionsEl.classList.remove('opening-hidden')
+    this.infoBtnEl.classList.remove('opening-hidden')
   }
 
   // Arm the opening ceremony but hold it: park the dealer off-screen (so the initial
@@ -585,14 +689,6 @@ class GameView {
       drawShoe(ctx, rest.x, rest.y, rest.w, rest.h)
     }
 
-    // Peek Deck: the shoe's top card flipped up in place. It stays face-up while
-    // the peek is live (`foresightCard`), then flips back down on the next move —
-    // by which point `foresightCard` has cleared, so the retained `peekCard`
-    // carries it through the flip-down. Only over the static deck (never mid-shuffle).
-    if (!this.deckOnCards && this.peekCard && (this.state.foresightCard || this.peekFlip.isAnimating(timestamp))) {
-      drawPeekCard(ctx, layout, this.peekCard, this.peekFlip.progress(timestamp))
-    }
-
     // During a dealer-spawn ceremony the ending round's cards are being sucked into the new
     // dealer's mouth + shredded (drawn here), not laid out settled. But NOT while the deal
     // animator is still flying cards in: at game over `beginEndGame` schedules the shred the
@@ -609,7 +705,7 @@ class GameView {
       if (round) {
         const revealHole = this.state.phase !== 'playing' || this.state.peeked
         this.frameProjections.push(
-          ...drawHands(ctx, layout, round, revealHole, timestamp, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined),
+          ...drawHands(ctx, layout, round, revealHole, timestamp, this.anim, this.handResults(timestamp), this.splitPrev ?? undefined, this.firstHandCountsHidden(timestamp)),
         )
       }
     }
@@ -667,6 +763,13 @@ class GameView {
     const cp = this.comboProjRender(timestamp)
     if (cp) {
       this.frameProjections.push(...drawComboProjection(ctx, layout, cp.proj, cp.age, cp.fade, timestamp))
+    }
+
+    // The opening "TAP TO START" the nexus projects while the game waits for the first tap. Its
+    // box joins frameProjections so the holo lens fans its rays onto it, like the other readouts.
+    const tap = this.tapToStartRender(timestamp)
+    if (tap) {
+      this.frameProjections.push(...drawTapToStart(ctx, layout, tap.age, tap.fade, timestamp))
     }
   }
 
@@ -804,7 +907,7 @@ class GameView {
       house(bj)
     }
     if (rules.allowSplit) {
-      house('SPLIT_TO_4') // may split/resplit up to 4 hands (round.ts MAX_HANDS)
+      house('SPLIT_TO_2') // may split once, up to 2 hands (round.ts MAX_HANDS)
     }
     // Heal-on-win: a late dealer repairs this HP range whenever it beats the player.
     if (shift.healOnWin[1] > 0) {
@@ -862,6 +965,8 @@ class GameView {
   private playResultSting(): void {
     const { phase, run, round } = this.state
     if (phase === 'over') {
+      // The run ended — the player cleared the roster (won) or went bankrupt. Bankruptcy
+      // isn't a hand the dealer out-SCORED, so the victory laugh is deliberately withheld.
       sfx.play(run.won ? 'player-won' : 'player-lost')
       return
     }
@@ -872,6 +977,157 @@ class GameView {
       } else if (net < 0) {
         sfx.play('player-lost')
       }
+      // The dealer cackles when it OUTSCORED the player: a 'lose' hand (the player stood and
+      // the dealer's total beat theirs, incl. a dealer natural). A player 'bust' is their own
+      // doing and 'push'/'voided' is a wash — neither earns a laugh. Otherwise, some
+      // player triumphs make the dealer GROWL instead (see angryResolutionTrigger). The two
+      // are mutually exclusive, and the laugh wins if somehow both apply.
+      if (round.hands.some((hand) => hand.outcome === 'lose')) {
+        this.playDealerLaugh()
+      } else if (this.angryResolutionTrigger(round)) {
+        this.playDealerAngry()
+      }
+    }
+  }
+
+  // Whether this resolved round should make the dealer GROWL (an agitated reaction to the
+  // player pulling something off). The three always-on cases plus one that only fires half
+  // the time (a below-17 stand that the dealer's own bust bailed out — cheeky luck).
+  private angryResolutionTrigger(round: Round): boolean {
+    // The player hits a natural blackjack (a real two-card 21 — NOT a hijacked dealer 21,
+    // which also carries a 'blackjack' outcome).
+    if (round.hands.some((hand) => hand.outcome === 'blackjack' && isBlackjack(hand.cards))) {
+      return true
+    }
+    // A token-free Double that WON.
+    if (round.hands.some((hand) => hand.freeDoubled && isWinningHand(hand))) {
+      return true
+    }
+    // The dealer's own natural blackjack was voided (Sabotage T2) or hijacked (T3).
+    if (isBlackjack(round.dealer) && (isDealerHijacked(round) || round.hands.some((h) => h.outcome === 'voided'))) {
+      return true
+    }
+    // The player stood below 17 and the dealer busted (a lucky bail-out) — only half the time.
+    if (
+      dealerSettleTotal(round) > 21 &&
+      round.hands.some((h) => h.outcome === 'win' && !h.busted && evaluateHand(h.cards).total < 17)
+    ) {
+      return Math.random() < 0.5
+    }
+    return false
+  }
+
+  // The dealer's evil-laugh voice emote on a house win: the mouth panel lights up with
+  // rippling waves (render/dealer.ts) while a synthesised cackle plays (audio/voice.ts).
+  // Both are driven by one seeded pattern so they pulse together. Dealer 1 is silent
+  // (voiceSeedFor returns null). A short lead lets it land just behind the loss sting,
+  // reading as the dealer's reaction rather than clashing with it.
+  private playDealerLaugh(): void {
+    const shift = this.state.run.shiftIndex
+    const seed = voiceSeedFor(shift)
+    if (seed === null) {
+      return
+    }
+    // The seed varies each dealer's voice; the shift ramps it deeper + slower with progression.
+    const pattern = evilLaughPattern(seed, shift)
+    const lead = 0.16 // seconds, applied to both the audio clock and the visual clock
+    voice.play(pattern, lead)
+    this.dealer.emote(now() + lead * 1000, pattern)
+  }
+
+  // A hand just started (cards dealing): a dealer 2–6 LAUGHS if the player has shoved ALL-IN
+  // (bet consumes their whole stack) while the table is still healthy (> 25% integrity) — the
+  // house savouring a desperate gamble. Fires once per deal (a fresh round appearing).
+  private checkDealLaugh(prevRound: Round | null): void {
+    const round = this.state.round
+    if (prevRound || !round) {
+      return // only when a round just appeared — i.e. a fresh deal
+    }
+    const run = this.state.run
+    if (run.shiftIndex <= 1) {
+      return
+    }
+    const bet = round.hands.reduce((sum, hand) => sum + hand.bet, 0)
+    const allIn = bet >= run.chips
+    const healthy = run.integrity > ALLIN_LAUGH_HEALTH * maxIntegrityFor(run.shiftIndex)
+    if (allIn && healthy) {
+      this.playDealerLaugh()
+    }
+  }
+
+  // The dealer's angry-growl emote — the agitated counterpart to the laugh, fired when the
+  // player pulls something off (see the resolution + action triggers). Same seed/shift voice
+  // identity, a hot-tinted mouth, and a short lead so it reads as an immediate reaction.
+  // Dealer 1 is silent (voiceSeedFor returns null).
+  private playDealerAngry(): void {
+    const shift = this.state.run.shiftIndex
+    const seed = voiceSeedFor(shift)
+    if (seed === null) {
+      return
+    }
+    const pattern = angryGrowlPattern(seed, shift)
+    const lead = 0.05 // a quick, immediate snarl
+    voice.play(pattern, lead)
+    this.dealer.emote(now() + lead * 1000, pattern)
+  }
+
+  // A dealer (2–6) stomps in growling — a short (600–800ms) growl fired as the walk-in begins.
+  // BUT if the player is on the ropes (would go bankrupt within ROPES_HANDS losing hands and is
+  // low on tokens), the incoming dealer MOCKS them with a laugh instead. Dealer 1 is silent.
+  private playWalkInGrowl(timestamp: number): void {
+    const shift = this.dealer.figureShift(timestamp)
+    const seed = voiceSeedFor(shift)
+    if (seed === null) {
+      return
+    }
+    const run = this.state.run
+    const onTheRopes = run.tokens < ROPES_TOKENS && run.chips < ROPES_HANDS * nextBet(run)
+    const pattern = onTheRopes ? evilLaughPattern(seed, shift) : angryGrowlPattern(seed, shift)
+    voice.play(pattern, 0) // starts now, in step with the walk-in's first steps
+    this.dealer.emote(timestamp, pattern)
+  }
+
+  // Game over — the player went bankrupt — so the victorious dealer (2–6) saunters off
+  // CACKLING. The natural-length laugh keeps ringing a beat past the exit. Dealer 1 silent.
+  private playWalkOffLaugh(timestamp: number): void {
+    const shift = this.dealer.figureShift(timestamp)
+    const seed = voiceSeedFor(shift)
+    if (seed === null) {
+      return
+    }
+    const pattern = evilLaughPattern(seed, shift)
+    voice.play(pattern, 0)
+    this.dealer.emote(timestamp, pattern)
+  }
+
+  // Action-driven angry triggers, checked from run() off the before/after round diff:
+  // the player FREEZES the dealer, or makes a risky HIT at >= 16 and survives it (half the
+  // time). Both happen mid-hand with the dealer standing. (Resolution triggers are handled
+  // separately in playResultSting.)
+  private checkAngryAction(prevRound: Round | null, prevPhase: SessionState['phase']): void {
+    const round = this.state.round
+    if (!round || !prevRound) {
+      return
+    }
+    // Freeze Dealer just used — the dealer was forced to stand on its total.
+    if (round.dealerFrozen && !prevRound.dealerFrozen) {
+      this.playDealerAngry()
+      return
+    }
+    // A risky HIT that survived and left the player still in the hand: same hand set, exactly
+    // one card added to a hand (rules out split/deal/return), it wasn't a Double, the hand
+    // didn't bust, and it was already >= 16 before the card. Half the time.
+    if (prevPhase === 'playing' && this.state.phase === 'playing' && round.hands.length === prevRound.hands.length) {
+      for (let i = 0; i < round.hands.length; i++) {
+        const nh = round.hands[i]
+        const ph = prevRound.hands[i]
+        if (nh.cards.length === ph.cards.length + 1 && !nh.doubled && !nh.busted) {
+          if (evaluateHand(ph.cards).total >= 16 && Math.random() < 0.5) {
+            this.playDealerAngry()
+          }
+          return
+        }
+      }
     }
   }
 
@@ -880,13 +1136,19 @@ class GameView {
   // while the table is settling, and the frozen bankroll while a payout waits.
   private drawChips(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.chips.ctx
+    if (!this.betFlown) {
+      // From the tap-to-start intro through the walk-in, show just the player's chip STACK (no
+      // count). The count turns on when the first bet flies from the stack (see syncChips).
+      drawPlayerPile(ctx, layout, this.displayedBankroll())
+      return
+    }
     const round = this.state.round ?? this.collectRound
     // Roll the bankroll number toward its true value (it jumps when a payout is
     // released) so it ticks up as the chips settle instead of snapping.
     this.bankrollTicker.retarget(this.displayedBankroll(), timestamp)
     const chips = this.bankrollTicker.value(timestamp)
     const chipsScale = this.bankrollTicker.scale(timestamp)
-    this.frameProjections.push(...drawChips(ctx, layout, { chips, chipsScale, round }, this.chips, timestamp))
+    this.frameProjections.push(...drawChips(ctx, layout, { chips, chipsScale, round }, this.chips, timestamp, this.firstHandCountsHidden(timestamp)))
   }
 
   // The top layer: reward tokens flying up to the counter. Cleared and left blank
@@ -1071,6 +1333,14 @@ class GameView {
   // cards layer is touched; the overlay is synced only on the animate→idle edge.
   private readonly frame = (timestamp: number): void => {
     this.anim.setNow(timestamp)
+    // Tap-to-start: once the post-tap fade-out beat (TAP_FADE_MS) has elapsed, start the scene —
+    // flip `started` (releasing the held walk-in + first deal), reveal the HUD, drop the catcher.
+    if (this.tapAt > 0 && !this.started && timestamp >= this.tapAt + TAP_FADE_MS) {
+      this.started = true
+      this.stage.overlay.classList.remove('hud-hidden')
+      this.introCatcher?.remove()
+      this.introCatcher = null
+    }
     // Game over: the ending cards have just finished being sucked up. Latch the reveal
     // (before drawCards, so the shredded cards stay gone this frame), start projecting
     // the score screen, and re-sync so the New-run button appears.
@@ -1135,14 +1405,22 @@ class GameView {
     // teleporting the visible walk-in. Released after two consecutive steady frames,
     // or a 600ms safety cap so it can't stall forever on a slow device.
     if (this.introHold) {
-      const dt = timestamp - this.introPrevFrame
-      this.introPrevFrame = timestamp
-      this.introSteadyFrames = dt > 0 && dt < 40 ? this.introSteadyFrames + 1 : 0
-      if (this.introSteadyFrames >= 2 || timestamp - this.introHoldStart > 600) {
-        this.introHold = false
-        this.startIntroNow(timestamp)
+      if (!this.started) {
+        // Tap-to-start intro: keep the dealer parked OFF-SCREEN (invisible) until the tap, so
+        // nothing but the table + the nexus's "TAP TO START" shows. On the tap the walk-in
+        // begins (now WITH sound, since the gesture just unlocked the audio contexts).
+        this.dealer.spawn(timestamp)
+        this.introHoldStart = timestamp // don't count the warm-up until the tap releases it
       } else {
-        this.dealer.spawn(timestamp) // hold the figure off-screen this frame
+        const dt = timestamp - this.introPrevFrame
+        this.introPrevFrame = timestamp
+        this.introSteadyFrames = dt > 0 && dt < 40 ? this.introSteadyFrames + 1 : 0
+        if (this.introSteadyFrames >= 2 || timestamp - this.introHoldStart > 600) {
+          this.introHold = false
+          this.startIntroNow(timestamp)
+        } else {
+          this.dealer.spawn(timestamp) // hold the figure off-screen this frame
+        }
       }
     }
     // The dealer's walk-in footsteps: one boot-thud per bob-down beat as the figure
@@ -1152,6 +1430,31 @@ class GameView {
     const steps = this.dealer.footsteps(timestamp)
     for (let i = 0; i < steps; i += 1) {
       sfx.play('footstep')
+    }
+    // Voice on entrances/exits, detected off the walk animations (once per start stamp):
+    //  • a dealer 2–6 stomps in GROWLING (the growl ends exactly as it plants), and
+    //  • at game over (the player went bankrupt) the dealer strolls off CACKLING.
+    // Both skip dealer 1 (silent). The intro-hold guard keeps the opening (invisible,
+    // parked) dealer from growling before its real walk-in.
+    const arriving = this.dealer.arriving(timestamp)
+    if (arriving !== null && !this.introHold) {
+      const startAt = timestamp - arriving * KILL_ARRIVE_MS
+      if (Math.abs(startAt - this.lastWalkInStart) > VOICE_START_EPS) {
+        this.lastWalkInStart = startAt
+        this.playWalkInGrowl(timestamp)
+        // A new dealer (2+) is starting — turn the soundtrack over (fade out, fade a fresh one in).
+        if (this.dealer.figureShift(timestamp) > 1) {
+          music.advanceTrack()
+        }
+      }
+    }
+    const leaving = this.dealer.leaving(timestamp)
+    if (leaving !== null) {
+      const startAt = timestamp - leaving * KILL_ARRIVE_MS
+      if (Math.abs(startAt - this.lastWalkOffStart) > VOICE_START_EPS) {
+        this.lastWalkOffStart = startAt
+        this.playWalkOffLaugh(timestamp)
+      }
     }
     // Release the frozen bankroll the moment the settling chips land (which is
     // well before the longer card gather + shuffle finishes), so the stack grows
@@ -1225,6 +1528,15 @@ class GameView {
       this.raf = 0 // let a re-deal's run() → ensureLoop reschedule cleanly
       this.lastAnimating = false
 
+      // The opening deal has landed (a hand is on the table): reveal its held-back counts —
+      // all together this frame — plus fade the button groups in, and latch, so every later
+      // hand's counts show per-card again. (The pre-deal ceremony settle has no round yet, so
+      // it never latches early.)
+      if (this.state.round && !this.openingCountsShown) {
+        this.openingCountsShown = true
+        this.revealOpeningButtons()
+      }
+
       if (this.deckOnCards) {
         // Gather + shuffle finished: hand the deck back to the static table layer
         // (unless the RGB dealer keeps it on the cards layer to keep shimmering).
@@ -1259,17 +1571,19 @@ class GameView {
       this.drawTokens(canvas, layout, timestamp)
       this.syncOverlay(timestamp)
 
-      // No Deal button — once the deck is ready, deal the next hand automatically,
-      // UNLESS a deferred laser/death is still to play (dealAfter) — then wait.
-      if (this.state.phase === 'betting' && this.dealAfter <= timestamp) {
+      // No Deal button — once the deck is ready, deal the next hand automatically, UNLESS a
+      // deferred laser/death is still to play (dealAfter), or the opening is still waiting on
+      // the tap-to-start (`started`) — then wait.
+      if (this.state.phase === 'betting' && this.dealAfter <= timestamp && this.started) {
         this.run(() => this.session.deal())
         return
       }
     }
 
-    // Deferred deal: the token reward + nexus laser (and any death → walk-in) play
-    // after the Next-hand click; only once that finishes do the next cards deal.
-    if (this.dealAfter > 0 && timestamp >= this.dealAfter && this.state.phase === 'betting' && !sequenceAnimating) {
+    // Deferred deal: the token reward + nexus laser (and any death → walk-in) play after the
+    // Next-hand click; only once that finishes do the next cards deal. Also how the OPENING deal
+    // is scheduled (startIntroNow sets dealAfter), so `started` holds it until the tap-to-start.
+    if (this.dealAfter > 0 && timestamp >= this.dealAfter && this.state.phase === 'betting' && !sequenceAnimating && this.started) {
       this.dealAfter = 0
       // Zero the raf first (like the settle block) so run() → ensureLoop reschedules
       // the loop — the `return` below skips this frame's own reschedule.
@@ -1437,19 +1751,10 @@ class GameView {
         visible: yes,
         enabled: (s) => playing(s) && affords(POWERUPS.mulligan.cost, s) && !!s.round && canMulligan(s.round),
       },
-      {
-        key: 'foresight',
-        label: 'Peek Deck',
-        group: 'power',
-        cost: POWERUPS.foresight.cost,
-        act: () => this.session.buyForesight(),
-        visible: yes,
-        enabled: (s) => playing(s) && affords(POWERUPS.foresight.cost, s) && s.foresightCard === null,
-      },
     ]
     // The powerup column reads top-to-bottom in ascending token cost. Array.sort is
     // stable, so the action buttons (no cost → 0) keep their defined order and their
-    // own column, and equal-cost powerups (e.g. Peek Deck & Peek Dealer at 150) hold
+    // own column, and equal-cost powerups (e.g. Late double & Forced split at 30) hold
     // source order. Dispatch to columns is by `group`, so sorting the flat list is safe.
     return defs.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0))
   }
@@ -1677,22 +1982,18 @@ class GameView {
     const prevIntegrity = this.state.run.integrity
     const prevShift = this.state.run.shiftIndex
     const prevAnalysis = this.state.analysis
-    const prevForesight = this.state.foresightCard
     mutate()
     this.state = this.session.snapshot()
+    // Action-driven angry emotes (freeze used, a lucky risky hit): fired here off the
+    // before/after diff, while the dealer stands mid-hand. Resolution-driven ones live in
+    // playResultSting instead.
+    this.checkAngryAction(prevRound, prevPhase)
+    // A hand just started (cards dealing) with the player shoved all-in vs a healthy table:
+    // the dealer laughs.
+    this.checkDealLaugh(prevRound)
     const { integrity, shiftIndex } = this.state.run
 
     const t = now()
-    // Peek Deck's top-card flip: face-up when the peek is bought, face-down when it
-    // clears on the next move. A peek that was showing leads the deal by the
-    // flip-down so the card visibly flips down BEFORE it's drawn (see `dealLead`).
-    if (this.state.foresightCard && !prevForesight) {
-      this.peekCard = this.state.foresightCard
-      this.peekFlip.flip(t, true)
-    } else if (!this.state.foresightCard && prevForesight) {
-      this.peekFlip.flip(t, false)
-    }
-    const dealLead = prevForesight && !this.state.foresightCard ? PEEK_FLIP_MS : 0
     // Stamp when a fresh reading appears (flicker ramps in from here), or start the
     // flicker-out when one is dismissed (retain it so it can die gracefully).
     if (this.state.analysis && !prevAnalysis) {
@@ -1880,16 +2181,14 @@ class GameView {
       } else if (bustBlocked && prevRound && round && round.burned) {
         // Reveal the busting card on the active hand's next slot, catch it in the
         // shield, then sweep it off — and only THEN deal any replacement + play the
-        // dealer out (anim.sync scheduled from the reveal's end). A Peek Deck card
-        // showing (the very card that busted) flips down first, so lead by dealLead.
+        // dealer out (anim.sync scheduled from the reveal's end).
         const cardIndex = prevRound.hands[ai].cards.length
         this.bustBlockData = { handIndex: ai, cardIndex, card: round.burned }
-        const ejectEnd = this.bustBlock.begin(t + dealLead)
+        const ejectEnd = this.bustBlock.begin(t)
         this.anim.sync(prevPhase, this.state, ejectEnd)
       } else {
-        // A hit/stand/double: if a Peek Deck card was showing, hold the deal back
-        // by the flip-down so the top card flips face-down before it's drawn.
-        this.anim.sync(prevPhase, this.state, t + dealLead)
+        // A hit/stand/double.
+        this.anim.sync(prevPhase, this.state, t)
       }
       // A winning hand damages the dealer, but the nexus LASER doesn't fire yet: it's
       // deferred to the Next-hand click, after the token reward (see the Next-hand branch
@@ -1983,6 +2282,7 @@ class GameView {
     }
     if (prevPhase === 'betting') {
       this.chips.placeBets(round, t)
+      this.betFlown = true // the bet flew from the stack → turn the bankroll count on for good
     }
     const resolvedNow = this.state.phase === 'resolved' || this.state.phase === 'over'
     const wasResolved = prevPhase === 'resolved' || prevPhase === 'over'
@@ -2296,14 +2596,11 @@ class GameView {
   }
 
   private buildHint(): string {
-    const { phase, round, foresightCard } = this.state
+    const { phase, round } = this.state
     if (phase !== 'playing' || !round) {
       return ''
     }
     const parts: string[] = []
-    if (foresightCard) {
-      parts.push(`Next: ${cardLabel(foresightCard)}`)
-    }
     if (round.secondChanceArmed) {
       parts.push('Bust Block armed')
     }

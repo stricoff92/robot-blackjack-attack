@@ -1,5 +1,6 @@
 import { sfx } from './audio/sfx'
 import { music } from './audio/music'
+import { voice } from './audio/voice'
 import { mountGameView } from './ui/game-view'
 
 const root = document.querySelector<HTMLDivElement>('#app')
@@ -11,6 +12,11 @@ if (!root) {
 // context stays suspended until the first user gesture (autoplay policy); the
 // SFX service resumes it then. Fire-and-forget — plays before it settles no-op.
 void sfx.load()
+
+// The dealer voice is fully synthesised (no assets to load), but its AudioContext must
+// exist BEFORE the first user gesture so the shared unlock plumbing (context.ts) resumes
+// it — otherwise the first laugh is born on a suspended context and never sounds.
+voice.prime()
 
 // Start the soundtrack on the first user gesture (autoplay policy blocks audio
 // until then). "The Cannery" opens; the other tracks download lazily as each

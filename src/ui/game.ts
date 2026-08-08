@@ -38,7 +38,6 @@ class GameUI {
   private powerupsGroup!: HTMLElement
   private peekButton!: HTMLButtonElement
   private lateDoubleButton!: HTMLButtonElement
-  private foresightButton!: HTMLButtonElement
   private secondChanceButton!: HTMLButtonElement
   private powerupHint!: HTMLElement
   private continueGroup!: HTMLElement
@@ -89,7 +88,6 @@ class GameUI {
           <div class="group" id="powerups">
             <button id="pw-peek"></button>
             <button id="pw-late-double"></button>
-            <button id="pw-foresight"></button>
             <button id="pw-second-chance"></button>
             <span class="hint" id="powerup-hint"></span>
           </div>
@@ -119,7 +117,6 @@ class GameUI {
     this.powerupsGroup = this.select('#powerups')
     this.peekButton = this.select('#pw-peek')
     this.lateDoubleButton = this.select('#pw-late-double')
-    this.foresightButton = this.select('#pw-foresight')
     this.secondChanceButton = this.select('#pw-second-chance')
     this.powerupHint = this.select('#powerup-hint')
     this.continueGroup = this.select('#continue')
@@ -128,7 +125,6 @@ class GameUI {
 
     this.peekButton.textContent = `Dealer Peek (${POWERUPS.peek.cost})`
     this.lateDoubleButton.textContent = `Late double (${POWERUPS['late-double'].cost})`
-    this.foresightButton.textContent = `Deck Peek (${POWERUPS.foresight.cost})`
     this.secondChanceButton.textContent = `Bust Block (${POWERUPS['second-chance'].cost})`
 
     this.select<HTMLButtonElement>('#deal').addEventListener('click', () => this.dispatch(() => this.session.deal()))
@@ -138,7 +134,6 @@ class GameUI {
     this.splitButton.addEventListener('click', () => this.dispatch(() => this.session.split()))
     this.peekButton.addEventListener('click', () => this.dispatch(() => this.session.buyPeek()))
     this.lateDoubleButton.addEventListener('click', () => this.dispatch(() => this.session.buyLateDouble()))
-    this.foresightButton.addEventListener('click', () => this.dispatch(() => this.session.buyForesight()))
     this.secondChanceButton.addEventListener('click', () => this.dispatch(() => this.session.buySecondChance()))
     this.select<HTMLButtonElement>('#next').addEventListener('click', () => this.dispatch(() => this.session.nextHand()))
     this.select<HTMLButtonElement>('#restart').addEventListener('click', () => this.dispatch(() => this.session.restart()))
@@ -233,16 +228,12 @@ class GameUI {
     this.splitButton.disabled = !(canSplit(round) && canAffordExtra)
     this.peekButton.disabled = !(run.tokens >= POWERUPS.peek.cost && !this.state.peeked)
     this.lateDoubleButton.disabled = !(run.tokens >= POWERUPS['late-double'].cost && canAffordExtra)
-    this.foresightButton.disabled = !(run.tokens >= POWERUPS.foresight.cost && this.state.foresightCard === null)
     this.secondChanceButton.disabled = !(run.tokens >= POWERUPS['second-chance'].cost && !round.secondChanceArmed)
     this.powerupHint.textContent = this.powerupHintText(round)
   }
 
   private powerupHintText(round: Round): string {
     const parts: string[] = []
-    if (this.state.foresightCard) {
-      parts.push(`Next card: ${cardLabel(this.state.foresightCard)}`)
-    }
     if (round.secondChanceArmed) {
       parts.push('Shield armed')
     }

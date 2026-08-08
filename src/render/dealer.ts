@@ -83,6 +83,32 @@ export interface DealerView {
   // A dying dealer keeps its own colour; once the replacement walks in, this flips
   // to the new dealer, so the bowtie colour marks progression.
   figureShift(now: number): number
+  // The dealer's active voice emote (an evil laugh when the house wins), or null when
+  // silent. Drives the mouth panel: it lights up and one or more waves ripple across
+  // it, pulsing with each syllable. Dealer 1 never emotes (see voiceSeedFor).
+  voice(now: number): VoiceEmote | null
+}
+
+// A frame of the dealer's voice readout, mirrored in the mouth panel. `open` is the
+// overall glow gate (fades the panel light in/out at the emote's edges); `energy` folds
+// the per-syllable pulse into it (surging on each syllable). `tint` picks the colour
+// family (cool = laugh, hot = angry). The rest are the per-dealer wave look — how many
+// waves cross the mouth, their spatial density, and travel rate.
+export interface VoiceEmote {
+  open: number
+  energy: number
+  tint: 'cool' | 'hot'
+  waveCount: number
+  cycles: number
+  flowHz: number
+}
+
+// Mouth colours per emote tint: the panel lerps from its resting near-black grey toward
+// `lit` with the voice energy, and the travelling waves glow in `wave` (drawn additively).
+// Cool = the laugh (pale blue-white light); hot = the angry growl (angry red/orange).
+const MOUTH_TINTS: Record<VoiceEmote['tint'], { lit: string; wave: string }> = {
+  cool: { lit: '#7e8bad', wave: '206, 220, 248' },
+  hot: { lit: '#a65a4c', wave: '255, 138, 80' },
 }
 
 // Paint the dealer figure for this frame. Clears the layer first (it owns it).
@@ -135,7 +161,7 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
   // The bowtie's colour is this dealer's identity (RGB dealers shimmer with `now`).
   const shift = view.figureShift(now)
   const colors = dealerColors(shift, now)
-  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), angerFor(shift), colors.bowtie, colors.bowtieKnot, shift >= TOTAL_DEALERS)
+  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), angerFor(shift), colors.bowtie, colors.bowtieKnot, shift >= TOTAL_DEALERS, view.voice(now), now)
 
   if (hit.flash > 0.001) {
     drawHitFlash(ctx, d, hit.flash)
@@ -189,6 +215,8 @@ function drawFigure(
   bowtie: string,
   bowtieKnot: string,
   imposing: boolean,
+  voice: VoiceEmote | null,
+  now: number,
 ): void {
   ctx.save()
 
@@ -239,25 +267,109 @@ function drawFigure(
   // (browFear 0..1) and roll back.
   drawBrows(ctx, d, eyeY, browFear, anger)
 
-  // Rectangular mouth panel, a little lighter than the head, set below the eyes.
-  // A voice sine-wave readout will animate inside it later; the grille separators
-  // read as gritted teeth at rest and give that readout its "vocoder bars".
+  // Rectangular mouth panel, a little lighter than the head, set below the eyes. When
+  // the dealer emotes (an evil laugh), the panel LIGHTS UP — the resting near-black grey
+  // lerps toward a lit grey with the voice's energy — and travelling waves ripple across
+  // it, pulsing per syllable. The grille separators read as gritted teeth at rest and
+  // give the readout its "vocoder bars", drawn LAST so the waves flow behind them.
   const mouthW = d.headR * 1.02
   const mouthH = d.headR * 0.3
   const mouthY = d.headCenterY + d.headR * 0.42
-  ctx.fillStyle = MOUTH
+  const mouthX = d.cx - mouthW / 2
+  const mouthTop = mouthY - mouthH / 2
+  const mouthR = d.headR * 0.08
+
+  const energy = voice ? clamp01(voice.energy) : 0
+  const litColor = voice ? MOUTH_TINTS[voice.tint].lit : MOUTH_TINTS.cool.lit
+  ctx.fillStyle = energy > 0.001 ? mixHex(MOUTH, litColor, energy) : MOUTH
   ctx.beginPath()
-  ctx.roundRect(d.cx - mouthW / 2, mouthY - mouthH / 2, mouthW, mouthH, d.headR * 0.08)
+  ctx.roundRect(mouthX, mouthTop, mouthW, mouthH, mouthR)
   ctx.fill()
+
+  if (voice && voice.open > 0.001) {
+    drawMouthWaves(ctx, mouthX, mouthTop, mouthW, mouthH, mouthR, voice, now)
+  }
+
   ctx.fillStyle = GRILLE
   const teeth = 5
   const sepW = d.headR * 0.055
   for (let i = 1; i <= teeth; i++) {
-    const x = d.cx - mouthW / 2 + (mouthW * i) / (teeth + 1) - sepW / 2
-    ctx.fillRect(x, mouthY - mouthH / 2, sepW, mouthH)
+    const x = mouthX + (mouthW * i) / (teeth + 1) - sepW / 2
+    ctx.fillRect(x, mouthTop, sepW, mouthH)
   }
 
   ctx.restore()
+}
+
+// The voice readout: one or more emissive waves travelling across the lit mouth panel,
+// clipped to it (so nothing spills past the rounded rect) and drawn additively so they
+// glow. Amplitude + brightness swell with the voice energy (loudest on each syllable);
+// count / density / travel direction are the dealer's per-voice look. Sits UNDER the
+// grille teeth, which the caller paints next.
+function drawMouthWaves(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+  voice: VoiceEmote,
+  now: number,
+): void {
+  ctx.save()
+  ctx.beginPath()
+  ctx.roundRect(x, y, w, h, r)
+  ctx.clip()
+
+  const cy = y + h / 2
+  const e = clamp01(voice.energy)
+  const open = clamp01(voice.open)
+  const waveColor = MOUTH_TINTS[voice.tint].wave
+  ctx.globalCompositeOperation = 'lighter'
+  ctx.lineCap = 'round'
+  const k = (Math.PI * 2 * voice.cycles) / w // radians per pixel → `cycles` full waves across the mouth
+  // Travelling phase: TIME drives it (not position), so the wave visibly slides across the
+  // mouth. `sin(k·local − ωt)` is a wave moving in +x; flipping ω's sign moves it the other
+  // way. ω is well above the spatial rate, so the crests clearly flow rather than standing.
+  const omega = (now / 1000) * voice.flowHz * Math.PI * 2
+  // Amplitude keeps a steady, open-gated floor so the flow reads even between syllables,
+  // then swells with each "HA".
+  const maxAmp = h * (0.14 * open + 0.26 * e)
+  const steps = 30
+  for (let wi = 0; wi < voice.waveCount; wi++) {
+    // A second wave travels the OPPOSITE way (and offset), so the two crossing ripples make
+    // the motion unmistakable rather than reading as one wave pulsing in place.
+    const dir = wi % 2 === 0 ? 1 : -1
+    const phase = dir * omega + wi * 1.9
+    const amp = maxAmp * (wi === 0 ? 1 : 0.72)
+    const yOff = wi === 0 ? 0 : h * 0.1
+    const alpha = (0.3 + 0.55 * e) * open * (wi === 0 ? 1 : 0.75)
+    ctx.strokeStyle = `rgba(${waveColor}, ${alpha})`
+    ctx.lineWidth = Math.max(1, h * 0.12)
+    ctx.beginPath()
+    for (let s = 0; s <= steps; s++) {
+      const local = (w * s) / steps
+      const py = cy + yOff + Math.sin(local * k - phase) * amp
+      if (s === 0) {
+        ctx.moveTo(x + local, py)
+      } else {
+        ctx.lineTo(x + local, py)
+      }
+    }
+    ctx.stroke()
+  }
+  ctx.restore()
+}
+
+// Lerp between two #rrggbb colours, returning an rgb() string. Used to brighten the
+// mouth panel toward its lit grey as the voice energy rises.
+function mixHex(a: string, b: string, t: number): string {
+  const ca = parseInt(a.slice(1), 16)
+  const cb = parseInt(b.slice(1), 16)
+  const r = Math.round((ca >> 16 & 255) + ((cb >> 16 & 255) - (ca >> 16 & 255)) * t)
+  const g = Math.round((ca >> 8 & 255) + ((cb >> 8 & 255) - (ca >> 8 & 255)) * t)
+  const bl = Math.round((ca & 255) + ((cb & 255) - (ca & 255)) * t)
+  return `rgb(${r}, ${g}, ${bl})`
 }
 
 // The full-fear brow swing, in radians (left CCW, right CW). Scaled by browFear.

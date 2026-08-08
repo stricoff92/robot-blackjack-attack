@@ -2,7 +2,6 @@ export type PowerupId =
   | 'peek'
   | 'late-double'
   | 'forced-split'
-  | 'foresight'
   | 'second-chance'
   | 'freeze'
   | 'mulligan'
@@ -34,12 +33,6 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
     name: 'Forced split',
     cost: 30,
     description: 'Split your opening two cards even when they are not a matching pair.',
-  },
-  foresight: {
-    id: 'foresight',
-    name: 'Peek Deck',
-    cost: 150,
-    description: 'See the next card in the shoe.',
   },
   'second-chance': {
     id: 'second-chance',

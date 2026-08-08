@@ -126,6 +126,26 @@ export function computeLayout(w: number, h: number): Layout {
   }
 }
 
+// Right-edge furniture — the table nexus and the player's bankroll stack — hugs the far right
+// of the felt. On a wide screen the far right is so distant from the centred cards + score
+// projections that a big void opens up in the MIDDLE of the table. Cap how far from centre that
+// furniture may sit so it stays near the action: `naturalX` is its right-edge position; we pull
+// it in to at most this many px past centre (the leftover felt spills to the right edge, which
+// on a wide screen reads as plain table).
+//
+// The cap is a fraction of the SHORT edge (min(w,h)) — the same scale the cards and nexus are
+// sized from — so every landscape aspect (16:9, 16:10, ultrawide) reels the furniture in by the
+// SAME proportion regardless of pixel resolution: a 2560×1440 and a 1920×1080 screen (both 16:9)
+// look identical. 0.4 sits just outside the widest content: a 4-way split hand band reaches only
+// ~0.3·short-edge from centre, so the furniture stays clear of the cards, bet chips, scoreboard,
+// and centre-projected text with margin to spare. Narrow / portrait screens keep their natural
+// right edge (there the natural offset already sits inside the cap, so nothing moves). Both the
+// nexus and the chip stack clamp through here, so on a wide screen they align on one right column.
+export function clampRightX(l: Layout, naturalX: number): number {
+  const maxOffset = Math.min(l.width, l.height) * 0.4
+  return Math.min(naturalX, l.width / 2 + maxOffset)
+}
+
 // The felt's curved top edge (y) at a given x. The rail sits in the band just
 // above this. Anything meant to stay off the table (the health bar) must keep
 // below this minus the rail thickness.

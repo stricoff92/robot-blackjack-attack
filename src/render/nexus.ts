@@ -17,7 +17,7 @@
 
 import { arch2, smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
 import { cachedGradient } from './gradient-cache'
-import { dealerBox, type Layout } from './scene'
+import { clampRightX, dealerBox, type Layout } from './scene'
 import type { Point } from './tokens'
 
 // The nexus sits in the empty mid-right felt band: below the shoe (top-right of
@@ -63,9 +63,11 @@ function nexusGeom(l: Layout): NexusGeom {
   const w = socket * 2 + lensR * 0.9 // narrow body: one lens wide + side padding
   const h = gap * 2 + socket * 2 + lensR // three stacked lenses + top/bottom padding
   // Hug the screen's right edge (a small margin in), so the narrow stack sits at the far
-  // right; keep the same vertical centre (a full base-scale above the anchor).
+  // right; keep the same vertical centre (a full base-scale above the anchor). On very wide
+  // screens clampRightX reels the far-right position back toward centre so the device stays
+  // related to the middle of the table.
   const rightMargin = Math.max(10, l.width * 0.02)
-  const a = { x: l.width - rightMargin - w / 2, y: base.y - s }
+  const a = { x: clampRightX(l, l.width - rightMargin - w / 2), y: base.y - s }
   cachedGeom = { a, w, h, r: w * 0.3, lensR, gap, bob: s }
   cachedGeomKey = key
   return cachedGeom

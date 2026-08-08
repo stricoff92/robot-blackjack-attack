@@ -29,12 +29,7 @@ function roundOf(front: Rank[]): Round {
 
 // The dealer's hole card as a peek would reveal it.
 function peekedHole(round: Round): Knowledge {
-  return { hole: round.dealer[1], nextCard: null }
-}
-
-// The next shoe card as a Peek Deck would reveal it.
-function peekedNext(round: Round): Knowledge {
-  return { hole: null, nextCard: round.shoe[round.drawIndex] }
+  return { hole: round.dealer[1] }
 }
 
 describe('bustChanceOnHit', () => {
@@ -67,20 +62,6 @@ describe('bustChanceOnHit', () => {
     // ...and tossing safe low cards raises them.
     const fewerLows = { ...base, discarded: [card('A'), card('2'), card('3'), card('4')] }
     expect(bustChanceOnHit(fewerLows)).toBeGreaterThan(baseChance)
-  })
-
-  it('is certain when the next card is known (Peek Deck)', () => {
-    // Hard 16 with a known next card: a ten busts for sure, a three is safe.
-    const bustRound = roundOf(['10', '6', '9', '7', '10'])
-    expect(bustChanceOnHit(bustRound, peekedNext(bustRound))).toBe(1)
-
-    const safeRound = roundOf(['10', '6', '9', '7', '3'])
-    expect(bustChanceOnHit(safeRound, peekedNext(safeRound))).toBe(0)
-
-    // Blind, the same hard 16 is somewhere strictly between certain outcomes.
-    const blind = bustChanceOnHit(bustRound)
-    expect(blind).toBeGreaterThan(0)
-    expect(blind).toBeLessThan(1)
   })
 })
 
@@ -116,19 +97,6 @@ describe('dealerWinChance', () => {
     const blind = dealerWinChance(round, NOTHING_KNOWN, createRng(2), 4000)
     expect(blind).toBeLessThan(0.9)
   })
-
-  it('folds a known hole and next card into a fully-determined play-out', () => {
-    // Dealer 10 + peeked hole 6 = 16 (must hit); peeked next 5 → a standing 21.
-    // Against the player's 20 that is a certain win; swap the next card for a ten
-    // and the dealer busts for a certain loss. No randomness left either way.
-    const winRound = roundOf(['10', '10', '10', '6', '5'])
-    const winKnowledge: Knowledge = { hole: winRound.dealer[1], nextCard: winRound.shoe[winRound.drawIndex] }
-    expect(dealerWinChance(winRound, winKnowledge, createRng(4), 300)).toBe(1)
-
-    const bustRound = roundOf(['10', '10', '10', '6', 'Q'])
-    const bustKnowledge: Knowledge = { hole: bustRound.dealer[1], nextCard: bustRound.shoe[bustRound.drawIndex] }
-    expect(dealerWinChance(bustRound, bustKnowledge, createRng(4), 300)).toBe(0)
-  })
 })
 
 describe('computeAnalysis', () => {
@@ -141,7 +109,7 @@ describe('computeAnalysis', () => {
     }
 
     // A peek can only sharpen the reading — still valid probabilities.
-    const withPeek = computeAnalysis(round, { hole: round.dealer[1], nextCard: card('4') }, createRng(9), 1000)
+    const withPeek = computeAnalysis(round, { hole: round.dealer[1] }, createRng(9), 1000)
     for (const value of [withPeek.bustChance, withPeek.dealerWinChance]) {
       expect(value).toBeGreaterThanOrEqual(0)
       expect(value).toBeLessThanOrEqual(1)

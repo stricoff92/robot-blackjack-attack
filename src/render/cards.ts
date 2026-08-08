@@ -239,6 +239,7 @@ export function drawHands(
   anim?: CardAnim,
   results?: readonly (RoundResult | undefined)[],
   splitPrev?: Round,
+  hideCounts = false,
 ): HoloRayTarget[] {
   const dpr = window.devicePixelRatio || 1
   const feltTop = l.edgeY
@@ -259,7 +260,9 @@ export function drawHands(
     drawDealt(ctx, dealerKey(i), dealerXs[i], dealerY, cardW, cardH, card, i === 1, revealHole, anim, origin, dpr)
   })
   const shownDealer = faceUpDealer(round, revealHole, anim)
-  if (shownDealer.length > 0) {
+  // `hideCounts` holds every total off the felt (the opening hand keeps them back until
+  // its cards have fully landed, so they appear together — see GameView.firstHandCountsHidden).
+  if (shownDealer.length > 0 && !hideCounts) {
     const da = dealerCountAnchor(l)
     projected.push(
       ...drawCount(ctx, evaluateHand(shownDealer).total, da.x, da.y, da.size, now, undefined, dealerNote(round, shownDealer)),
@@ -292,7 +295,7 @@ export function drawHands(
       const from = slideOrigin?.(key) ?? origin
       drawDealt(ctx, key, xs[ci], playerY, w, h, card, false, true, anim, from, dpr)
     })
-    if (laneSettled(hand.cards.length, (ci) => playerKey(hi, ci), anim)) {
+    if (laneSettled(hand.cards.length, (ci) => playerKey(hi, ci), anim) && !hideCounts) {
       // Each hand shows its own win/loss/push — both halves of a split settle.
       const pa = playerCountAnchor(l, count, hi)
       projected.push(...drawCount(ctx, evaluateHand(hand.cards).total, centerX, pa.y, pa.size, now, results?.[hi]))
@@ -934,16 +937,6 @@ function drawShieldCatch(
   ctx.shadowBlur = h * 0.22
   ctx.stroke()
   ctx.restore()
-}
-
-// Peek Deck: the shoe's top card flipped up in place so the player can read the
-// next card. Drawn on the cards layer directly over the static deck's top-card
-// back — same anchor + size as `drawShoe`'s top card, so it registers exactly.
-// `flip` 0→1 = back → face.
-export function drawPeekCard(ctx: CanvasRenderingContext2D, l: Layout, card: Card, flip: number): void {
-  const dpr = window.devicePixelRatio || 1
-  const shoe = shoeAnchor(l)
-  drawFlipCard(ctx, card, shoe.x, shoe.y, shoe.w, shoe.h, flip, 1, dpr)
 }
 
 // Draw a single card at (x, y) at a given flip (1 = face, 0 = back) and alpha —

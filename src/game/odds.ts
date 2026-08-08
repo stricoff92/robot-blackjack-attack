@@ -2,16 +2,14 @@
 // likely is the active hand to bust on one more card, and how likely is the
 // dealer to beat the player's current total?
 //
-// The player's knowledge is whatever's face-up PLUS any cards a peek has
-// revealed — the dealer's hole card (Peek Dealer) and/or the next card in the
-// shoe (Peek Deck). Folding those in makes the reading strictly more accurate:
-// a known hole is used directly instead of averaged over, and a known next card
-// makes the bust outcome (and the dealer's first hit) certain rather than random.
+// The player's knowledge is whatever's face-up PLUS the dealer's hole card when
+// Peek Dealer has revealed it. Folding that in makes the reading strictly more
+// accurate: a known hole is used directly instead of averaged over.
 //
-// The bust chance is exact (a formula over the unseen deck, or a single lookup
-// when the next card is known). The dealer-win chance has no clean closed form
-// once the hole and an open-ended draw sequence are unknown, so it's a
-// Monte-Carlo estimate — a few thousand dealer play-outs from the same deck.
+// The bust chance is exact (a formula over the unseen deck). The dealer-win
+// chance has no clean closed form once the hole and an open-ended draw sequence
+// are unknown, so it's a Monte-Carlo estimate — a few thousand dealer play-outs
+// from the same deck.
 
 import { RANKS, type Card, type Rank } from './deck'
 import { evaluateHand, evaluateRanks, type HandValue } from './hand'
@@ -25,15 +23,13 @@ export interface Analysis {
   dealerWinChance: number
 }
 
-// Cards the player knows beyond the face-up ones, via peeks. Either may be null.
+// Cards the player knows beyond the face-up ones, via a peek. May be null.
 export interface Knowledge {
   /** The dealer's hole card, revealed by Peek Dealer. */
   hole: Card | null
-  /** The next card in the shoe, revealed by Peek Deck. */
-  nextCard: Card | null
 }
 
-export const NOTHING_KNOWN: Knowledge = { hole: null, nextCard: null }
+export const NOTHING_KNOWN: Knowledge = { hole: null }
 
 const DEALER_STANDS_AT = 17
 const DEFAULT_TRIALS = 4000
@@ -42,10 +38,10 @@ type RankCounts = Record<Rank, number>
 
 // The cards the player can't place: the full shoe minus every card whose identity
 // AND position the player knows — the face-up cards (player's own + dealer's
-// up-card), any card the Bust Block burned, and any peeked card (the hole and/or
-// the next card). Peeked cards are pulled out of this pool because they're no
-// longer a random unknown: they get used directly where they belong. What's left
-// is exactly the uncertainty the odds are computed over.
+// up-card), any card the Bust Block burned, and a peeked hole card. The peeked
+// hole is pulled out of this pool because it's no longer a random unknown: it
+// gets used directly where it belongs. What's left is exactly the uncertainty
+// the odds are computed over.
 function unseenCounts(round: Round, knowledge: Knowledge): { counts: RankCounts; total: number } {
   const counts = {} as RankCounts
   for (const rank of RANKS) {
@@ -70,9 +66,6 @@ function unseenCounts(round: Round, knowledge: Knowledge): { counts: RankCounts;
   if (knowledge.hole) {
     remove(knowledge.hole)
   }
-  if (knowledge.nextCard) {
-    remove(knowledge.nextCard)
-  }
   let total = 0
   for (const rank of RANKS) {
     total += counts[rank]
@@ -80,14 +73,10 @@ function unseenCounts(round: Round, knowledge: Knowledge): { counts: RankCounts;
   return { counts, total }
 }
 
-// Probability the active hand busts on its next single card. If the next card is
-// known (Peek Deck), the outcome is certain — 1 or 0. Otherwise it's the exact
-// share of the unseen deck whose rank pushes the hand over 21.
+// Probability the active hand busts on its next single card: the exact share of
+// the unseen deck whose rank pushes the hand over 21.
 export function bustChanceOnHit(round: Round, knowledge: Knowledge = NOTHING_KNOWN): number {
   const current = activeHand(round).cards.map((card) => card.rank)
-  if (knowledge.nextCard) {
-    return evaluateRanks([...current, knowledge.nextCard.rank]).total > 21 ? 1 : 0
-  }
   const { counts, total } = unseenCounts(round, knowledge)
   if (total <= 0) {
     return 0
@@ -107,8 +96,7 @@ export function bustChanceOnHit(round: Round, knowledge: Knowledge = NOTHING_KNO
 // Monte-Carlo probability the dealer beats the player's current total (the player
 // is assumed to stand): complete the dealer's hand `trials` times and count how
 // often it lands higher than the player without busting. A dealer bust or a tie
-// is NOT a dealer win. A known hole card is used as-is; a known next card is dealt
-// as the dealer's first hit (since the player stands, that card is the dealer's).
+// is NOT a dealer win. A known hole card is used as-is.
 export function dealerWinChance(
   round: Round,
   knowledge: Knowledge,
@@ -121,14 +109,13 @@ export function dealerWinChance(
   }
   const base = unseenCounts(round, knowledge)
   const holeRank = knowledge.hole ? knowledge.hole.rank : null
-  const nextRank = knowledge.nextCard ? knowledge.nextCard.rank : null
   if (holeRank === null && base.total <= 0) {
     return 0 // no known hole and nothing left to draw one from
   }
   const upCard = round.dealer[0].rank
   let wins = 0
   for (let trial = 0; trial < trials; trial += 1) {
-    if (dealerBeatsPlayer(upCard, holeRank, nextRank, playerTotal, base, round.rules, round.dealerFrozen, rng)) {
+    if (dealerBeatsPlayer(upCard, holeRank, playerTotal, base, round.rules, round.dealerFrozen, rng)) {
       wins += 1
     }
   }
@@ -149,13 +136,12 @@ export function computeAnalysis(
 
 // One dealer play-out from the up-card: take the hole card (known, or drawn from
 // the unseen deck), then hit per the rules (unless Freeze Dealer has pinned the
-// dealer to its two cards). A known next card is the first hit; further draws come
-// without replacement from a private copy of the unseen deck. Returns whether the
-// dealer finishes above the player without busting.
+// dealer to its two cards). Draws come without replacement from a private copy of
+// the unseen deck. Returns whether the dealer finishes above the player without
+// busting.
 function dealerBeatsPlayer(
   upCard: Rank,
   holeRank: Rank | null,
-  nextRank: Rank | null,
   playerTotal: number,
   base: { counts: RankCounts; total: number },
   rules: RoundRules,
@@ -175,13 +161,7 @@ function dealerBeatsPlayer(
   }
   const ranks: Rank[] = [upCard, hole]
   if (!frozen) {
-    let usedNext = false
     while (dealerHits(evaluateRanks(ranks), rules, playerTotal)) {
-      if (nextRank !== null && !usedNext) {
-        ranks.push(nextRank) // known top-of-shoe card, already excluded from the pool
-        usedNext = true
-        continue
-      }
       if (remaining <= 0) {
         break
       }

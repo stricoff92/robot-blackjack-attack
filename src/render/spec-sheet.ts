@@ -12,7 +12,7 @@
 // logic — just strings + a colour kind) and this paints it.
 
 import { dealerCountAnchor, drawHoloText, playerCountAnchor, type HoloTextStyle } from './cards'
-import type { HoloRayTarget } from './nexus'
+import { nexusHoloLight, type HoloRayTarget } from './nexus'
 import type { Layout } from './scene'
 
 // How long the projection takes to flicker fully in; also the age it rewinds through on
@@ -135,29 +135,50 @@ export function drawSpecSheet(
   const tGap = gap * f
   const totalH = hBlock + sBlock + hGap + rows.length * rH
 
+  // Measure every element at its final (scaled) font so we know the block's true width,
+  // then LEFT-justify the whole thing at one shared left edge. The stat line is the label
+  // plus its gap (px*0.6) plus the value — see drawStat.
+  ctx.font = monoFont(hPx, 800)
+  const headW = ctx.measureText('RULES').width
+  ctx.font = monoFont(sPx)
+  const statW = ctx.measureText('TOKEN INFLATION').width + sPx * 0.6 + ctx.measureText(spec.inflation).width
+  let maxRowW = Math.max(headW, statW)
+  for (const row of rows) {
+    maxRowW = Math.max(maxRowW, row.w * f)
+  }
+
+  // The holo lens sits on the RIGHT, so a block centred on the felt made its ray fan
+  // overshoot as a bright wedge PAST the text toward the nexus. Nudge the block LEFT of
+  // felt-centre (swings the beam more toward horizontal) and size the ray box to 1/1.5 of
+  // the reach we want, so drawHoloRays' 25%-per-side pad lands the fan just past the text
+  // instead of far to its right. Clamp so the block stays on the felt (left floor) and its
+  // fan still clears the lens (maxCx). Mirrors the tap-to-start title fix.
+  const fanReach = maxRowW / 2 + fPx * 0.6
+  const rayHalfW = fanReach / 1.5
+  const nexusX = nexusHoloLight(l, now).x
+  const maxCx = nexusX - fPx * 2 - fanReach
+  const blockCenterX = Math.max(fanReach + fPx, Math.min(cx - scale * 0.1, maxCx))
+  const blockLeft = blockCenterX - maxRowW / 2
+
   const presence = clamp01(age / SPEC_STRIKE_MS) * fade
 
   ctx.save()
   ctx.globalAlpha = presence
 
   let y = bandMid - totalH / 2
-  holoCentered(ctx, 'RULES', cx, y + hBlock / 2, hPx, HEAD, now, 800)
+  holoLeft(ctx, 'RULES', blockLeft, y + hBlock / 2, hPx, HEAD, now, 800)
   y += hBlock
 
   // The token inflation on its own labelled line: "TOKEN INFLATION" (dim) + value (amber).
-  drawStat(ctx, cx, y + sBlock / 2, sPx, spec.inflation, now)
+  drawStat(ctx, blockLeft, y + sBlock / 2, sPx, spec.inflation, now)
   y += sBlock + hGap
 
-  let maxRowW = ctx.measureText('TOKEN INFLATION').width // measured at the stat font just set
   for (const row of rows) {
-    const rowW = row.w * f
-    maxRowW = Math.max(maxRowW, rowW)
-    let x = cx - rowW / 2
+    let x = blockLeft
     const rowCY = y + rH / 2
     for (const t of row.toks) {
-      const tw = t.w * f
-      holoCentered(ctx, t.flag.text, x + tw / 2, rowCY, fPx, styleFor(t.flag.kind), now)
-      x += tw + tGap
+      holoLeft(ctx, t.flag.text, x, rowCY, fPx, styleFor(t.flag.kind), now)
+      x += t.w * f + tGap
     }
     y += rH
   }
@@ -165,30 +186,28 @@ export function drawSpecSheet(
   ctx.restore()
 
   const top = bandMid - totalH / 2
-  return [{ left: cx - maxRowW / 2, right: cx + maxRowW / 2, top, bottom: top + totalH }]
+  return [{ left: blockCenterX - rayHalfW, right: blockCenterX + rayHalfW, top, bottom: top + totalH }]
 }
 
 // The token-inflation line: a dim "TOKEN INFLATION" label with the amber value beside it,
-// the pair centred on `cx`.
-function drawStat(ctx: CanvasRenderingContext2D, cx: number, y: number, px: number, value: string, now: number): void {
+// the pair left-aligned from `x`.
+function drawStat(ctx: CanvasRenderingContext2D, x: number, y: number, px: number, value: string, now: number): void {
   const label = 'TOKEN INFLATION'
   const gap = px * 0.6
   ctx.font = monoFont(px)
   ctx.textBaseline = 'middle'
   const labelW = ctx.measureText(label).width
-  const valueW = ctx.measureText(value).width
-  const startX = cx - (labelW + gap + valueW) / 2
   ctx.textAlign = 'left'
-  drawHoloText(ctx, label, startX, y, px, DIM, now)
-  drawHoloText(ctx, value, startX + labelW + gap, y, px, AMBER, now)
+  drawHoloText(ctx, label, x, y, px, DIM, now)
+  drawHoloText(ctx, value, x + labelW + gap, y, px, AMBER, now)
 }
 
-// Draw centred holo text (sets font/alignment, then blits the cached glow sprite).
-function holoCentered(ctx: CanvasRenderingContext2D, text: string, cx: number, y: number, px: number, style: HoloTextStyle, now: number, weight = 700): void {
+// Draw left-aligned holo text (sets font/alignment, then blits the cached glow sprite).
+function holoLeft(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, px: number, style: HoloTextStyle, now: number, weight = 700): void {
   ctx.font = monoFont(px, weight)
-  ctx.textAlign = 'center'
+  ctx.textAlign = 'left'
   ctx.textBaseline = 'middle'
-  drawHoloText(ctx, text, cx, y, px, style, now)
+  drawHoloText(ctx, text, x, y, px, style, now)
 }
 
 function clamp(value: number, min: number, max: number): number {

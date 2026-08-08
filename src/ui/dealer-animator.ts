@@ -10,9 +10,10 @@
 // its drain/pause/refill to them (they can't drift apart).
 
 import { maxIntegrityFor } from '../game/run'
+import { voiceEnvelope, type VoicePattern } from '../audio/voice'
 import type { DamageBurstState } from '../render/damage-fx'
 import { arch2, smoothEnd2, smoothStart2 } from '../render/easing'
-import { WALK_STEPS, type DealerView } from '../render/dealer'
+import { WALK_STEPS, type DealerView, type VoiceEmote } from '../render/dealer'
 import type { StrikeView } from '../render/nexus'
 
 // --- laser strike + take-damage (both a plain hit and the lead-in to a kill) ---
@@ -106,6 +107,12 @@ export class DealerAnimation implements DealerView, StrikeView {
   // begins (a different start).
   private walkStart = -1
   private stepsFired = 0
+  // The active voice emote (an evil laugh on a house win): the absolute start stamp
+  // and the laugh pattern that shapes both the audio and this mouth readout. Purely
+  // cosmetic — it never gates deals or blocks buttons (the render loop never parks, so
+  // the mouth animates without being in isAnimating). Overwritten by the next emote.
+  private emoteStart = 0
+  private emotePattern: VoicePattern | null = null
 
   // Register the integrity change this action produced. A rising shift index is a
   // kill (old dealer destroyed); a fall in integrity with the same shift is a
@@ -193,6 +200,16 @@ export class DealerAnimation implements DealerView, StrikeView {
     this.final = false
     this.walkoffStart = startAfter
     this.seqEnd = startAfter + KILL_ARRIVE_MS
+  }
+
+  // Begin a voice emote (laugh or angry growl) at `startAfter`, shaped by `pattern` — the
+  // SAME pattern handed to voice.play, so the mouth's waves pulse in step with the
+  // syllables. Independent of mode (the dealer stands, emotes, and may even walk off still
+  // emoting at game over); overwriting simply restarts. Silent dealers never call this
+  // (game-view skips them via voiceSeedFor).
+  emote(startAfter: number, pattern: VoicePattern): void {
+    this.emoteStart = startAfter
+    this.emotePattern = pattern
   }
 
   // Walk-off progress (0..1) as the dealer leaves to the right, or null when it's still
@@ -410,6 +427,28 @@ export class DealerAnimation implements DealerView, StrikeView {
       return this.killFromShift
     }
     return this.shift
+  }
+
+  // The mouth readout for this frame, or null when the dealer isn't emoting. Reads the
+  // shared laugh envelope so the panel's glow + wave amplitude track the syllables, and
+  // hands the renderer the pattern's per-dealer wave look.
+  voice(now: number): VoiceEmote | null {
+    const pattern = this.emotePattern
+    if (!pattern) {
+      return null
+    }
+    const env = voiceEnvelope(pattern, now - this.emoteStart)
+    if (!env) {
+      return null
+    }
+    return {
+      open: env.open,
+      energy: env.energy,
+      tint: pattern.tint,
+      waveCount: pattern.waveCount,
+      cycles: pattern.waveCycles,
+      flowHz: pattern.waveFlowHz,
+    }
   }
 
   dying(now: number): number | null {

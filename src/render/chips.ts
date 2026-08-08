@@ -18,7 +18,7 @@ import { BOTTOM_HUD_RESERVE, cardSize, COUNT_HOLO, drawHoloText, handCenterX, ho
 import { chipImage } from './chip-sprite'
 import { smoothStep } from './easing'
 import type { HoloRayTarget } from './nexus'
-import { dealerBox, type Layout } from './scene'
+import { clampRightX, dealerBox, type Layout } from './scene'
 
 export interface Point {
   x: number
@@ -79,12 +79,14 @@ export function dealerAnchor(l: Layout): Point {
   return { x: d.cx, y: (d.bodyTop + d.baseY) / 2 }
 }
 
-// Player bankroll stack: bottom-right corner, clear of the action bar band.
+// Player bankroll stack: bottom-right corner, clear of the action bar band. On very wide
+// screens clampRightX caps its distance from centre so it doesn't strand out at the far edge
+// (it lands on the same right column as the nexus).
 export function playerAnchor(l: Layout): Point {
   const { rx } = chipMetrics(l)
   const rightMargin = Math.max(rx * 2, l.width * 0.055)
   const bottomReserve = clamp(l.height * 0.13, 92, 150)
-  return { x: l.width - rightMargin - rx, y: l.height - bottomReserve }
+  return { x: clampRightX(l, l.width - rightMargin - rx), y: l.height - bottomReserve }
 }
 
 // The y of the betting circle / bet-chip base: a big gap below the cards, but
@@ -168,12 +170,23 @@ export function discCount(value: number, max: number): number {
 // --- drawing -----------------------------------------------------------------
 
 // Clear the layer and paint every chip stack for the current frame.
+// The player's bankroll PILE alone — no count label, no house/bet chips. Used on the
+// tap-to-start intro, where the stack shows but the number doesn't. Clears the layer first.
+export function drawPlayerPile(ctx: CanvasRenderingContext2D, l: Layout, chips: number): void {
+  ctx.clearRect(0, 0, l.width, l.height)
+  const m = chipMetrics(l)
+  const player = playerAnchor(l)
+  const pileDiscs = chips > 0 ? BANK_PILE_DISCS : 0
+  drawChipStack(ctx, player.x, player.y, pileDiscs, m, CHIP_STYLE)
+}
+
 export function drawChips(
   ctx: CanvasRenderingContext2D,
   l: Layout,
   data: { chips: number; chipsScale?: number; round: Round | null },
   view: ChipView,
   now: number,
+  hideCounts = false,
 ): HoloRayTarget[] {
   ctx.clearRect(0, 0, l.width, l.height)
   const m = chipMetrics(l)
@@ -188,9 +201,15 @@ export function drawChips(
   // busted out for good).
   const pileDiscs = data.chips > 0 ? BANK_PILE_DISCS : 0
   drawChipStack(ctx, player.x, player.y, pileDiscs, m, CHIP_STYLE)
-  const bl = bankrollLabelAnchor(l)
-  drawChipLabel(ctx, String(data.chips), bl.x, bl.y, now, bl.size, data.chipsScale ?? 1)
-  projected.push(holoCountBox(bl.x, bl.y, bl.size))
+  // `hideCounts` keeps every chip amount off the felt (the bankroll here, plus each
+  // bet/winnings label below) — the opening hand holds them back until its cards have
+  // fully landed so they reveal together (see GameView.firstHandCountsHidden). The
+  // decorative stacks still animate; only their numbers wait.
+  if (!hideCounts) {
+    const bl = bankrollLabelAnchor(l)
+    drawChipLabel(ctx, String(data.chips), bl.x, bl.y, now, bl.size, data.chipsScale ?? 1)
+    projected.push(holoCountBox(bl.x, bl.y, bl.size))
+  }
   // Where flying bet/winnings chips land and fade in: the crown of the pile.
   const playerTop: Point = { x: player.x, y: player.y - pileDiscs * m.lift }
 
@@ -200,7 +219,7 @@ export function drawChips(
   }
   const dealer = dealerAnchor(l)
   for (let hi = 0; hi < round.hands.length; hi++) {
-    projected.push(...drawHandChips(ctx, l, m, round, hi, dealer, playerTop, view.betChip(hi, now), now))
+    projected.push(...drawHandChips(ctx, l, m, round, hi, dealer, playerTop, view.betChip(hi, now), now, hideCounts))
   }
   return projected
 }
@@ -215,6 +234,7 @@ function drawHandChips(
   playerTop: Point,
   st: BetChipState,
   now: number,
+  hideCounts = false,
 ): HoloRayTarget[] {
   const boxes: HoloRayTarget[] = []
   if (st.phase === 'done') {
@@ -240,14 +260,14 @@ function drawHandChips(
   const belowY = (y: number): number => y + m.rx * 0.95 + 22
   const paintBet = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, betCount, m, CHIP_STYLE, alpha)
-    if (label) {
+    if (label && !hideCounts) {
       drawChipLabel(ctx, String(amount), x, belowY(y), now, 18)
       boxes.push(holoCountBox(x, belowY(y), 18)) // ray target = exactly where this label was drawn
     }
   }
   const paintWin = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, winCount, m, CHIP_STYLE, alpha)
-    if (label) {
+    if (label && !hideCounts) {
       drawChipLabel(ctx, String(winAmount), x, belowY(y), now, 18)
       boxes.push(holoCountBox(x, belowY(y), 18))
     }

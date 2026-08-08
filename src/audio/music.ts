@@ -93,6 +93,31 @@ class MusicService {
     }
   }
 
+  // Crossfade to a fresh (non-repeating) track: fade the current one OUT while a new one
+  // fades IN over `fadeMs`. Used when a new dealer starts so the soundtrack turns over. If
+  // nothing is playing yet, just begins the set.
+  advanceTrack(fadeMs = 2000): void {
+    const ctx = this.context()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    if (!this.started) {
+      this.start()
+      return
+    }
+    // Detach the current track and fade it out independently, so the incoming one crossfades
+    // over it instead of being cut off (playTrack's stopCurrent then finds nothing to stop).
+    const outgoing = this.current
+    this.current = null
+    if (outgoing) {
+      this.fadeOutAndStop(outgoing, fadeMs)
+    }
+    // Prefer the already-prefetched follow-up (decoded, so the fade-in is gapless).
+    const next = this.queued ?? this.pickNext(outgoing?.name ?? OPENING_TRACK)
+    this.queued = null
+    void this.playTrack(next, fadeMs)
+  }
+
   // Stop the soundtrack. start() can begin it again from "The Cannery".
   stop(): void {
     this.started = false
@@ -100,7 +125,9 @@ class MusicService {
     this.stopCurrent()
   }
 
-  private async playTrack(name: TrackName): Promise<void> {
+  // Play `name`, optionally FADING IN over `fadeInMs` (0 = start at full) so it can
+  // crossfade over a track that advanceTrack() is fading out.
+  private async playTrack(name: TrackName, fadeInMs = 0): Promise<void> {
     const buffer = await this.getBuffer(name)
     // Bailed out (stop()) while the track was still downloading.
     if (!this.started) {
@@ -117,7 +144,14 @@ class MusicService {
     const source = ctx.createBufferSource()
     source.buffer = buffer
     const gain = ctx.createGain()
-    gain.gain.value = this.baseVolumes.get(name) ?? 1
+    const base = this.baseVolumes.get(name) ?? 1
+    if (fadeInMs > 0) {
+      const t = ctx.currentTime
+      gain.gain.setValueAtTime(0, t)
+      gain.gain.linearRampToValueAtTime(base, t + fadeInMs / 1000)
+    } else {
+      gain.gain.value = base
+    }
     source.connect(gain).connect(this.master as GainNode)
     this.current = { source, gain, name }
     source.onended = () => {
@@ -164,6 +198,27 @@ class MusicService {
     source.disconnect()
     gain.disconnect()
     this.current = null
+  }
+
+  // Ramp a (detached) track's gain to 0 over `fadeMs`, then stop + free it. Its onended is
+  // repurposed to a plain cleanup (NOT advance()), so fading it out doesn't queue a next track.
+  private fadeOutAndStop(track: { source: AudioBufferSourceNode; gain: GainNode }, fadeMs: number): void {
+    const ctx = this.context()
+    const { source, gain } = track
+    const t0 = ctx.currentTime
+    const end = t0 + Math.max(0.02, fadeMs / 1000)
+    gain.gain.cancelScheduledValues(t0)
+    gain.gain.setValueAtTime(gain.gain.value, t0)
+    gain.gain.linearRampToValueAtTime(0, end)
+    source.onended = () => {
+      source.disconnect()
+      gain.disconnect()
+    }
+    try {
+      source.stop(end + 0.05)
+    } catch {
+      // Already stopped — nothing to do.
+    }
   }
 
   // Lazily download + decode a track, at most once. Concurrent callers share the
