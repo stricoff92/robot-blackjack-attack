@@ -8,6 +8,25 @@ A solo, free-to-play web game. You sit down across from a machine that deals bla
 >
 > Keep the riff at the name level. Don't reproduce the pastel-and-dolphins look or license anything near that soundtrack — a nod is fine, a costume is a takedown.
 
+> **Revision note (2026-08-08, per-dealer up-card rail + silent-Dealer-1 fix).** Two changes:
+> - **Per-dealer up-card rail** (§2): a dealer's **10/11-value up-card** (an Ace or any ten-value card) is now discarded and reshuffled with a **per-dealer probability that falls off fast** — Dealer 1 **100%** (never shows a 10/11), 2 **30%**, 3 **15%**, 4–6 **0%** (honest deal). This generalises the old Dealer-1-only "no natural / no 10-up" rail into a difficulty curve, but tuned so only the opening dealer is truly gentled and the normal game returns by Dealer 4. Because a natural needs an Ace+ten up-card, it also suppresses **natural blackjacks** on the same curve (Dealer 1 still can never open on a dealt 21). The hole card, hits, and the 0% dealers stay honest.
+> - **Silent Dealer 1 fix** (engine/UI): a defeated dealer no longer emits its resolution laugh/growl. Killing a dealer advances the shift *before* the result reveal, so the reaction was borrowing the **next** dealer's voice — which made **Dealer 1 (which must be completely silent) growl** when the killing hand tripped an angry-reaction trigger. The reaction is now suppressed whenever the resolving hand destroyed the dealer.
+> - No resolution/reward maths changed, so `RULES_VERSION` is untouched (still **24**). The rail's reshuffles use the seeded deal RNG (the 100%/0% ends don't roll), so runs stay deterministic per seed; per-seed shoes for Dealers 1–4 differ from before.
+>
+> **Revision note (2026-08-08, early-game buffs pass).** A pass to soften the opening and make the early powerups reachable:
+> - **Starting tokens 0 → 100** (§2): a small opening buffer so Peek Dealer / Bust Block / Mulligan are affordable before token income ramps up.
+> - **Powerup reprice** (§7): **Peek Dealer 150 → 100**, **Mulligan 100 → 90**, **Bust Block 90 → 80**. (Base prices; token inflation still marks them up over the run.)
+> - **Player opening-natural rail** (§2): the Dealer 1 reshuffle now suppresses the *player's* natural only on the run's **very first hand** (a UI/UX fix for an instant-blackjack opening), instead of on every Dealer 1 hand. From hand two on the player keeps their naturals — an early-game buff. The dealer-side rail (Dealer 1 never opens on a natural) is unchanged.
+> - No resolution/reward maths changed, so `RULES_VERSION` is untouched (still **24**).
+>
+> **Revision note (2026-08-08, doc re-sync v13 → v24).** The doc had drifted from the code across several unlogged tuning passes; the body below is now re-synced. Key changes folded in:
+> - **Score multipliers flattened** (§3): the per-dealer curve is now **1.0 / 1.1 / 1.2 / 1.35 / 1.5 / 1.7** (was 1.0–5.5), since bet size already grows ~40× across dealers, so the multiplier no longer needs to do the heavy lifting.
+> - **Score combo reworked** (§9): the old win-streak combo (×1→×3, +0.25/win) is replaced by a **continuous risk-weighted HIT combo** (×1→×2) that multiplies won-hand chip score *and* the kill bounty; a lost hand (busted or beaten) resets it. Hits themselves no longer score — they build the combo and pay tokens. A **free-double win** (token-free Double) scores **×1.5**.
+> - **Kill bounty** (§4, §9): **400 × dealer** (was 150), and the **clean-kill bonus was removed** (it was invisible to the player).
+> - **Split cap** (§2): the engine caps splitting at **two hands** (one split, no re-splits).
+> - `RULES_VERSION` → **24**. This note only re-syncs the doc; no resolution/reward maths changed here.
+> - **Still unbuilt:** **Peek Deck** (§7) is designed but not yet implemented — the shipped roster is eight powerups.
+>
 > **Revision note (2026-08-07, first-dealer guard rail).** Added an invisible guard rail on **Dealer 1**: it can never be dealt a **natural blackjack** (§2). When the shoe is shuffled for a Dealer 1 hand, a shuffle whose opening deal would hand the dealer a two-card 21 is silently discarded and reshuffled until it doesn't — so a brand-new run can't lose its first hand to an unbeatable natural before the player has done anything. The rail is Dealer 1 only; every later dealer shuffles honestly. Reshuffling only advances the seeded deal RNG, so runs stay fully deterministic and reproducible (§13). No resolution or reward maths changed, so `RULES_VERSION` is untouched.
 >
 > **Revision note (2026-08-06, bet-ladder + peek pass).** Playtest still showed a player reaching the end too reliably, so two levers tightened:
@@ -70,7 +89,7 @@ A solo, free-to-play web game. You sit down across from a machine that deals bla
 | | |
 |---|---|
 | Starting chips | 300 |
-| Starting tokens | 0 |
+| Starting tokens | 100 |
 | Starting score | 0 |
 | Dealer health | 100 → 220, scaling per dealer (§3, §4) |
 | Dealers to win | 6 |
@@ -87,11 +106,13 @@ Standard, with the fiddly bits trimmed:
 - Blackjack pays **3:2**
 - Dealer **stands on all 17** — *except the later dealers* (§3): **Dealers 3–5 hit soft 17** (the H17 rule), and **Dealer 6 plays a smart 17** — it draws (soft *or* hard) only when standing wouldn't already beat you. A real, escalating house edge
 - Double down on any first two cards
-- Split up to three times (four hands max); split aces receive one card each and cannot be re-split
+- Split once, into two hands (no re-splitting); split aces receive one card each
 - **No insurance.** It's a trap bet that teaches nothing and clutters the UI
 - **No surrender** at baseline (see Open Questions)
 
-**Dealer 1 never draws a natural blackjack — an invisible guard rail.** A fresh run shouldn't be able to lose its very first hand to a dealt dealer 21 before the player has made a single decision, so the first dealer is quietly protected: whenever the shoe is shuffled for a Dealer 1 hand, a shuffle whose opening deal would give the dealer a two-card natural is discarded and reshuffled until it doesn't. The player is never told — it just never happens on Dealer 1. It applies to *every* Dealer 1 hand (each is a fresh shuffle), and to Dealer 1 only; every dealer from 2 on shuffles honestly and can open on a natural. Because reshuffling merely advances the same seeded deal RNG, the run stays fully deterministic and reproducible (§13). (A dealer *hitting* to 21 is untouched — this rail is only about the two-card natural, the one blackjack a player can't out-draw.)
+**Early dealers rarely (or never) open on a strong face-up card — a per-dealer up-card rail.** A dealer's *up-card* (the face-up of its opening two, shoe[2]) being a "10/11" — an Ace (soft 11) or any ten-value card (10/J/Q/K) — is silently discarded and reshuffled with a **per-dealer probability that falls off fast**: Dealer 1 **100%** (never shows a 10/11), Dealer 2 **30%**, Dealer 3 **15%**, Dealers 4–6 **0%** (honest, unguarded deal). So only the opening fight is truly gentled and the normal game returns quickly. Mechanically, on a 10/11 up-card the shoe is rejected when a dice roll lands under that dealer's chance, reshuffling until the up-card isn't a 10/11 or the roll passes. Because a two-card natural needs an Ace paired with a ten (so its up-card is always a 10/11), the rail also suppresses **natural blackjacks** on the same curve — Dealer 1 can never open on a dealt 21 (which a player can't out-win), so a fresh run can't lose its very first hand before the player has acted, while late dealers can still deal one. The hole card and any hits are left honest, and a dealer *hitting* to 21 is untouched — this rail only shapes the up-card. It applies to *every* hand of a given dealer (each is a fresh shuffle). The dice roll uses the same seeded deal RNG as the shuffle (the 100%/0% ends don't roll at all), so runs stay fully deterministic and reproducible (§13).
+
+**The player can't open on a natural on the run's very first hand — a UI/UX rail, not a debuff.** The same reshuffle also rejects a *player* two-card 21, but only on the opening hand of the run (Dealer 1, before any hand has been played). This isn't a nerf — it dodges a corner case where the game's first deal resolves instantly as a blackjack before the player has taken a single action. From the second Dealer 1 hand onward the player keeps any natural they're dealt (paid at the usual 3:2), so the rail costs the player nothing on the balance of the run — it's an early-game buff versus the old behavior, which suppressed the player's naturals on every Dealer 1 hand.
 
 *(The engine keeps these as configurable `RoundRules` — e.g. dealer-hits-soft-17, 6:5 payout — but the defaults above are the only ones in play. Roguelike upgrades (§8) can bend some of them mid-run: the Payout path raises the blackjack rate (2:1, then 3:1) and later pays pushes out to the player, and the Sabotage path rewrites how the dealer's natural — and any dealer 21 — resolves.)*
 
@@ -104,11 +125,11 @@ This is the engine that makes the game finite. You face one dealer at a time. **
 | Dealer | Health | Min bet | Max bet | Wealth floor | Soft 17 | Score × |
 |---|---|---|---|---|---|---|
 | 1 | 100 | 20 | 200 | 0% | stand | 1.0 |
-| 2 | 110 | 40 | 350 | 10% | stand | 1.5 |
-| 3 | 125 | 80 | 550 | 12% | **hit** | 2.0 |
-| 4 | 150 | 160 | 850 | 15% | **hit** | 3.0 |
-| 5 | 185 | 320 | 1,700 | 18% | **hit** | 4.0 |
-| 6 | 220 | 640 | **2,750** | 25% | **smart** | 5.5 |
+| 2 | 110 | 40 | 350 | 10% | stand | 1.1 |
+| 3 | 125 | 80 | 550 | 12% | **hit** | 1.2 |
+| 4 | 150 | 160 | 850 | 15% | **hit** | 1.35 |
+| 5 | 185 | 320 | 1,700 | 18% | **hit** | 1.5 |
+| 6 | 220 | 640 | **2,750** | 25% | **smart** | 1.7 |
 | 7+ | +45 each dealer | ×2.5 each dealer | 10× min | 25% held | smart | **+1.5 flat** each dealer |
 
 Max bet is 10× the minimum on Dealer 1 but grows slower than the doubling floor, so the bet *range* narrows on the later dealers — Dealer 6 runs 640 up to **2,750** (a ~4× band), still enough for a dragged-out final fight to climb to a real ceiling. There is no dealer beyond the sixth in a normal run — clearing it ends the run in a win — but the extrapolation row exists so the maths never falls off a table (a dev jump can still seat a later dealer).
@@ -179,7 +200,7 @@ A dealer stays in the chair until you destroy it — there's no timer and no way
 
 Emptying a dealer's health awards:
 - **+40 tokens** (§6), scaled by the Token upgrade if you have it (§8)
-- **+150 × dealer number** to score, **plus a clean-kill bonus** scaled by how few hands you lost to that dealer (§9)
+- **+400 × dealer number** to score, multiplied by the current hit combo (§9)
 - a **bankroll grant of 3 × the next dealer's minimum bet**, so the escalating floor (§3) stays survivable instead of starving the run
 - **one roguelike upgrade pick** (§8) — except on the sixth kill, which wins the run
 - advance to the next dealer; health resets to **that dealer's own max** (§3) and the within-dealer bet climb resets (§5)
@@ -268,12 +289,14 @@ Bought with tokens (§6), spent during your turn. Costs escalate with how much t
 | **Forced split** | 30 | Split your opening two cards even when they aren't a matching pair. |
 | **Return** | 50 | Push your most recently drawn card back onto the shoe (the dealer draws it next), then stand. |
 | **Freeze Dealer** | 70 | Force the dealer to stand on its current two-card total — it takes no draws. |
-| **Bust Block** | 90 | One expendable shield against busting. See below. |
-| **Mulligan** | 100 | Discard your untouched opening hand and redeal it once. |
-| **Peek Deck** | 150 | See the next card in the shoe. |
-| **Peek Dealer** | 150 | Reveal the dealer's hole card. |
+| **Bust Block** | 80 | One expendable shield against busting. See below. |
+| **Mulligan** | 90 | Discard your untouched opening hand and redeal it once. |
+| **Peek Dealer** | 100 | Reveal the dealer's hole card. |
+| **Peek Deck** | 150 | See the next card in the shoe. *(designed — not yet implemented)* |
 
-**Peek Dealer sits at the top tier on purpose** (it was 10 — badly underpriced). Knowing the dealer's exact total lets you deviate from basic strategy *optimally on every decision of the hand* — stand and let a stiff 12–16 bust, hit hard into a made 18–20 — and uncertainty about the dealer's hand is where basic strategy loses the most EV. That's why hole-carding is a premier advantage-play technique; it is **not** the minor "information" tool the old price implied. At 10 tokens it was self-funded by a single hand's winnings and became a rote every-hand buy that carried whole runs. It's now **150 — level with Peek Deck**: hole-card knowledge steers every decision of the hand rather than a single hit, so even though it doesn't fully resolve the dealer (a stiff still draws unknown cards), it earns parity with the shoe peek's one-card certainty rather than a discount.
+> **Peek Deck is designed but not yet built** — the shipped roster is the other eight powerups. The Peek Deck references below (and the Peek Deck → Late double combo) describe the intended full set.
+
+**Peek Dealer sits near the top of the roster on purpose** (it was 10 — badly underpriced). Knowing the dealer's exact total lets you deviate from basic strategy *optimally on every decision of the hand* — stand and let a stiff 12–16 bust, hit hard into a made 18–20 — and uncertainty about the dealer's hand is where basic strategy loses the most EV. That's why hole-carding is a premier advantage-play technique; it is **not** the minor "information" tool the old price implied. At 10 tokens it was self-funded by a single hand's winnings and became a rote every-hand buy that carried whole runs. It's now **100 — just under the (unbuilt) Peek Deck's 150**: hole-card knowledge steers every decision of the hand, but it doesn't fully resolve the dealer (a stiff still draws unknown cards), so it's priced a notch below the shoe peek's one-card certainty rather than level with it.
 
 Bust Block is priced below Peek Deck on purpose. Peek Deck is reliable certainty — see the card, decline the hit, never bust — whereas Bust Block is conditional and can whiff (nothing to shield if you weren't going to bust, or a second bust on the re-roll). So Peek Deck is the expensive, reliable power and Bust Block is the cheaper, swingier "upside" play — the one that can turn a dead 16 into a live 20.
 
@@ -352,17 +375,18 @@ The resistance also fixes the friction the two effects would otherwise have: ear
 Score is a separate ratchet from chips. It **never decreases**.
 
 ```
-score += (chips won on the hand) × current dealer multiplier × win-streak combo
+score += (chips won on the hand) × current dealer multiplier × hit combo × free-double bonus
 ```
 
 Blackjack paying 3:2 (2:1, then 3:1, with the Payout upgrade, §8) therefore scores more automatically, and Payout T3 turns a push — normally zero — into a scoring chips-only win.
 
-- **Win-streak combo.** Each consecutive won hand lifts *that hand's* chip score: ×1 on the first win, then +0.25 per win, capped at **×3** (the ninth win in a row and beyond). A hand the dealer wins resets the streak to ×1; a push — or a chips-only push-win (§8), which deals no damage — leaves it untouched. This is score-only — it never touches chips, damage, or survival — so it rewards a dominant hot streak without affecting balance, and the healing late dealers (§4) are exactly what threaten to break a streak.
-- **Destruction bonus:** `150 × dealer number` when you destroy a dealer, **plus a clean-kill bonus** — a second helping of that same base, scaled by how few hands you lost to the dealer: full at zero losses (so a flawless kill pays the bounty *twice*), shrinking 20% per lost hand, to nothing at five losses. This inverts the old incentive: killing fast and clean now scores *more*, not less.
+- **Hit combo.** A continuous, risk-weighted multiplier built by *surviving hits*. Each surviving hit adds `0.01 + 0.19 × bust-chance` to an accumulator (a safe hit nudges it; a near-certain-bust hit that lands adds the most), capped at **+1.0 — a ×1 → ×2** multiplier. It multiplies *all* score earned while it's up — the chip score of won hands **and** the kill bounty. A **lost hand resets it to ×1** (every hand busted or beaten; on a split, all of them); standing, pushing, and winning leave it. Hits themselves score nothing — they only build the combo and pay tokens (§6) — so the multiplier is earned by taking real risk, not by grinding hands. Score-only: it never touches chips, damage, or survival.
+- **Free-double bonus.** A hand won on the standard, token-free Double (not the paid Late double powerup, §7) scores an extra **×1.5** — a reward for the bold, unbought risk.
+- **Destruction bonus:** `400 × dealer number` when you destroy a dealer, itself multiplied by the current hit combo (a kill lands on a won hand, so the streak applies).
 
 The result points score at the play the win condition already wants — fast, clean, high-tier kills and unbroken streaks — instead of at grinding out extra hands. Winning the run (all six dealers) naturally maximises everything.
 
-> **Not yet surfaced in the UI:** the combo multiplier and clean-kill bonus currently move the score number without a dedicated readout. `winStreak` lives on the run state, so a visible combo meter is an easy follow-up.
+> **In the UI:** the hit combo is projected big into the middle of the felt as it ticks (`×M.MM`), and each reward flashes top-right as its base points with the `×mult` that produced it. `run.combo` (the accumulated bonus fraction) drives both.
 
 ---
 
@@ -388,7 +412,7 @@ Difficulty lives in a handful of places:
 5. **Token inflation** (§6): the per-shift **caps** (7% → 18%), the **denoms** (140 → 280), and the Tokens-path **resistance** (×1 → ×0.35). This is the anti-token-bank dial — raising the caps or lowering the denoms makes late powerups pricier and the token bank worth less. The denoms are estimates of per-shift token income and should be calibrated against real logged earnings; they're the most likely numbers to be off.
 6. **The roguelike upgrades** (§8). Still the strongest single lever on win rate, but the set was rebalanced *down* (auto-blackjack and the −1 downgrade removed, Tokens buffed) so it no longer trivialises the back half; each path now owns a distinct axis (Sabotage = win rate, Payout = chips/score, Tokens = ability economy). Tune the tier strengths to move the clear rate — this is where the recent "too easy" pressure was fixed.
 7. **The score multiplier must stay linear** (§3). This is not a taste knob — making it compound reintroduces the runaway leaderboard tail.
-8. **The score combo and clean-kill** (§9): the combo step (`+0.25`/win) and cap (`×3`), and the clean-kill decay (`20%`/loss). These are score-only — they change the leaderboard shape and what play the board rewards, not survival — so they can be tuned freely without touching win rate.
+8. **The score combo and free-double bonus** (§9): the combo gain per surviving hit (`0.01 + 0.19 ×` bust risk) and its cap (`+1.0` → ×2), the destruction base (`400 ×` dealer), and the free-double score bonus (`×1.5`). These are score-only — they change the leaderboard shape and what play the board rewards, not survival — so they can be tuned freely without touching win rate.
 
 Starting chips barely matter past the first couple of dealers — don't tune there.
 
@@ -423,7 +447,7 @@ const rng = mulberry32(seed);
 shuffle(deck, rng);
 ```
 
-The prototype already does this: the deal logic is pure and deterministic, and it uses a seeded mulberry32 PRNG threaded through the shuffle — no `Math.random()` anywhere in deal logic. A `RULES_VERSION` constant (currently 12) is stored so retuned rewards don't silently validate old replays.
+The prototype already does this: the deal logic is pure and deterministic, and it uses a seeded mulberry32 PRNG threaded through the shuffle — no `Math.random()` anywhere in deal logic. A `RULES_VERSION` constant (currently 24) is stored so retuned rewards don't silently validate old replays.
 
 **Still to build:** logging the player's action sequence (hit, stand, double, split, token spends, upgrade picks) alongside the seed. That pair — seed plus actions — is a complete, verifiable recording of a run: a server that knows the seed replays the identical deal, computes the score itself, and trusts nothing the client sent. Replay validation is unusually cheap here (turn-based, no timing, a short input vocabulary; a full run is a couple of kilobytes). Doing it now is nearly free; retrofitting it once randomness is scattered through the deal code is not.
 

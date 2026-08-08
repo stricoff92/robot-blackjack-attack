@@ -8,6 +8,7 @@ import {
   comboGain,
   comboMultiplier,
   dealerHardHitCeiling,
+  dealerUpcardReshuffleChance,
   getShift,
   hitTokens,
   isLastCall,
@@ -96,7 +97,7 @@ describe('startRun', () => {
     const run = startRun(1)
 
     expect(run.chips).toBe(300)
-    expect(run.tokens).toBe(0)
+    expect(run.tokens).toBe(100)
     expect(run.integrity).toBe(100)
     expect(run.shiftIndex).toBe(1)
   })
@@ -109,6 +110,22 @@ describe('getShift', () => {
 
   it('extrapolates prototype units beyond the table', () => {
     expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, scoreMultiplier: 3.2, maxIntegrity: 265 })
+  })
+})
+
+describe('dealerUpcardReshuffleChance', () => {
+  it('suppresses the dealer 10/11 up-card only on the first three dealers', () => {
+    expect(dealerUpcardReshuffleChance(1)).toBe(1) // never shows a 10/11
+    expect(dealerUpcardReshuffleChance(2)).toBe(0.3)
+    expect(dealerUpcardReshuffleChance(3)).toBe(0.15)
+    expect(dealerUpcardReshuffleChance(4)).toBe(0) // fully unguarded from here on
+    expect(dealerUpcardReshuffleChance(5)).toBe(0)
+    expect(dealerUpcardReshuffleChance(6)).toBe(0)
+  })
+
+  it('keeps dev-jumped dealers past the table honest (never negative)', () => {
+    expect(dealerUpcardReshuffleChance(7)).toBe(0)
+    expect(dealerUpcardReshuffleChance(12)).toBe(0)
   })
 })
 
@@ -154,22 +171,28 @@ describe('comboGain', () => {
 })
 
 describe('applyRound token rewards', () => {
+  // Isolate the REWARD from the run's starting token balance by baselining to 0 tokens,
+  // so these assert the per-hand payout, not the opening STARTING_TOKENS buffer.
+  const fromZero = () => ({ ...startRun(1), tokens: 0 })
+
   it('pays the dealer-total tier for a win (here, a standing 17)', () => {
-    expect(applyRound(startRun(1), standWin(10)).tokens).toBe(8)
+    expect(applyRound(fromZero(), standWin(10)).tokens).toBe(8)
   })
 
   it('does not re-count hits at settle, since they are credited live', () => {
-    expect(applyRound(startRun(1), hitThenWin(10)).tokens).toBe(8)
+    expect(applyRound(fromZero(), hitThenWin(10)).tokens).toBe(8)
   })
 
   it('grants twenty-one tokens for a blackjack', () => {
-    expect(applyRound(startRun(1), natural(10)).tokens).toBe(21)
+    expect(applyRound(fromZero(), natural(10)).tokens).toBe(21)
   })
 })
 
 describe('applyRound advancement', () => {
   it('only advances by destroying the dealer, and pays the destroy token', () => {
-    let run = startRun(1)
+    // Baseline to 0 tokens so the tally is exactly the rewards earned this run, not the
+    // opening STARTING_TOKENS buffer on top.
+    let run = { ...startRun(1), tokens: 0 }
     let hands = 0
     while (run.shiftIndex === 1) {
       run = applyRound(run, beatTwentyWin(10))

@@ -71,44 +71,6 @@
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 8px rgba(255, 190, 60, 0.55);
 }
 
-/* Reward caption ("Double!", "WHOA!"…): fades in/out with the delta (same 1100ms
- * timeline) so they live and die together, with a gentler scale so longer words don't
- * jump. */
-.hud-points__comment {
-  margin-top: 2px;
-  font: 800 20px system-ui, -apple-system, sans-serif;
-  color: #ffd633;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 8px rgba(255, 190, 60, 0.5);
-  opacity: 0;
-  transform-origin: 100% 50%;
-  white-space: nowrap;
-}
-
-.hud-points__comment.is-flashing {
-  animation: points-comment 1100ms ease-out forwards;
-}
-
-/* Mirrors points-delta's timeline (fade in ~12%, hold to 73%, fade out to 100%) so the
- * caption is in lockstep with the delta, but with a milder scale-in. */
-@keyframes points-comment {
-  0% {
-    opacity: 0;
-    transform: scale(1.3);
-  }
-  12% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  73% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(1);
-  }
-}
-
 .hud-points__delta.is-flashing {
   /* Fade + scale IN, then HOLD (forwards) — the reward stays up until the next hand clears
    * it (game-view drops .is-flashing on the next-hand transition), so it never fades early. */
@@ -581,10 +543,6 @@ button.is-hidden,
     font-size: 23px;
   }
 
-  .hud-points__comment {
-    font-size: 16px;
-  }
-
   .hud-info {
     bottom: 10px;
     left: 10px;
@@ -694,10 +652,6 @@ button.is-hidden,
   .hud-points__delta {
     font-size: 35px;
   }
-
-  .hud-points__comment {
-    font-size: 25px;
-  }
 }
 
 @media (min-width: 1700px) {
@@ -707,10 +661,6 @@ button.is-hidden,
 
   .hud-points__delta {
     font-size: 42px;
-  }
-
-  .hud-points__comment {
-    font-size: 30px;
   }
 }
 

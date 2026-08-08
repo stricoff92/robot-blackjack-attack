@@ -74,7 +74,7 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 ?forcePairs=8                          # split 8s every hand
 ?forcePairs&tokens=1000                # splits + re-splits with tokens to burn
 ?dealer=6&dealerHealth=5               # the final RGB dealer, near death
-?dealer=6&chips=8000                   # Dealer 6 with a fat stack → the 12.5% wealth-floor bet kicks in
+?dealer=6&chips=8000                   # Dealer 6 with a fat stack → the 25% wealth-floor bet kicks in
 ?chipUpgrade=3&tokenUpgrades=2         # maxed Payout + Tokens through tier 2
 ?sabotageUpgrade=3&dealer=5            # maxed Sabotage, starting at dealer 5
 ?dealerBlackjack&sabotageUpgrade=1     # watch the refund animation on repeat

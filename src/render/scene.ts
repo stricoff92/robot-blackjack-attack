@@ -8,8 +8,9 @@
 // can animate), which sits below this table layer's rail — so the rail still
 // overlaps the dealer's lower body and it reads as standing *behind* the table.
 // This module keeps the shared dealer GEOMETRY (dealerBox / dealerEyes) as the
-// single source of truth that the figure, the health bar and the chip anchors read.
+// single source of truth that the figure and the chip anchors read.
 
+import { deviceDpr } from './canvas'
 import { createFeltTexture, type FeltCanvas } from './felt'
 
 export interface Layout {
@@ -60,7 +61,7 @@ export class Scene {
   // Table layer: felt + rail. Drawn on a transparent canvas so the back layer
   // shows through above the rail.
   drawTable(ctx: CanvasRenderingContext2D, layout: Layout): void {
-    const dpr = window.devicePixelRatio || 1
+    const dpr = deviceDpr()
     this.drawFelt(ctx, layout, dpr)
     drawRail(ctx, layout)
   }
@@ -147,8 +148,8 @@ export function clampRightX(l: Layout, naturalX: number): number {
 }
 
 // The felt's curved top edge (y) at a given x. The rail sits in the band just
-// above this. Anything meant to stay off the table (the health bar) must keep
-// below this minus the rail thickness.
+// above this. Anything meant to stay off the table must keep below this minus the
+// rail thickness.
 export function feltTopEdgeY(l: Layout, x: number): number {
   const t = clamp(x / l.width, 0, 1)
   const mt = 1 - t
@@ -225,8 +226,8 @@ function drawRail(ctx: CanvasRenderingContext2D, l: Layout): void {
 }
 
 // The dealer's on-screen footprint, shared by the dealer art and anything that
-// needs to stand beside it (the health bar). Kept in one place so the two never
-// drift apart on resize.
+// needs to line up with it (the eye glow, chip anchors, damage FX). Kept in one
+// place so they never drift apart on resize.
 export interface DealerBox {
   cx: number // horizontal centre
   headCenterY: number

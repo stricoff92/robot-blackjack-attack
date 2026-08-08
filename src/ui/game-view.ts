@@ -214,7 +214,7 @@ class GameView {
   private scoreReleaseAt = 0
   // The combo multiplier the nexus is projecting into the middle of the felt on a HIT, or
   // null when nothing is up. It ticks `from`→`to` up (tone 'up') on a survived hit, or back
-  // to ×1.00 ('down') on a bust. Nothing shows until `startAt` — the drawn card's settle
+  // to ×1.00 ('down') when a lost hand (busted or beaten) resets it. Nothing shows until `startAt` — the drawn card's settle
   // (anim.animEnd) — so it never reveals the outcome before the flip. From startAt it ticks
   // over COMBO_TICK_MS, holds to `hideAt`, then fades COMBO_PROJ_FADE_MS. (Hand-end points
   // are NOT projected — that read as chips; they show as the top-right "+base ×mult" delta.)
@@ -310,12 +310,9 @@ class GameView {
   // split/move) and hidden on the static table layer.
   private deckOnCards = false
   // Which dealer's colour the deck is currently painted in (marks progression). On a
-  // kill this stays the OUTGOING colour until the riffle finishes, then commits to
-  // `deckColorIncoming` — so the reshuffle IS the deck swap, cross-fading old → new.
+  // kill the deck swap is the spawn ceremony (shred + fresh deck), which commits the
+  // new colour when it settles (see the deckColorShift assignment there).
   private deckColorShift = 1
-  private deckColorIncoming: number | null = null
-  // Edge tracker for that commit: the riffle just ended (shuffle() went non-null → null).
-  private shufflingLast = false
   // Edge tracker for the shuffle sfx: true once the riffle passes its split phase
   // and the piles start merging (where the clip's cascade actually sounds).
   private shuffleMergingLast = false
@@ -387,12 +384,10 @@ class GameView {
   private nsfBadges!: Record<string, HTMLElement>
   // Per-powerup cost-pill number spans, rewritten each frame to the inflated price.
   private costPills!: Record<string, HTMLElement>
-  // The arcade points counter (top-right): the number span (swelled as it rolls), the
-  // "+N" delta that flashes underneath each time it starts ticking, and a caption below
-  // that that fades in/out with the delta ("Double!", risk taunts…).
+  // The arcade points counter (top-right): the number span (swelled as it rolls) and
+  // the "+N" delta that flashes underneath each time it starts ticking.
   private pointsCountEl!: HTMLElement
   private pointsDeltaEl!: HTMLElement
-  private pointsCommentEl!: HTMLElement
   // Last values written to the points counter's DOM, so updatePointsCounter can skip the
   // write when nothing changed (it's called every frame, like the token counter).
   private lastPointsText = ''
@@ -679,10 +674,7 @@ class GameView {
       const x = rest.x + (centerX - rest.x) * this.anim.deckShift()
       const shuffle = this.anim.shuffle()
       if (shuffle !== null) {
-        // On a dealer change the riffle cross-fades the outgoing deck out and the
-        // new dealer's deck in; on a same-dealer reshuffle there's no incoming.
-        const incoming = this.deckColorIncoming !== null ? dealerColors(this.deckColorIncoming, timestamp).back : undefined
-        drawShuffle(ctx, x, rest.y, rest.w, rest.h, shuffle, incoming)
+        drawShuffle(ctx, x, rest.y, rest.w, rest.h, shuffle)
       } else {
         drawShoe(ctx, x, rest.y, rest.w, rest.h)
       }
@@ -895,12 +887,16 @@ class GameView {
     house('H16') // the dealer always hits a hard 16 or below
     if (rules.dealerSoft17 === 'hit') {
       house('H17')
-    } else if (rules.dealerSoft17 === 'smart') {
+    } else if (rules.dealerSoft17 === 'smart' && rules.dealerHardHitCeiling <= 17) {
+      // Smart 17: hits a hard/soft 17 when behind. Skipped when the desperation
+      // ceiling has risen above 17 — the raised-ceiling flag below already reads
+      // "hits up to N when behind", which subsumes this, so printing both is redundant.
       house('H17_when_behind')
-    } else {
+    } else if (rules.dealerSoft17 === 'stand') {
       house('S17')
     }
-    // The final dealer's desperation hard-hit ceiling (17 normally; rises as it's wounded).
+    // The final dealer's desperation hard-hit ceiling (17 normally; rises as it's
+    // wounded) — the single escalating "when behind" flag: 17 → 18 → 19 → 20.
     if (rules.dealerHardHitCeiling > 17) {
       house(`H${rules.dealerHardHitCeiling}_when_behind`)
     }
@@ -915,9 +911,9 @@ class GameView {
     if (rules.allowSplit) {
       house('SPLIT_TO_2') // may split once, up to 2 hands (round.ts MAX_HANDS)
     }
-    // Heal-on-win: a late dealer repairs this HP range whenever it beats the player.
+    // Heal-on-win: a late dealer repairs itself whenever it beats the player.
     if (shift.healOnWin[1] > 0) {
-      house(`HEAL_ON_WIN_${shift.healOnWin[0]}-${shift.healOnWin[1]}`)
+      house('DEALER_HEALS')
     }
     if (shift.minBetPct > 0) {
       house(`BET_FLOOR_${Math.round(shift.minBetPct * 100)}%`)
@@ -944,9 +940,6 @@ class GameView {
       // ×1.10 → "TOKEN_x1.1", ×1.18 → "TOKEN_x1.18" (drop a trailing zero).
       player(`TOKEN_x${rules.tokenMultiplier.toFixed(2).replace(/0$/, '')}`)
     }
-    if (run.upgrades.tokenEco > 0) {
-      player('INFLATION_RESIST')
-    }
 
     return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags }
   }
@@ -957,7 +950,7 @@ class GameView {
   private handResults(timestamp: number): (RoundResult | undefined)[] | undefined {
     const { phase, round } = this.state
     if (phase !== 'resolved' || !round) {
-      return undefined // 'over' uses the centered game-over banner instead
+      return undefined // 'over' shows the run summary on the felt (nexus score screen), not per-hand results
     }
     if (this.anim.isAnimating(timestamp)) {
       return undefined
@@ -982,6 +975,15 @@ class GameView {
         sfx.play('player-won')
       } else if (net < 0) {
         sfx.play('player-lost')
+      }
+      // A dealer that was just DESTROYED doesn't react. applyRound has already advanced the
+      // shift to the next dealer (so playDealerAngry/Laugh would speak in the WRONG dealer's
+      // voice) and zeroed handsThisDealer — which, at a resolved hand, only happens on a kill.
+      // The kill/attack + walk-in sequence carries the audio instead. Dealer 1 depends on this:
+      // beating it can trip an angry-growl trigger while the shift already reads 2, and Dealer 1
+      // must stay completely silent.
+      if (run.handsThisDealer === 0) {
+        return
       }
       // The dealer cackles when it OUTSCORED the player: a 'lose' hand (the player stood and
       // the dealer's total beat theirs, incl. a dealer natural). A player 'bust' is their own
@@ -1288,19 +1290,17 @@ class GameView {
       this.pointsDeltaEl.appendChild(mx)
     }
     restartAnimation(this.pointsDeltaEl, 'is-flashing')
-    // The old risk/Double caption line is retired — keep it clear if a prior one lingers.
-    this.pointsCommentEl.classList.remove('is-flashing')
   }
 
   // Project a hit's combo tick into the middle of the felt: the multiplier rolls `from`→`to`
-  // ('up' on a survived hit, 'down' to ×1.00 on a bust). Held back until `startAt` — the
+  // ('up' on a survived hit, 'down' to ×1.00 when a lost hand resets the combo). Held back until `startAt` — the
   // drawn card's settle — so it never spoils the outcome before the flip. Then holds + fades.
   private showComboTick(from: number, to: number, tone: 'up' | 'down', startAt: number): void {
     this.comboProj = { from, to, tone, startAt, hideAt: startAt + COMBO_TICK_MS + COMBO_HOLD_MS }
   }
 
   // Trigger a combo tick from a state change: a surviving hit grew the combo (tick up), or a
-  // bust reset it (tick down to ×1.00). Held back to the card's settle (anim.animEnd, or now
+  // lost hand (busted or beaten) reset it (tick down to ×1.00). Held back to the card's settle (anim.animEnd, or now
   // if already settled) so it doesn't reveal survived/busted before the card flips. Skips
   // New-run/game-over transitions (prevPhase/phase 'over'), which zero the combo silently.
   private updateComboProjection(prevCombo: number, prevPhase: SessionState['phase'], now: number): void {
@@ -1335,8 +1335,10 @@ class GameView {
     return { proj: { mult, tone: p.tone }, age: now - p.startAt, fade }
   }
 
-  // Animation loop: runs while cards are in motion, then parks itself. Only the
-  // cards layer is touched; the overlay is synced only on the animate→idle edge.
+  // Animation loop: repaints the dynamic canvas layers every frame. It never fully
+  // parks — the nexus's perpetual hover keeps it running (see the unconditional
+  // reschedule at the end of frame()) — and the overlay is synced on the animate→idle
+  // edge (and every frame while an upgrade pick is pending).
   private readonly frame = (timestamp: number): void => {
     this.anim.setNow(timestamp)
     // Tap-to-start: once the post-tap fade-out beat (TAP_FADE_MS) has elapsed, start the scene —
@@ -1469,11 +1471,9 @@ class GameView {
       this.heldChips = null
       this.clearPending = false
     }
-    // Commit the deck's new colour the instant the riffle finishes reforming it
-    // (shuffle went non-null → null): the new deck is fully riffled in, so the rest
-    // of the choreography (slide-back, next deal) uses the incoming dealer's colour.
+    // Track the riffle's progress (null when not shuffling) — used to fire the shuffle
+    // sfx at the merge and to draw the reforming deck.
     const shuffleT = this.anim.shuffle()
-    const shufflingNow = shuffleT !== null
     // Fire the shuffle sfx the frame the riffle passes its split phase and the
     // piles start merging — that's where the clip's cascade sound sits (it has no
     // silent lead-in), and the merge is sized to the clip so they end together.
@@ -1482,11 +1482,6 @@ class GameView {
       sfx.play('shuffle')
     }
     this.shuffleMergingLast = merging
-    if (this.shufflingLast && !shufflingNow && this.deckColorIncoming !== null) {
-      this.deckColorShift = this.deckColorIncoming
-      this.deckColorIncoming = null
-    }
-    this.shufflingLast = shufflingNow
     // The result just became visible — the resolved/over hand's cards have
     // settled (same gate the Win/Lose label uses). Play the win or loss sting
     // once; the flag resets when the round leaves the resolved/over phases.
@@ -1529,10 +1524,11 @@ class GameView {
       // hold the settle (and the Next-hand button) until they've landed.
       timestamp < this.attackReadyAt
 
-    // The card + chip sequence just finished: run the one-time settle. The health
-    // bar may keep animating past this point (its drop lands after the reveal) —
-    // that's handled by the loop-alive check below and must NOT hold up the
-    // settle, or the buttons and next deal would stall behind it.
+    // The card + chip sequence just finished: run the one-time settle. Other systems
+    // (the dealer's damage/heal FX and its death choreography) may keep animating past
+    // this point — the integrity drop lands after the reveal — but the loop stays alive
+    // on the nexus hover below regardless, so they must NOT hold up the settle, or the
+    // buttons and next deal would stall behind them.
     if (!sequenceAnimating && this.lastAnimating) {
       this.raf = 0 // let a re-deal's run() → ensureLoop reschedule cleanly
       this.lastAnimating = false
@@ -1853,9 +1849,6 @@ class GameView {
     return btn
   }
 
-  // Pin the info button just left of the dealer's head, vertically centred on it, and
-  // size it to the head so it tracks the figure across screen sizes. Coordinates are in
-  // CSS pixels — the overlay shares the canvas's box (see tokenTarget).
   // Toggle the nexus spec-sheet projection on or off, arming its flicker-in / -out.
   private toggleSpec(): void {
     const t = now()
@@ -1974,8 +1967,7 @@ class GameView {
     const el = element('div', 'hud-points')
     this.pointsCountEl = element('div', 'hud-points__count')
     this.pointsDeltaEl = element('div', 'hud-points__delta')
-    this.pointsCommentEl = element('div', 'hud-points__comment')
-    el.append(this.pointsCountEl, this.pointsDeltaEl, this.pointsCommentEl)
+    el.append(this.pointsCountEl, this.pointsDeltaEl)
     return el
   }
 
@@ -2070,7 +2062,6 @@ class GameView {
         this.scoreReleaseAt = 0
         this.comboProj = null // drop any lingering combo projection
         this.pointsDeltaEl.classList.remove('is-flashing')
-        this.pointsCommentEl.classList.remove('is-flashing')
         this.scoreTicker.set(this.displayedScore())
       }
 
@@ -2081,7 +2072,6 @@ class GameView {
         const pa = this.pendingAttack
         this.pendingAttack = null
         const attackStart = this.chips.animEnd + LASER_GAP
-        this.deckColorIncoming = null
         if (isKill && this.state.phase === 'choosing-upgrade') {
           // The kill grants an upgrade pick: play only the DEATH now (the figure breaks
           // apart, the bar drains). The replacement's walk-in + shred + fresh deck are
@@ -2114,7 +2104,6 @@ class GameView {
         // to chew — clear collectRound (beginSpawn then shreds only the resting deck), and
         // reset the game-over state so the fresh run starts clean. No laser (no attack).
         this.pendingAttack = null
-        this.deckColorIncoming = null
         this.collectRound = null
         this.endShredDone = false
         this.scoreRevealAt = 0
@@ -2130,7 +2119,6 @@ class GameView {
         // refresh the health + dealer state now.
         this.anim.collect(prevRound, t)
         this.pendingAttack = null
-        this.deckColorIncoming = null
         this.dealAfter = 0
         this.dealer.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
       }
@@ -2421,7 +2409,6 @@ class GameView {
     this.dealer.setLevel(c.incomingIntegrity, c.incomingShift)
     this.dealer.setShift(c.incomingShift)
     this.dealer.spawn(walkInStart)
-    this.deckColorIncoming = null
     this.dealAfter = this.beginSpawn(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
 

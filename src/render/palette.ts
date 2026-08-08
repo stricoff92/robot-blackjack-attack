@@ -63,11 +63,11 @@ const fixedColorsCache = new Map<number, DealerColors>()
 // the RGB dealer, whose colour advances with time.
 export function dealerColors(shiftIndex: number, now: number): DealerColors {
   if (isRgbDealer(shiftIndex)) {
-    const bowtieRgb = cycleRgb(now, RGB_PERIOD_MS)
+    const bowtieRgb = desaturate(cycleRgb(now, RGB_PERIOD_MS))
     // Snap the deck to the centre of the current phase step, so a whole step shares
     // one cached back sprite (and the same step recurs every cycle → cache hits).
     const step = Math.floor(rgbPos(now) * RGB_STEPS)
-    const deckRgb = cycleRgb(((step + 0.5) / RGB_STEPS) * RGB_PERIOD_MS, RGB_PERIOD_MS)
+    const deckRgb = desaturate(cycleRgb(((step + 0.5) / RGB_STEPS) * RGB_PERIOD_MS, RGB_PERIOD_MS))
     return {
       bowtie: rgbCss(bowtieRgb),
       bowtieKnot: rgbCss(scale(bowtieRgb, 0.72)),
@@ -112,6 +112,18 @@ function cycleRgb(now: number, period: number): Rgb {
 
 function channel(phase: number): number {
   return Math.floor((Math.sin(phase * 2 * Math.PI) * 0.5 + 0.5) * 255)
+}
+
+// The raw cycle hits pure primaries at its sine peaks, which read as harsh/neon on the
+// final dealer's bowtie and card backs. Pull each channel partway toward the constant
+// mid-grey the cycle already averages to — muting the sweep to a softer, washed-out
+// pastel while it still visibly cycles. Mixing toward the mean leaves the channel sum
+// (and thus the steady overall brightness) unchanged. 1 = full colour, 0 = grey.
+const RGB_SATURATION = 0.5
+function desaturate([r, g, b]: Rgb): Rgb {
+  const mid = 127.5 // the cycle's constant channel average (three sines 120° apart)
+  const mix = (c: number): number => Math.round(mid + (c - mid) * RGB_SATURATION)
+  return [mix(r), mix(g), mix(b)]
 }
 
 function scale([r, g, b]: Rgb, k: number): Rgb {

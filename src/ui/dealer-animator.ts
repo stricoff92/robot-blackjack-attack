@@ -2,12 +2,11 @@
 // low-health eye flicker, and the death → walk-in choreography that plays when
 // a dealer is destroyed. Also drives the eye-glow strength on the mask layer.
 //
-// Mirrors HealthAnimation / DealAnimation: this owns timing (absolute
-// performance.now() stamps), render/dealer.ts + render/nexus.ts own the drawing.
-// One entry point, sync(), is called from GameView.run alongside health.sync with
-// the same startAfter, so damage/death land in step with the card reveal + the
-// health bar. The kill phase durations are EXPORTED so health-animator.ts locks
-// its drain/pause/refill to them (they can't drift apart).
+// Mirrors DealAnimation: this owns timing (absolute performance.now() stamps),
+// render/dealer.ts + render/nexus.ts own the drawing. One entry point, sync(), is
+// called from GameView.run with the deal's startAfter, so damage/death land in step
+// with the card reveal. The kill phase durations are EXPORTED so GameView can
+// sequence the death → walk-in beat against them (they can't drift apart).
 
 import { maxIntegrityFor } from '../game/run'
 import { voiceEnvelope, type VoicePattern } from '../audio/voice'
@@ -71,7 +70,7 @@ const FX_BURST_LIFE = 1200 // a burst is finished (dropped) once it ages past th
 const TREMOR_THRESHOLD = 0.5 // no tremors at or above 50% health
 const TREMOR_MAX_INTERVAL = 4000 // ms between shudders just below 50% health (rare)
 const TREMOR_MIN_INTERVAL = 1200 // ms between shudders near death (the ~1/sec floor)
-const TREMOR_JITTER = 0.25 // each shudder's time is nudged ± this fraction of the interval (random-looking cadence)
+const TREMOR_JITTER = 0.25 // shudder time nudged by ±TREMOR_JITTER/2 (±0.125·interval), for a random-looking cadence
 const TREMOR_PULSE_MS = 350 // how long one shudder lasts (a cos hump swells it in then out)
 const TREMOR_AMP = 0.11 // shudder magnitude in headR-fraction units — CONSTANT, so every one is clearly visible
 
@@ -272,12 +271,6 @@ export class DealerAnimation implements DealerView, StrikeView {
     }
     const blockEnd = this.killStart + (this.killWalkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
     return now >= this.killStart && now < blockEnd
-  }
-
-  // True while a strike/hit/kill sequence is playing (NOT the idle eye flicker).
-  // Used to hold the next deal until the laser + any death choreography finishes.
-  isAttacking(now: number): boolean {
-    return this.mode !== 'none' && now < this.seqEnd
   }
 
   // The damage bursts (sparks + smoke) erupting off the figure this frame: empty at or

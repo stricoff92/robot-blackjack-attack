@@ -23,7 +23,7 @@ import { clampRightX, dealerBox, type Layout } from './scene'
 import type { Point } from './tokens'
 
 // The nexus sits in the empty mid-right felt band: below the shoe (top-right of
-// centre) and the health bar (top-right), above the bankroll pile (bottom-right),
+// centre) and above the bankroll pile (bottom-right),
 // clear of the centred cards + bet circle. `a` (in nexusGeom) is the device's centre;
 // the two lenses stack vertically along it (see nexusUtilityLight / nexusHoloLight).
 export function nexusAnchor(l: Layout): Point {
@@ -235,7 +235,7 @@ function traceBodyOctagon(ctx: CanvasRenderingContext2D, cx: number, top: number
 // as an alien optic set into segmented casing plate.
 function drawHexBezel(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number): void {
   // Drawn around a local origin at (cx, cy) so the (identical) bezel gradient is built
-  // once and reused for all three lenses across every frame.
+  // once and reused for both lenses across every frame.
   ctx.save()
   ctx.translate(cx, cy)
   ctx.beginPath()
@@ -389,8 +389,8 @@ function drawDimLens(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: n
   ctx.arc(0, 0, r * 1.14, 0, Math.PI * 2)
   ctx.fill()
 
-  // The dim lens itself, lit from the upper-left. `s.core` distinguishes the three lens
-  // palettes (red / yellow / holo-off), so it keys the cache alongside the radius.
+  // The dim lens itself, lit from the upper-left. `s.core` distinguishes the two lens
+  // palettes (utility / holo-off), so it keys the cache alongside the radius.
   const lens = cachedGradient(ctx, `nexus-lens:${Math.round(r)}:${s.core}`, (c) => {
     const g = c.createRadialGradient(-r * 0.25, -r * 0.25, r * 0.1, 0, 0, r)
     g.addColorStop(0, s.core)
@@ -535,11 +535,11 @@ export function drawStrikeFx(
   }
 }
 
-// A restorative beam from the red emitter: a soft green-gold glow with a warm
-// (not hot) core, healing motes streaming up it toward the dealer, and a gentle
-// aura blooming on the dealer once it lands. Drawn additively like the laser, but
-// softer and cooler-edged so it reads as nourishing light, not a blast. `travel`
-// advances the head nexus → dealer; `alpha` fades the whole thing on the wind-down.
+// A restorative WAVE from the emitter: a thick, translucent green channel with soft
+// edges (no hot laser spine) and semi-transparent wavefront rings that travel up it
+// toward the dealer, so it reads as flowing nourishing energy rather than a weapon.
+// A gentle aura blooms on the dealer once it lands. Drawn additively but kept low-alpha
+// and wide. `travel` advances the head nexus → dealer; `alpha` fades it on the wind-down.
 function drawHealBeam(
   ctx: CanvasRenderingContext2D,
   from: Point,
@@ -551,64 +551,73 @@ function drawHealBeam(
 ): void {
   const hx = from.x + (to.x - from.x) * travel
   const hy = from.y + (to.y - from.y) * travel
-  const outer = clamp(scale * 0.022, 5, 18)
+  const dx = hx - from.x
+  const dy = hy - from.y
+  const len = Math.hypot(dx, dy)
 
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   ctx.lineCap = 'round'
 
-  // Soft green-gold outer glow, brightening toward the head.
-  const grad = ctx.createLinearGradient(from.x, from.y, hx, hy)
-  grad.addColorStop(0, `rgba(150, 240, 130, ${alpha * 0.16})`)
-  grad.addColorStop(1, `rgba(180, 255, 150, ${alpha * 0.42})`)
-  ctx.strokeStyle = grad
-  ctx.lineWidth = outer
-  ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(hx, hy)
-  ctx.stroke()
+  // The channel is much wider + far more transparent than the laser — a soft band of
+  // light, not a hot spine.
+  const width = clamp(scale * 0.055, 12, 46)
 
-  // A warm white-green core — thinner and gentler than the laser's hot white spine.
-  ctx.strokeStyle = `rgba(235, 255, 215, ${alpha * 0.78})`
-  ctx.lineWidth = outer * 0.3
-  ctx.beginPath()
-  ctx.moveTo(from.x, from.y)
-  ctx.lineTo(hx, hy)
-  ctx.stroke()
-
-  // Healing motes flowing up the beam toward the dealer — energy being delivered.
-  // Each cycles along the beam on a shared clock at its own hashed phase + lane, so
-  // the stream is deterministic per frame (no Math.random) yet visibly moves.
-  const dx = hx - from.x
-  const dy = hy - from.y
-  const len = Math.hypot(dx, dy)
   if (len > 1) {
     const nx = dx / len
     const ny = dy / len
     const perpX = -ny
     const perpY = nx
-    const MOTES = 7
-    for (let i = 0; i < MOTES; i++) {
-      const phase = (now / 900 + hash(i, 17)) % 1
+
+    // Wide, very translucent outer body, brightening slightly toward the head.
+    const grad = ctx.createLinearGradient(from.x, from.y, hx, hy)
+    grad.addColorStop(0, `rgba(120, 230, 140, ${alpha * 0.09})`)
+    grad.addColorStop(1, `rgba(155, 245, 160, ${alpha * 0.18})`)
+    ctx.strokeStyle = grad
+    ctx.lineWidth = width
+    ctx.beginPath()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(hx, hy)
+    ctx.stroke()
+
+    // A gentler translucent inner band — keeps the channel readable without a bright
+    // core (that hard white spine is what made it look like a laser).
+    ctx.strokeStyle = `rgba(205, 255, 205, ${alpha * 0.14})`
+    ctx.lineWidth = width * 0.42
+    ctx.beginPath()
+    ctx.moveTo(from.x, from.y)
+    ctx.lineTo(hx, hy)
+    ctx.stroke()
+
+    // Semi-transparent wavefront rings travelling nexus → dealer: each is a shallow arc
+    // bowed toward the dealer, fading in near the emitter and out at the head, so the
+    // channel visibly pulses like flowing energy. Deterministic per frame (no state).
+    const RINGS = 4
+    const half = width * 0.5
+    const bow = width * 0.55 // how far the wavefront bulges forward along travel
+    for (let k = 0; k < RINGS; k++) {
+      const phase = (now / 700 + k / RINGS) % 1
       const along = phase * len
-      const fade = Math.sin(phase * Math.PI) // fade in/out at the beam's ends
-      const off = (hash(i, 33) - 0.5) * outer * 0.7
-      const mx = from.x + nx * along + perpX * off
-      const my = from.y + ny * along + perpY * off
-      const r = outer * (0.14 + hash(i, 51) * 0.16)
-      const a = alpha * 0.9 * fade
-      const m = ctx.createRadialGradient(mx, my, 0, mx, my, r)
-      m.addColorStop(0, `rgba(240, 255, 220, ${a})`)
-      m.addColorStop(1, 'rgba(160, 240, 140, 0)')
-      ctx.fillStyle = m
+      const fade = Math.sin(phase * Math.PI) // in/out at the beam's ends
+      if (fade <= 0.02) {
+        continue
+      }
+      const cxp = from.x + nx * along
+      const cyp = from.y + ny * along
+      // Endpoints span the beam width; the control point pushes the middle forward so
+      // the ring reads as a curved wavefront, not a flat bar.
+      ctx.strokeStyle = `rgba(210, 255, 210, ${alpha * fade * 0.5})`
+      ctx.lineWidth = Math.max(2, width * 0.16)
       ctx.beginPath()
-      ctx.arc(mx, my, r, 0, Math.PI * 2)
-      ctx.fill()
+      ctx.moveTo(cxp + perpX * half, cyp + perpY * half)
+      ctx.quadraticCurveTo(cxp + nx * bow, cyp + ny * bow, cxp - perpX * half, cyp - perpY * half)
+      ctx.stroke()
     }
   }
 
   // A soft restorative aura blooming on the dealer once the beam has landed, plus a
-  // fountain of green sparks shooting off the impact point.
+  // fountain of green medical crosses drifting off the impact point — the diegetic
+  // "the dealer is repairing itself" read now that the health bar is gone.
   if (travel >= 0.999) {
     const auraR = scale * 0.07
     const aura = ctx.createRadialGradient(to.x, to.y, 0, to.x, to.y, auraR)
@@ -620,7 +629,7 @@ function drawHealBeam(
     ctx.arc(to.x, to.y, auraR, 0, Math.PI * 2)
     ctx.fill()
 
-    drawHealSparks(ctx, to.x, to.y, alpha, scale, now)
+    drawHealCrosses(ctx, to.x, to.y, alpha, scale, now)
   }
 
   ctx.restore()
@@ -938,9 +947,9 @@ function drawGlow(ctx: CanvasRenderingContext2D, cx: number, cy: number, radius:
 const SPARK_COUNT = 28
 const SPARK_GRAVITY = 0.06 // downward droop at full life, as a fraction of `scale`
 
-const HEAL_SPARK_COUNT = 16
-const HEAL_SPARK_PERIOD_MS = 640 // one heal spark's fly-out-and-fade lifetime
-const HEAL_SPARK_REACH = 0.13 // outward distance as a fraction of `scale`
+const HEAL_CROSS_COUNT = 12
+const HEAL_CROSS_PERIOD_MS = 900 // one cross's drift-out-and-fade lifetime (slower = calmer)
+const HEAL_CROSS_REACH = 0.09 // outward drift distance as a fraction of `scale` (gentle)
 
 function drawSparkBurst(ctx: CanvasRenderingContext2D, cx: number, cy: number, p: number, scale: number): void {
   const fade = 1 - smoothEnd2(p) // brightness: fades out on smoothEnd2
@@ -985,54 +994,83 @@ function drawSparkBurst(ctx: CanvasRenderingContext2D, cx: number, cy: number, p
   ctx.restore()
 }
 
-// Green sparks/bubbles bursting off the dealer where the heal beam lands — a
-// continuous fountain while the beam holds. Each spark loops on its own staggered
-// phase (deterministic per frame from hash(), no Math.random) so it streams smoothly:
-// born at the impact, shooting outward with a gentle buoyant lift, then fading. `alpha`
-// winds the whole thing down with the beam.
-function drawHealSparks(ctx: CanvasRenderingContext2D, cx: number, cy: number, alpha: number, scale: number, now: number): void {
+// Green glowing medical crosses drifting off the dealer where the heal beam lands —
+// a continuous fountain while the beam holds, the explicit "the dealer is being
+// repaired" symbol. Each cross loops on its own staggered phase (deterministic per
+// frame from hash(), no Math.random) so it streams smoothly: born at the impact,
+// drifting outward with a gentle buoyant lift and a slow tilt, brightening then
+// fading. `alpha` winds the whole thing down with the beam.
+function drawHealCrosses(ctx: CanvasRenderingContext2D, cx: number, cy: number, alpha: number, scale: number, now: number): void {
   if (alpha <= 0.001) {
     return
   }
-  const reach = scale * HEAL_SPARK_REACH
+  const reach = scale * HEAL_CROSS_REACH
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
-  ctx.lineCap = 'round'
-  for (let i = 0; i < HEAL_SPARK_COUNT; i++) {
-    const phase = (now / HEAL_SPARK_PERIOD_MS + hash(i, 13)) % 1
+  for (let i = 0; i < HEAL_CROSS_COUNT; i++) {
+    const phase = (now / HEAL_CROSS_PERIOD_MS + hash(i, 13)) % 1
     const fade = Math.sin(phase * Math.PI) * alpha // born at the impact, brighten, fade
     if (fade <= 0.01) {
       continue
     }
     const angle = hash(i, 71) * Math.PI * 2
-    const cos = Math.cos(angle)
-    const sin = Math.sin(angle)
     const dist = reach * smoothEnd3(phase) * (0.45 + hash(i, 83) * 0.9) // fast out, easing
-    const rise = scale * 0.05 * phase * phase // a gentle buoyant lift as it flies
-    const x = cx + cos * dist
-    const y = cy + sin * dist - rise
-    // A round green bubble with a soft glowing halo.
-    const r = scale * (0.006 + hash(i, 51) * 0.008) * (0.6 + 0.7 * fade)
-    const gc = 232 + Math.floor(hash(i, 29) * 23) // green 232..255
-    const rc = 70 + Math.floor(hash(i, 37) * 70) //  red   70..140 (a touch of variety)
-    const bc = 95 + Math.floor(hash(i, 43) * 55) //  blue  95..150
-    const bub = ctx.createRadialGradient(x, y, 0, x, y, r)
-    bub.addColorStop(0, `rgba(${rc}, ${gc}, ${bc}, ${fade})`)
-    bub.addColorStop(1, 'rgba(70, 220, 110, 0)')
-    ctx.fillStyle = bub
+    const rise = scale * 0.03 * phase * phase // a gentle buoyant lift as it drifts up
+    const x = cx + Math.cos(angle) * dist
+    const y = cy + Math.sin(angle) * dist - rise
+    // A Greek/medical cross (equal arms), kept near-upright with a small hashed tilt
+    // and a slow drift-spin so it always reads as a "+", never an "×".
+    const tilt = (hash(i, 61) - 0.5) * 0.25 + phase * (hash(i, 67) - 0.5) * 0.3
+    const s = scale * (0.016 + hash(i, 51) * 0.012) * (0.7 + 0.5 * fade) // arm half-length
+    const t = s * 0.36 // arm half-thickness → clean medical-cross proportions
+
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.rotate(tilt)
+
+    // Soft green bloom behind the cross so it glows rather than reading as a flat glyph.
+    const haloR = s * 2.6
+    const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, haloR)
+    halo.addColorStop(0, `rgba(120, 240, 150, ${fade * 0.28})`)
+    halo.addColorStop(1, 'rgba(80, 220, 120, 0)')
+    ctx.fillStyle = halo
     ctx.beginPath()
-    ctx.arc(x, y, r, 0, Math.PI * 2)
+    ctx.arc(0, 0, haloR, 0, Math.PI * 2)
     ctx.fill()
-    // A short motion streak trailing back toward the impact — the "shoot away" read.
-    const len = scale * (0.012 + 0.016 * hash(i, 97)) * fade
-    ctx.strokeStyle = `rgba(190, 255, 190, ${fade * 0.45})`
-    ctx.lineWidth = Math.max(1, scale * 0.003)
-    ctx.beginPath()
-    ctx.moveTo(x - cos * len, y - sin * len)
-    ctx.lineTo(x, y)
-    ctx.stroke()
+
+    // The cross body — soft translucent green.
+    const gc = 236 + Math.floor(hash(i, 29) * 19) // green 236..255
+    ctx.fillStyle = `rgba(140, ${gc}, 160, ${fade * 0.5})`
+    tracePlus(ctx, s, t)
+    ctx.fill()
+
+    // A whiter inner cross for a faint glowing core (additive over the body).
+    ctx.fillStyle = `rgba(232, 255, 236, ${fade * 0.4})`
+    tracePlus(ctx, s * 0.62, t * 0.62)
+    ctx.fill()
+
+    ctx.restore()
   }
   ctx.restore()
+}
+
+// Trace a Greek cross ("+") centred at the current origin: `s` is the arm half-length,
+// `t` the arm half-thickness. Twelve corners walked clockwise from the top-left notch.
+function tracePlus(ctx: CanvasRenderingContext2D, s: number, t: number): void {
+  ctx.beginPath()
+  ctx.moveTo(-t, -s)
+  ctx.lineTo(t, -s)
+  ctx.lineTo(t, -t)
+  ctx.lineTo(s, -t)
+  ctx.lineTo(s, t)
+  ctx.lineTo(t, t)
+  ctx.lineTo(t, s)
+  ctx.lineTo(-t, s)
+  ctx.lineTo(-t, t)
+  ctx.lineTo(-s, t)
+  ctx.lineTo(-s, -t)
+  ctx.lineTo(-t, -t)
+  ctx.closePath()
 }
 
 function clamp(value: number, min: number, max: number): number {

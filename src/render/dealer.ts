@@ -1,13 +1,13 @@
 // The dealer robot: the figure standing behind the table, plus its glowing eyes.
 //
-// Geometry + paint only (mirrors health.ts / cards.ts); all timing lives in the
+// Geometry + paint only (mirrors cards.ts); all timing lives in the
 // dealer animator (ui), passed in as a DealerView. The figure is drawn on its
 // own 'dealer' layer, BELOW the table/rail — so its lower body and any death
 // debris tuck behind the rail exactly as the old placeholder did. The eyes' red
 // GLOW is drawn separately on the top 'mask' (light) layer via drawDealerEyeGlow.
 //
 // Reads dealerBox / dealerEyes from scene.ts (the single source of truth for the
-// figure's footprint, shared with the health bar, chip anchors and Analyze beams).
+// figure's footprint, shared with the chip anchors and Analyze beams).
 
 import { TOTAL_DEALERS } from '../game/run'
 import { smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
@@ -240,12 +240,13 @@ function drawFigure(
 
   drawBowtie(ctx, d, bowtie, bowtieKnot)
 
-  // Eye cores, drawn from dealerBox directly (matching dealerEyes' formula) — the
-  // emissive glow is a separate pass on the mask layer (drawDealerEyeGlow). A dark
-  // socket is always painted; the bright red LED is layered over it at `eyeCore`
-  // opacity, so a flickering low-health dealer's eyes read as blinking off (down to
-  // the dead socket) and back on.
-  const eyeY = d.headCenterY - d.headR * 0.18
+  // Eye cores — same geometry as dealerEyes() in scene.ts (−0.1·headR y, ±0.42·headR
+  // x, 0.16·headR r), so the cores sit exactly under the emissive glow, which is a
+  // separate pass on the mask layer (drawDealerEyeGlow) that reads dealerEyes. Keep
+  // these coefficients in sync with it. A dark socket is always painted; the bright
+  // red LED is layered over it at `eyeCore` opacity, so a flickering low-health
+  // dealer's eyes read as blinking off (down to the dead socket) and back on.
+  const eyeY = d.headCenterY - d.headR * 0.1
   const eyeR = d.headR * 0.16
   ctx.beginPath()
   ctx.arc(d.cx - d.headR * 0.42, eyeY, eyeR, 0, Math.PI * 2)

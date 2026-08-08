@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isBlackjack } from './hand'
+import { cardValue, isBlackjack } from './hand'
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
@@ -13,7 +13,7 @@ describe('Session', () => {
 
     expect(snapshot.phase).toBe('betting')
     expect(snapshot.run.chips).toBe(300)
-    expect(snapshot.run.tokens).toBe(0)
+    expect(snapshot.run.tokens).toBe(100) // STARTING_TOKENS buffer for the early powerups
   })
 
   it('deals a hand and plays it through to resolution', () => {
@@ -31,7 +31,7 @@ describe('Session', () => {
   })
 
   it('credits risk-scaled tokens when a hit keeps the hand alive', () => {
-    const session = new Session(1)
+    const session = new Session(9)
     session.deal()
 
     expect(session.snapshot().phase).toBe('playing')
@@ -62,7 +62,7 @@ describe('Session', () => {
   })
 
   it('grows the combo by the hit risk (not the score) and records the risk when a hit survives', () => {
-    const session = new Session(1)
+    const session = new Session(9)
     session.deal()
 
     const snap = session.snapshot()
@@ -95,9 +95,9 @@ describe('Session', () => {
   })
 
   it('builds the combo by each hit risk-gain and resets it on a bust', () => {
-    // Seed 1's opening hand survives several hits before busting — walk it up, watching the
+    // Seed 9's opening hand survives at least one hit before busting — walk it up, watching the
     // combo climb by comboGain(risk) each time, then bust and confirm it snaps back to 0.
-    const session = new Session(1)
+    const session = new Session(9)
     session.deal()
     expect(session.snapshot().run.combo).toBe(0)
 
@@ -118,7 +118,7 @@ describe('Session', () => {
   })
 
   it('carries the combo across a non-losing hand into the next hand', () => {
-    const session = new Session(1)
+    const session = new Session(9)
     session.deal()
     // Build some combo with one surviving hit, then stand it out.
     session.hit()
@@ -128,7 +128,7 @@ describe('Session', () => {
     while (session.snapshot().phase === 'playing') {
       session.stand()
     }
-    // Seed 1's hand isn't a total loss, so resolution keeps the combo (a LOST hand would
+    // Seed 9's hand isn't a total loss, so resolution keeps the combo (a LOST hand would
     // wipe it — that reset path is covered deterministically in run.test).
     const resolved = session.snapshot()
     expect(resolved.round!.hands.every((h) => h.outcome === 'lose' || h.outcome === 'bust')).toBe(false)
@@ -143,7 +143,9 @@ describe('Session', () => {
   })
 
   it('ignores powerup buys the player cannot afford', () => {
-    const session = new Session(1)
+    // Pin to a broke player so both buys are genuinely unaffordable (defeats the
+    // STARTING_TOKENS buffer, which would otherwise cover Freeze Dealer).
+    const session = new Session(1, { startTokens: 0 })
     session.deal()
     expect(session.snapshot().phase).toBe('playing')
 
@@ -157,7 +159,7 @@ describe('Session', () => {
   })
 
   it('ignores actions taken out of turn', () => {
-    const session = new Session(12345)
+    const session = new Session(12345, { startTokens: 0 })
 
     session.hit()
 
@@ -168,7 +170,7 @@ describe('Session', () => {
 
   describe('Analyze powerup', () => {
     it('does nothing when the player cannot afford it', () => {
-      const session = new Session(1)
+      const session = new Session(1, { startTokens: 0 })
       session.deal()
       expect(session.snapshot().phase).toBe('playing')
       expect(session.snapshot().run.tokens).toBe(0)
@@ -240,7 +242,7 @@ describe('Session', () => {
     })
   })
 
-  describe('Dealer 1 natural-blackjack guard rail', () => {
+  describe('opening-deal guard rails', () => {
     // The dealer's opening two cards; startRound seeds round.dealer as [shoe[2], shoe[3]]
     // and only appends to it when the dealer draws, so the first two are always the deal.
     const openingDealerCards = (session: Session) => session.snapshot().round!.dealer.slice(0, 2)
@@ -248,9 +250,20 @@ describe('Session', () => {
     // a hit, so right after deal() its first two cards are the deal.
     const openingPlayerCards = (session: Session) => session.snapshot().round!.hands[0].cards.slice(0, 2)
 
+    it('never deals Dealer 1 an Ace or 10-value up-card, on any seed', () => {
+      // The up-card is shoe[2] = round.dealer[0]. ~38% of honest shuffles open on an Ace or a
+      // ten-value up-card, so a broken rail would surface constantly across this sweep.
+      for (let seed = 1; seed <= 800; seed += 1) {
+        const session = new Session(seed)
+        session.deal()
+        const upCard = openingDealerCards(session)[0]
+        expect(upCard.rank === 'A' || cardValue(upCard) === 10).toBe(false)
+      }
+    })
+
     it('never deals Dealer 1 a natural blackjack, on any seed', () => {
-      // ~4.8% of honest shuffles open on a dealer natural, so across this many first
-      // deals a broken guard rail would surface dozens — this asserts none do.
+      // Barring the Ace/ten up-card also precludes a two-card natural (which needs an Ace
+      // paired with a ten). Across this many first deals a leak would surface dozens.
       for (let seed = 1; seed <= 800; seed += 1) {
         const session = new Session(seed)
         session.deal()
@@ -258,9 +271,10 @@ describe('Session', () => {
       }
     })
 
-    it('never deals the Dealer 1 PLAYER a natural blackjack, on any seed', () => {
-      // The rail guards both sides on Dealer 1: the player can't open on a natural either,
-      // so the game's very first hand is never a free win. Same seed sweep as the dealer.
+    it('never deals the PLAYER a natural on the very first hand, on any seed', () => {
+      // The player-side rail guards only the opening hand (a UI/UX fix, not a debuff): the
+      // game's very first deal is never an instant blackjack. A fresh session's first deal()
+      // is always that opening hand (handsThisDealer === 0), so this sweep exercises it.
       for (let seed = 1; seed <= 800; seed += 1) {
         const session = new Session(seed)
         session.deal()
@@ -268,17 +282,25 @@ describe('Session', () => {
       }
     })
 
-    it('holds the guard across every hand of the Dealer 1 fight', () => {
-      // Play a single run's worth of hands while it stays on Dealer 1 — each deal
-      // reshuffles, so the guard has to fire on every one, not just the first.
+    it('guards the dealer up-card on EVERY Dealer 1 hand, but the player only on the first', () => {
+      // Play a run's worth of hands while it stays on Dealer 1 — each deal reshuffles, so the
+      // DEALER up-card guard has to fire on every one (no Ace/ten face-up, ever — Dealer 1 is
+      // meant to be easy). The PLAYER guard is opening-hand only: after the first hand the player
+      // may open on a natural again (the buff), so we assert it's guarded on hand 0 and simply
+      // don't constrain it afterward.
       const session = new Session(4242)
+      let dealNumber = 0
       for (let hand = 0; hand < 40; hand += 1) {
         const snap = session.snapshot()
         if (snap.phase === 'over' || snap.run.shiftIndex !== 1) break
         if (snap.phase === 'betting') {
           session.deal()
-          expect(isBlackjack(openingDealerCards(session))).toBe(false)
-          expect(isBlackjack(openingPlayerCards(session))).toBe(false)
+          const upCard = openingDealerCards(session)[0]
+          expect(upCard.rank === 'A' || cardValue(upCard) === 10).toBe(false) // guarded EVERY hand
+          if (dealNumber === 0) {
+            expect(isBlackjack(openingPlayerCards(session))).toBe(false)
+          }
+          dealNumber += 1
           continue
         }
         if (snap.phase === 'resolved') {
@@ -287,16 +309,64 @@ describe('Session', () => {
         }
         session.stand()
       }
+      expect(dealNumber).toBeGreaterThan(1) // actually exercised multiple Dealer 1 hands, not just the opener
     })
 
-    it('leaves later dealers unguarded — a Dealer 2 natural is still possible', () => {
-      // The rail is Dealer 1 only. Jump straight to Dealer 2 and confirm at least one
-      // seed opens on an (honest) natural for either side, proving the guard doesn't leak
-      // past D1 for the player or the dealer.
+    it('lets the player open on a natural after the first Dealer 1 hand (the buff)', () => {
+      // The player-side rail is opening-hand only. Sweep seeds: play the guarded first hand,
+      // then hunt the following Dealer 1 deals for a player natural. At ~4.8% a side it must
+      // surface within this many seeds — proving the guard is lifted past the opening hand.
+      let sawLaterPlayerNatural = false
+      for (let seed = 1; seed <= 1500 && !sawLaterPlayerNatural; seed += 1) {
+        const session = new Session(seed)
+        for (let hand = 0; hand < 12; hand += 1) {
+          const snap = session.snapshot()
+          if (snap.phase === 'over' || snap.run.shiftIndex !== 1) break
+          if (snap.phase === 'betting') {
+            session.deal()
+            const dealt = session.snapshot()
+            // Only the deals AFTER the opening one may show a player natural.
+            if (dealt.run.handsThisDealer > 0 && isBlackjack(openingPlayerCards(session))) {
+              sawLaterPlayerNatural = true
+              break
+            }
+            continue
+          }
+          if (snap.phase === 'resolved') {
+            session.nextHand()
+            continue
+          }
+          session.stand()
+        }
+      }
+      expect(sawLaterPlayerNatural).toBe(true)
+    })
+
+    it('weakens the dealer up-card guard past Dealer 1 — mid dealers sometimes, late dealers freely', () => {
+      // The up-card reshuffle chance falls off fast (Dealer 1 100% → 2 30% → 3 15% → 0% from
+      // Dealer 4 on), so a 10/11 up-card that NEVER appears on Dealer 1 shows up often on a mid
+      // dealer (partial guard) and freely on a late one (unguarded). Sweep seeds per start-dealer
+      // and confirm at least one 10/11 up-card surfaces — proving the rail isn't Dealer-1-wide.
+      const sawTenOrAceUpcard = (startDealer: number) => {
+        for (let seed = 1; seed <= 400; seed += 1) {
+          const session = new Session(seed, { startDealer })
+          session.deal()
+          const up = openingDealerCards(session)[0]
+          if (up.rank === 'A' || cardValue(up) === 10) return true
+        }
+        return false
+      }
+      expect(sawTenOrAceUpcard(2)).toBe(true) // ~30% of Dealer 2 deals survive its 30% reshuffle
+      expect(sawTenOrAceUpcard(5)).toBe(true) // ~38% — Dealer 5 is fully unguarded
+    })
+
+    it('leaves Dealers 5 & 6 fully unguarded — a natural is still possible for either side', () => {
+      // Dealers 5 & 6 sit at 0% reshuffle, so both a dealer AND a player natural still appear
+      // honestly across seeds — the guard is completely lifted for the late game.
       let sawDealerNatural = false
       let sawPlayerNatural = false
       for (let seed = 1; seed <= 300 && !(sawDealerNatural && sawPlayerNatural); seed += 1) {
-        const session = new Session(seed, { startDealer: 2 })
+        const session = new Session(seed, { startDealer: 5 })
         session.deal()
         if (isBlackjack(openingDealerCards(session))) {
           sawDealerNatural = true

@@ -12,7 +12,7 @@ import { feltTopEdgeY, type Layout } from './scene'
 import { TITLE_FONT_FAMILY, titleFontReady } from './title-font'
 
 // How long the projection takes to flicker + scale fully in.
-export const TAP_STRIKE_MS = 520
+const TAP_STRIKE_MS = 520
 
 const CYAN: HoloTextStyle = { glow: 'rgba(130, 240, 236, 0.95)', bloom: 'rgba(150, 246, 242, 0.55)', core: 'rgba(214, 253, 251, 0.9)' }
 

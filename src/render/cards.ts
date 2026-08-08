@@ -241,7 +241,7 @@ export function drawHands(
   splitPrev?: Round,
   hideCounts = false,
 ): HoloRayTarget[] {
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const feltTop = l.edgeY
   const feltHeight = l.height - feltTop
   const { w: cardW, h: cardH } = cardSize(l)
@@ -717,7 +717,7 @@ function analysisGeom(ctx: CanvasRenderingContext2D, l: Layout, a: AnalysisReado
   }
 }
 
-// Monospace so digits + colons align between the two rows.
+// Monospace so the digits align between the two rows.
 function analysisFont(fontPx: number): string {
   return `700 ${fontPx}px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace`
 }
@@ -787,7 +787,7 @@ export function drawMulliganDiscard(ctx: CanvasRenderingContext2D, l: Layout, fr
   if (frames.length === 0) {
     return
   }
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const { w, h } = cardSize(l)
   const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
   const xs = rowXs(l.width / 2, frames.length, w)
@@ -827,7 +827,7 @@ export function drawReturnCard(
   if (fly >= 1) {
     return
   }
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const { w, h } = cardSize(l)
   const shoe = shoeAnchor(l)
   const fromX = fromCx - w / 2
@@ -856,7 +856,7 @@ export function drawBustBlock(
   card: Card,
   frame: BustBlockFrame,
 ): void {
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const count = round.hands.length
   const { w: cardW, h: cardH } = cardSize(l)
   const scale = handCardScale(l, count)
@@ -1002,7 +1002,7 @@ export function shoeAnchor(l: Layout): { x: number; y: number; w: number; h: num
 // depletes on screen. Position is explicit so the deck can slide during a
 // shuffle; `shoeAnchor` gives its resting spot.
 export function drawShoe(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const radius = w * 0.09
   const dx = w * SHOE_DX
   const dy = h * SHOE_DY
@@ -1053,7 +1053,7 @@ export function drawDepletingShoe(ctx: CanvasRenderingContext2D, l: Layout, rema
     return
   }
   const { x, y, w, h } = shoeAnchor(l)
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const radius = w * 0.09
   const dx = w * SHOE_DX
   const dy = h * SHOE_DY
@@ -1092,7 +1092,6 @@ export function drawDepletingShoe(ctx: CanvasRenderingContext2D, l: Layout, rema
 // apart, then cards fly from both piles into a single deck reforming in the
 // centre. Drawn on the cards layer (the static table-layer deck is hidden while
 // this plays, so the split leaves no ghost deck behind).
-const SHUFFLE_PASSES = 1
 // Portion of each riffle pass spent splitting apart (before the piles merge back
 // together). Exported so the shuffle sfx can fire exactly when the merge begins.
 export const SHUFFLE_SPLIT_FRACTION = 0.3
@@ -1107,7 +1106,7 @@ export function drawShuffle(
   t: number,
   incoming?: CardBack,
 ): void {
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   // On a dealer change the riffle is the deck swap: the outgoing deck (current
   // palette) splits and fades out while the incoming deck (the new dealer's colour)
   // riffles in, so the colour cross-fades right where the cards are already flying.
@@ -1116,8 +1115,7 @@ export function drawShuffle(
   const inBack = incoming ? getCardSprite(null, w, h, dpr, incoming) : outBack
   const offset = w * 0.9 // how far the two piles sit from centre
 
-  const pass = Math.min(SHUFFLE_PASSES - 1, Math.floor(t * SHUFFLE_PASSES))
-  const ct = t * SHUFFLE_PASSES - pass // 0..1 within this pass
+  const ct = t // 0..1 through the single riffle pass
 
   if (ct < SHUFFLE_SPLIT_FRACTION) {
     // Split: the centre (outgoing) deck divides into two piles sliding apart.

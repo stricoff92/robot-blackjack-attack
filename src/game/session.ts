@@ -28,6 +28,7 @@ import {
   abilitiesLocked,
   bumpCombo,
   dealerHardHitCeiling,
+  dealerUpcardReshuffleChance,
   getShift,
   hasAvailableUpgrade,
   hitTokens,
@@ -201,22 +202,38 @@ export class Session {
     }
   }
 
-  // Shuffle a fresh 6-deck shoe for the deal. Dealer 1 carries an invisible guard rail:
-  // if the shuffle would deal EITHER side a natural blackjack — the dealer's opening two-card
-  // 21 (shoe[2]+shoe[3], which the player can't out-win) or the player's own (shoe[0]+shoe[1],
-  // which trivializes the game's opening) — the shoe is discarded and reshuffled until neither
-  // opens on a natural, so the very first dealer never produces one for anyone (see the rules
-  // doc §2). Later dealers get an honest shuffle. Reshuffling only advances the deal RNG, so
-  // the run stays fully deterministic for its seed. A natural is rare (~4.8% per side), so this
-  // almost never reshuffles more than a time or two and can't loop forever (the shoe always has
-  // openings where neither side is a natural). Runs before the dev switches so forceDealerNatural
-  // still wins.
+  // Shuffle a fresh 6-deck shoe for the deal, honoring the opening-deal guard rails (see the
+  // rules doc §2). Two independent rails can each reject a shoe and force a reshuffle:
+  //   • Dealer up-card — a 10/11-value FACE-UP card (shoe[2] = round.dealer[0]: an Ace, or any
+  //     ten-value card) is discarded with the current dealer's reshuffle probability, which
+  //     ramps DOWN per dealer (Dealer 1 100% → 5 & 6 0%; see dealerUpcardReshuffleChance). So
+  //     Dealer 1 NEVER shows a menacing up-card (and, since a natural needs an Ace paired with a
+  //     ten, can't open on a natural blackjack either), while late dealers deal honestly. The
+  //     roll uses the seeded deal RNG so runs stay deterministic; the 100%/0% ends short-circuit
+  //     WITHOUT drawing from it, so those dealers' shoe streams are unchanged by this knob.
+  //   • Player side — only on the very FIRST hand of Dealer 1, the player can't open on a
+  //     natural either (shoe[0]+shoe[1]). This is NOT a debuff: it dodges a UI/UX corner case
+  //     in the opening deal (an instant blackjack resolving before the player has acted). After
+  //     that first hand the player keeps any natural (with its 3:2 payout) — an early-game buff.
+  // Reshuffling only advances the deal RNG, so the run stays fully deterministic for its seed,
+  // and can't loop forever (the shoe always has compliant openings). Runs before the dev
+  // switches so forceDealerNatural still wins.
   private shuffleShoe(): Card[] {
+    const upcardReshuffleChance = dealerUpcardReshuffleChance(this.run.shiftIndex)
+    const guardPlayerNatural = this.run.shiftIndex === 1 && this.run.handsThisDealer === 0
+    // Whether to reject this shoe for its dealer up-card. Only 10/11-value up-cards are ever
+    // rejected; the 100%/0% dealers resolve without a dice roll (so their RNG stream is untouched),
+    // and the middle dealers roll the seeded RNG so the decision stays reproducible per seed.
+    const rejectUpcard = (shoe: Card[]): boolean => {
+      const upCard = shoe[2]
+      if (upCard.rank !== 'A' && cardValue(upCard) !== 10) return false
+      if (upcardReshuffleChance >= 1) return true
+      if (upcardReshuffleChance <= 0) return false
+      return this.nextRandom() < upcardReshuffleChance
+    }
     let shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
-    if (this.run.shiftIndex === 1) {
-      while (isBlackjack([shoe[0], shoe[1]]) || isBlackjack([shoe[2], shoe[3]])) {
-        shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
-      }
+    while (rejectUpcard(shoe) || (guardPlayerNatural && isBlackjack([shoe[0], shoe[1]]))) {
+      shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
     }
     return shoe
   }

@@ -2,10 +2,10 @@
 //
 // Generic on purpose: `emit(from, amount, startAfter)` knows nothing about WHY
 // the tokens were earned, so the same flight serves hits (+1 from the fresh
-// card), wins (+10 from the hand) and blackjacks (+21) today — and the dealer
-// kill burst (+40 from the dealer) once the dealer-death animation exists.
+// card), wins (+10 from the hand), blackjacks (+21) and the dealer kill burst
+// (+40 from the dealer).
 //
-// Mirrors DealAnimation / ChipAnimation / HealthAnimation: this owns timing,
+// Mirrors DealAnimation / ChipAnimation: this owns timing,
 // render/tokens.ts owns geometry. Each flight captures its source POINT at emit
 // time (rather than a card identity), so overlapping bursts — rapid hits, a
 // split's two winning hands — never interfere, and the round can move on

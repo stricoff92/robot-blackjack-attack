@@ -57,6 +57,9 @@ import {
 //      totals. Blackjack still scores via chips (3:2 + upgrades), deliberately unchanged.
 export const RULES_VERSION = 24
 export const STARTING_CHIPS = 300
+// Tokens the player opens a run with — a small buffer so the early powerups
+// (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
+export const STARTING_TOKENS = 100
 // The run is won by destroying this many dealers; there is no dealer beyond it.
 export const TOTAL_DEALERS = 6
 
@@ -205,7 +208,7 @@ export function startRun(seed: number): RunState {
     seed,
     chips: STARTING_CHIPS,
     score: 0,
-    tokens: 0,
+    tokens: STARTING_TOKENS,
     shiftIndex: 1,
     handsThisDealer: 0,
     handsPlayed: 0,
@@ -268,6 +271,16 @@ export function getShift(index: number): Shift {
 // max (dealers no longer share a flat 100).
 export function maxIntegrityFor(shiftIndex: number): number {
   return getShift(shiftIndex).maxIntegrity
+}
+
+// How hard a dealer's 10/11-value UP-CARD (an Ace — soft 11 — or any ten-value card) is
+// suppressed at the deal: the probability that such an opening is discarded and reshuffled
+// (see Session.shuffleShoe). It falls off FAST so only the opening dealer is truly gentled and
+// the normal game returns quickly — Dealer 1 100% (NEVER shows a 10/11) → 2 30% → 3 15% →
+// 4, 5 & 6 0% (honest, unguarded deal). Any dealer past the table (dev jumps) stays honest (0%).
+const UPCARD_RESHUFFLE_CHANCE: readonly number[] = [1, 0.3, 0.15]
+export function dealerUpcardReshuffleChance(shiftIndex: number): number {
+  return UPCARD_RESHUFFLE_CHANCE[shiftIndex - 1] ?? 0
 }
 
 // The highest HARD total the current dealer will hit when behind (see round.ts). 17 for

@@ -10,7 +10,7 @@ import type { HoloRayTarget } from './nexus'
 import type { Layout } from './scene'
 
 // How long the projection takes to fade + scale fully in (the 2×→1× pop settles over this).
-export const COMBO_PROJ_STRIKE_MS = 300
+const COMBO_PROJ_STRIKE_MS = 300
 
 export interface ComboProjection {
   /** The multiplier to show this frame (already interpolated toward its target). */

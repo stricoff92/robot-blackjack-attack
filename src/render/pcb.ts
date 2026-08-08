@@ -154,7 +154,6 @@ function generate(rng: () => number, bx: number, by: number, bw: number, bh: num
   const qfpSize = P.pitch * 2.7 * P.comp
   const qfp = place(qfpSize, qfpSize)
   if (qfp) {
-    qfp.kind = 'qfp'
     comps.push(qfp)
   }
   // A connector (row of pads) near an edge.

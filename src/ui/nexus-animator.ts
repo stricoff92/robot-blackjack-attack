@@ -28,21 +28,14 @@ const PULSE_PEAK = 0.9
 
 // --- the heal beam (a late dealer repairing itself after a win) -----------------
 // The counterpart to the red laser strike, glowing the utility lens GREEN: a gentle
-// beam that lifts off, reaches the dealer, then holds while its health bar refills
-// and fades. The three windows are EXPORTED so health-animator.ts locks its refill
-// to the same HEAL_RISE_MS (they can't drift), and game-view can time the beat.
-export const HEAL_TRAVEL_MS = 240 // beam floats nexus → dealer (softer than the laser)
-export const HEAL_RISE_MS = 560 // the health bar fills while the beam holds on the dealer
-export const HEAL_FADE_MS = 260 // beam + emitter glow wind down after the fill
+// beam that lifts off, reaches the dealer, then holds while the dealer's health
+// refills and fades. The three windows are EXPORTED so game-view can time the beat
+// (beam travel, health refill, fade) against them — they can't drift.
+export const HEAL_TRAVEL_MS = 360 // beam floats nexus → dealer (softer than the laser)
+export const HEAL_RISE_MS = 840 // the dealer's health refills while the beam holds on it
+export const HEAL_FADE_MS = 390 // beam + emitter glow wind down after the fill
 const HEAL_GLOW_IN_MS = 130 // the utility emitter lights up green as the beam lifts off
 const HEAL_GLOW_PEAK = 0.85 // how bright the green lens runs while healing
-
-// --- the holo projector (bottom lens) -------------------------------------------
-// A soft power ramp on/off. Between showHolo()/hideHolo() it holds fully lit (and
-// cycling colours — the hue drift lives in render/nexus.ts) while it casts a table
-// projection, e.g. the end-of-game scoreboard.
-const HOLO_IN_MS = 380 // power-on ramp
-const HOLO_OUT_MS = 320 // power-off fade
 
 export interface NexusChargeView {
   // The utility lens glowing, 0 (dim) .. 1 (fully lit), at `now`, per colour channel.
@@ -53,8 +46,6 @@ export interface NexusChargeView {
   healLight(now: number): number
   // The yellow token-vent pulse.
   yellowLight(now: number): number
-  // The holo projector's power level, 0 (dark) .. 1 (fully lit + cycling), at `now`.
-  holoLight(now: number): number
   // The powering-up window for the energy-ball stream: `start` is when charging
   // began, `cap` the latest a ball may spawn (advances with `now` while charging,
   // freezes at the Next-hand click). Null when nothing is charging.
@@ -94,13 +85,6 @@ export class NexusAnimation implements NexusChargeView {
   private healContact = 0
   private healHold = 0
   private healEnd = 0
-
-  // Holo projector: on/off with a soft power ramp. `holoOn` holds it lit; when turned
-  // off it eases down from `holoOffFrom` (its level at the moment it was hidden).
-  private holoOn = false
-  private holoStart = 0 // when the power-on ramp began
-  private holoOffAt = 0 // when the power-off began (0 while on / never shown)
-  private holoOffFrom = 0 // level at power-off, so the fade eases from wherever it was
 
   // The reward tokens have flown and the nexus is now waiting for Next hand: the
   // utility light comes up to a steady RED anticipation glow and holds there, powering
@@ -146,7 +130,7 @@ export class NexusAnimation implements NexusChargeView {
 
   // Fire the green heal beam at the dealer, starting at `startAfter`: the emitter
   // flares, a beam floats out over HEAL_TRAVEL_MS, then holds on the dealer for
-  // HEAL_RISE_MS (its health bar refills over the same window) before fading. Drives
+  // HEAL_RISE_MS (the dealer's health refills over the same window) before fading. Drives
   // the green glow on the utility lens too, so it glows for the duration.
   heal(startAfter: number): void {
     this.healing = true
@@ -190,36 +174,6 @@ export class NexusAnimation implements NexusChargeView {
   // The green heal glow on the utility lens — lit only while a heal beam is in flight.
   healLight(now: number): number {
     return this.healGlow(now)
-  }
-
-  // Power the holo projector on at `startAfter` (ramps up over HOLO_IN_MS, then holds
-  // lit + cycling until hideHolo). Used when it starts casting a table projection.
-  showHolo(startAfter: number): void {
-    this.holoOn = true
-    this.holoStart = startAfter
-    this.holoOffAt = 0
-  }
-
-  // Power the holo projector off from `now` (eases down from its current level).
-  hideHolo(now: number): void {
-    if (!this.holoOn && this.holoOffAt === 0) {
-      return
-    }
-    this.holoOffFrom = this.holoLight(now)
-    this.holoOn = false
-    this.holoOffAt = now
-  }
-
-  // The holo projector's power level, 0 (dark) .. 1 (fully lit). Ramps up on show,
-  // holds while lit, eases out on hide.
-  holoLight(now: number): number {
-    if (this.holoOn) {
-      return clamp01((now - this.holoStart) / HOLO_IN_MS)
-    }
-    if (this.holoOffAt > 0) {
-      return this.holoOffFrom * (1 - smoothEnd2(clamp01((now - this.holoOffAt) / HOLO_OUT_MS)))
-    }
-    return 0
   }
 
   // Yellow is ONLY the token-vent pulse now (the anticipation/laser glow is red's job,

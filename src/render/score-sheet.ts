@@ -14,7 +14,7 @@ import type { HoloRayTarget } from './nexus'
 import type { Layout } from './scene'
 
 // How long the projection takes to flicker fully in (matches SPEC_STRIKE_MS's feel).
-export const SCORE_STRIKE_MS = 520
+const SCORE_STRIKE_MS = 520
 
 // One label/value line of the summary (e.g. { label: 'POINTS', value: '4210' }).
 export interface ScoreRow {

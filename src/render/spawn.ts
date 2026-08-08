@@ -8,6 +8,7 @@
 // mouth (which sits above the rail on the dealer's head).
 
 import type { Round } from '../game/round'
+import { deviceDpr } from './canvas'
 import { blitCard, getCardSprite, setCardBack } from './card-sprite'
 import { drawDepletingShoe, drawShoe, shoeAnchor, shoeStackExtent, shoeTopFor, tableCards } from './cards'
 import { smoothEnd2, smoothEnd3, smoothStart2, smoothStart4, smoothStep } from './easing'
@@ -35,7 +36,7 @@ export interface SpawnView {
 // each card flies from its felt slot into the mouth, shrinking to nothing, throwing
 // a spray of paper chunks that cone off to the left as it's chewed up.
 export function drawShred(ctx: CanvasRenderingContext2D, l: Layout, round: Round, view: SpawnView, now: number): void {
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const cards = tableCards(l, round)
   const mouth = dealerMouth(l)
   const scale = Math.min(l.width, l.height)
@@ -72,7 +73,7 @@ export function drawOldDeckShred(ctx: CanvasRenderingContext2D, l: Layout, back:
   const mouth = dealerMouth(l)
   const scale = Math.min(l.width, l.height)
   const rest = shoeAnchor(l)
-  const dpr = window.devicePixelRatio || 1
+  const dpr = deviceDpr()
   const count = view.deckCardCount()
   for (let k = 0; k < count; k++) {
     const suck = view.deckCardSuck(k, now)

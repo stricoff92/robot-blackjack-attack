@@ -243,7 +243,6 @@ function drawHandChips(
   const bet = betAnchor(l, round, handIndex)
   const amount = round.hands[handIndex].bet
   const betCount = discCount(amount, MAX_BET_DISCS)
-  const winSpot: Point = { x: bet.x + m.rx * 2.6, y: bet.y } // winnings land beside the bet
 
   const won = st.outcome === 'win' || st.outcome === 'blackjack'
   // The winnings must track handPayout: a blackjack pays the rules' ratio (3:2 by
@@ -253,6 +252,18 @@ function drawHandChips(
       ? Math.floor(amount * (round.rules.blackjackPayoutNumerator / round.rules.blackjackPayoutDenominator))
       : amount
   const winCount = discCount(winAmount, MAX_BET_DISCS)
+
+  // Winnings land to the RIGHT of the bet. Both value labels are drawn centered under
+  // their stacks at a fixed 18px, so a plain rx*2.6 gap let 4+ digit bets run into the
+  // winnings number. Space them by the two labels' actual widths (measured at the label
+  // font) so they never touch, with rx*2.6 kept as the floor for small amounts.
+  ctx.save()
+  ctx.font = 'bold 18px system-ui, sans-serif'
+  const betLabelW = ctx.measureText(String(amount)).width
+  const winLabelW = ctx.measureText(String(winAmount)).width
+  ctx.restore()
+  const winGap = Math.max(m.rx * 2.6, betLabelW / 2 + winLabelW / 2 + 26)
+  const winSpot: Point = { x: bet.x + winGap, y: bet.y }
 
   // Value labels sit BELOW the chips (just under the betting circle). The bet's
   // rides along while the bet is at rest; the winnings' label follows them as

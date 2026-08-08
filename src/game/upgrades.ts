@@ -65,8 +65,8 @@ export function tokenMultiplierFor(upgrades: RunUpgrades): number {
 }
 
 // The factor applied to each shift's token-inflation add for the run's Token eco
-// tier — 1 (no path) down to 0.5 (maxed), so a maxed Tokens build inflates half as
-// fast. See run.ts's inflationIncrement.
+// tier — 1 (no path) down to 0.35 (maxed), so a maxed Tokens build inflates at ~a
+// third the rate. See run.ts's inflationIncrement.
 export function inflationResistanceFor(upgrades: RunUpgrades): number {
   return INFLATION_RESISTANCE[upgrades.tokenEco] ?? INFLATION_RESISTANCE[INFLATION_RESISTANCE.length - 1]
 }
