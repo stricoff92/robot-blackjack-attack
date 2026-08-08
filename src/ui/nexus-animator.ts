@@ -1,47 +1,43 @@
-// Timing for the table nexus's twin emitter lights.
+// Timing for the table nexus's utility emitter light (render/nexus.ts owns the drawing;
+// this owns timing, with absolute performance.now() stamps).
 //
-// At rest both lenses — the red laser muzzle and the yellow token vent — sit dim.
-// The two lights are driven INDEPENDENTLY (render/nexus.ts owns the drawing; this
-// owns timing, with absolute performance.now() stamps):
+// The utility lens sits dim at rest and lights up in ONE colour at a time — the effects
+// are sequenced so they never overlap on the shared lens:
 //
-//   • anticipate() — the hand resolved and the nexus is WAITING for Next hand; both
-//     lights hold a steady anticipation glow until then.
-//   • fire() — the player called it: the YELLOW light flares while the reward
-//     tokens distribute and fades the instant they land; the RED light holds its
-//     charge, then blasts to full for the laser strike and fades afterwards. So the
-//     two lights come down on their own schedules, not together.
-//   • pulseYellow() — a one-shot pulse on the yellow light as a reward token flies
-//     out after a surviving hit (the red laser light stays dim).
-//
-// While anticipating, the red light also "powers up": a stream of energy balls draw
-// into it (see chargeUp() — the geometry/motion is render/nexus.ts's).
+//   • pulseYellow() — a one-shot YELLOW pulse as reward tokens shoot out of the vent
+//     (a surviving hit, or each winning hand on the resolve).
+//   • anticipate() — after the tokens have flown, the RED laser "powers up": a steady
+//     anticipation glow while a stream of energy balls draw into it (see chargeUp()),
+//     held until Next hand.
+//   • fire() — the player called it: the RED light blasts to full for the laser strike,
+//     then winds down afterwards.
+//   • heal() — a GREEN heal beam on a loss: the emitter glows green while the beam
+//     lifts off, reaches the dealer and holds through the repair.
 
 import { CHARGE_MAX_LIFE_MS } from '../render/nexus'
 import { arch2, smoothEnd2 } from '../render/easing'
 
-const ANT_LEVEL = 0.6 // steady glow while waiting for Next hand
+const ANT_LEVEL = 0.6 // steady red glow while waiting for Next hand
 const ANT_IN_MS = 260 // dim → anticipation glow
 
-const YELLOW_IN_MS = 90 // flare up as tokens start distributing
-const YELLOW_FADE_MS = 200 // fade the instant distribution finishes
 const RED_IN_MS = 130 // charge → full blast for the laser
 const RED_FADE_MS = 470 // wind down after the strike
 
-const PULSE_MS = 520 // yellow hit-token pulse
+const PULSE_MS = 520 // yellow token pulse
 const PULSE_PEAK = 0.9
 
 // --- the heal beam (a late dealer repairing itself after a win) -----------------
-// The counterpart to the red laser strike, fired from the GREEN emitter: a gentle
+// The counterpart to the red laser strike, glowing the utility lens GREEN: a gentle
 // beam that lifts off, reaches the dealer, then holds while its health bar refills
 // and fades. The three windows are EXPORTED so health-animator.ts locks its refill
 // to the same HEAL_RISE_MS (they can't drift), and game-view can time the beat.
 export const HEAL_TRAVEL_MS = 240 // beam floats nexus → dealer (softer than the laser)
 export const HEAL_RISE_MS = 560 // the health bar fills while the beam holds on the dealer
 export const HEAL_FADE_MS = 260 // beam + emitter glow wind down after the fill
-const HEAL_GLOW_IN_MS = 130 // the yellow emitter lights up as the beam lifts off
-const HEAL_GLOW_PEAK = 0.85 // how bright the yellow lens runs while healing
+const HEAL_GLOW_IN_MS = 130 // the utility emitter lights up green as the beam lifts off
+const HEAL_GLOW_PEAK = 0.85 // how bright the green lens runs while healing
 
-// --- the holo projector (bottom-left lens) --------------------------------------
+// --- the holo projector (bottom lens) -------------------------------------------
 // A soft power ramp on/off. Between showHolo()/hideHolo() it holds fully lit (and
 // cycling colours — the hue drift lives in render/nexus.ts) while it casts a table
 // projection, e.g. the end-of-game scoreboard.
@@ -49,10 +45,13 @@ const HOLO_IN_MS = 380 // power-on ramp
 const HOLO_OUT_MS = 320 // power-off fade
 
 export interface NexusChargeView {
-  // Each emitter light's glow, 0 (dim) .. 1 (fully lit), at `now`.
+  // The utility lens glowing, 0 (dim) .. 1 (fully lit), at `now`, per colour channel.
+  // Only one channel is ever non-zero at a time (the effects are sequenced).
+  // The red laser charge/blast glow.
   redLight(now: number): number
-  // The heal glow (green) — shown on the RED lens, which also fires the laser.
+  // The green heal glow — shown on the same utility lens while a heal beam is in flight.
   healLight(now: number): number
+  // The yellow token-vent pulse.
   yellowLight(now: number): number
   // The holo projector's power level, 0 (dark) .. 1 (fully lit + cycling), at `now`.
   holoLight(now: number): number
@@ -66,31 +65,28 @@ export interface NexusChargeView {
 }
 
 export class NexusAnimation implements NexusChargeView {
-  // Anticipation (both lights), held until fired.
+  // Anticipation (the red charge glow), held until fired.
   private antStart = 0
   private antHeld = false
 
-  // Firing: captured at fire(). The two lights ride separate flare windows.
+  // Firing the red laser: captured at fire().
   private fired = false
-  private fireFrom = 0 // level both flares start from (the anticipation glow)
-  private yFlare = false // whether the yellow token flare is active this fire
-  private yStart = 0
-  private yHold = 0 // yellow full until here (tokens distributed)
+  private fireFrom = 0 // level the red blast starts from (the anticipation glow)
   private rStart = 0 // red blasts to full here (the laser fires)
   private rHold = 0 // red full until here (the strike lands)
   private fireEnd = 0 // everything done by here
 
-  // Powering-up: the energy-ball stream that draws into the red light while it
+  // Powering-up: the energy-ball stream that draws into the utility light while it
   // charges. Spawns from `chargeStart`, capped at the Next-hand click (`chargeCap`).
   private charging = false
   private chargeStart = 0
   private chargeCap = 0
 
-  // Yellow hit pulse.
+  // Yellow token pulse.
   private pulseStart = 0
   private pulseEnd = 0
 
-  // Yellow heal beam (a late dealer repairing itself): the emitter flares, a beam
+  // Green heal beam (a late dealer repairing itself): the emitter flares, a beam
   // lifts off at healStart, reaches the dealer at healContact (its bar starts
   // rising), holds through the fill until healHold, then fades out by healEnd.
   private healing = false
@@ -106,9 +102,11 @@ export class NexusAnimation implements NexusChargeView {
   private holoOffAt = 0 // when the power-off began (0 while on / never shown)
   private holoOffFrom = 0 // level at power-off, so the fade eases from wherever it was
 
-  // The hand resolved and the nexus is waiting for Next hand: both lights come up
-  // to a steady anticipation glow and hold there, while the red light powers up by
-  // drawing in energy balls — until fire() (or a new deal).
+  // The reward tokens have flown and the nexus is now waiting for Next hand: the
+  // utility light comes up to a steady RED anticipation glow and holds there, powering
+  // up by drawing in energy balls — until fire() (or a new deal). Scheduled to begin at
+  // `now` (which the caller sets to AFTER the yellow token pulse has finished, so the
+  // one lens never shows red and yellow at once).
   anticipate(now: number): void {
     this.antStart = now
     this.antHeld = true
@@ -118,11 +116,10 @@ export class NexusAnimation implements NexusChargeView {
     this.chargeStart = now
   }
 
-  // Next hand called. `laserStart`/`laserEnd` bracket the red laser strike; the red
-  // light holds its charge until laserStart, blasts to full, then fades after
-  // laserEnd. `tokensEnd` is when the yellow token distribution finishes (yellow
-  // fades then) — pass null for the final blow, which pays out no tokens.
-  fire(now: number, laserStart: number, laserEnd: number, tokensEnd: number | null): void {
+  // Next hand called. `laserStart`/`laserEnd` bracket the red laser strike; the utility
+  // light holds its red charge until laserStart, blasts to full, then fades after
+  // laserEnd.
+  fire(now: number, laserStart: number, laserEnd: number): void {
     // Stop spawning energy balls at the click; those already drawn in keep going.
     // A final blow (no prior anticipation) never charged, so there's nothing to keep.
     if (this.antHeld) {
@@ -134,29 +131,23 @@ export class NexusAnimation implements NexusChargeView {
     this.antHeld = false
     this.fired = true
 
-    this.yFlare = tokensEnd !== null
-    this.yStart = now
-    this.yHold = tokensEnd ?? now
-    const yEnd = this.yHold + YELLOW_FADE_MS
-
     this.rStart = laserStart
     this.rHold = laserEnd
-    const rEnd = laserEnd + RED_FADE_MS
-
-    this.fireEnd = Math.max(yEnd, rEnd)
+    this.fireEnd = laserEnd + RED_FADE_MS
   }
 
-  // A one-shot pulse on the yellow light as a reward token lifts off (surviving
-  // hit). Independent of the shared glow, so it reads even from the dim state.
+  // A one-shot YELLOW pulse on the utility light as reward tokens shoot out of it — a
+  // surviving hit, or each winning hand on the resolve. It's the ONLY thing lighting the
+  // lens at that point (the red charge is scheduled for after the tokens have flown).
   pulseYellow(startAfter: number): void {
     this.pulseStart = startAfter
     this.pulseEnd = startAfter + PULSE_MS
   }
 
-  // Fire the yellow heal beam at the dealer, starting at `startAfter`: the emitter
+  // Fire the green heal beam at the dealer, starting at `startAfter`: the emitter
   // flares, a beam floats out over HEAL_TRAVEL_MS, then holds on the dealer for
   // HEAL_RISE_MS (its health bar refills over the same window) before fading. Drives
-  // the yellow light itself too, so the lens glows for the duration.
+  // the green glow on the utility lens too, so it glows for the duration.
   heal(startAfter: number): void {
     this.healing = true
     this.healStart = startAfter
@@ -165,7 +156,7 @@ export class NexusAnimation implements NexusChargeView {
     this.healEnd = this.healHold + HEAL_FADE_MS
   }
 
-  // The yellow heal beam's head-of-travel + opacity, or null. Advances to the dealer,
+  // The green heal beam's head-of-travel + opacity, or null. Advances to the dealer,
   // holds solid while the bar fills, then fades — mirrors the red StrikeView.beam.
   healBeam(now: number): { travel: number; alpha: number } | null {
     if (!this.healing || now < this.healStart || now >= this.healEnd) {
@@ -196,7 +187,7 @@ export class NexusAnimation implements NexusChargeView {
     return 0
   }
 
-  // The heal glow (green, shown on the red lens) — lit only while a heal beam is in flight.
+  // The green heal glow on the utility lens — lit only while a heal beam is in flight.
   healLight(now: number): number {
     return this.healGlow(now)
   }
@@ -231,20 +222,11 @@ export class NexusAnimation implements NexusChargeView {
     return 0
   }
 
+  // Yellow is ONLY the token-vent pulse now (the anticipation/laser glow is red's job,
+  // and the two never overlap on the shared lens — the red charge is scheduled for after
+  // the tokens have flown).
   yellowLight(now: number): number {
-    let y = 0
-    if (this.antHeld) {
-      y = this.antLevel(now)
-    } else if (this.fired) {
-      if (this.yFlare) {
-        y = flareLevel(now, this.fireFrom, this.yStart, this.yHold, YELLOW_FADE_MS, YELLOW_IN_MS)
-      } else {
-        // No token flare this fire (the reward already flew on the resolve): just
-        // ease the anticipation glow out instead of snapping it off.
-        y = this.fireFrom * (1 - smoothEnd2(clamp01((now - this.yStart) / YELLOW_FADE_MS)))
-      }
-    }
-    return Math.max(y, this.pulse(now))
+    return this.pulse(now)
   }
 
   chargeUp(now: number): { start: number; cap: number } | null {

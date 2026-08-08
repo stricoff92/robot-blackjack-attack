@@ -41,12 +41,17 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
 
   const tapPx = clamp(scale * 0.046, 24, 52)
 
+  // Phones have little vertical room, and the wide pixel font makes a full-width title dominate
+  // the felt there — so on small screens hold the title to a smaller share of the width (and a
+  // lower floor), which the fit-shrink below turns into a smaller font. Desktop keeps it big.
+  const compact = l.width < 560
+
   // Title size, shrunk to fit the widest word (BLACKJACK) inside the felt if need be. Measured in
   // the same face it will draw in (the pixel font is far wider per glyph) so the fit is honest.
-  let titlePx = clamp(scale * 0.068, 34, 82)
+  let titlePx = clamp(scale * 0.068, compact ? 26 : 34, 82)
   ctx.font = titleFont(titlePx)
   let widest = measureWidest(ctx)
-  const maxW = l.width * 0.86
+  const maxW = l.width * (compact ? 0.7 : 0.86)
   if (widest > maxW) {
     titlePx = Math.max(24, (titlePx * maxW) / widest)
     ctx.font = titleFont(titlePx)

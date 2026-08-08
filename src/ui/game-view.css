@@ -188,12 +188,14 @@
   pointer-events: none;
 }
 
-/* Powerups: top-left vertical column, just below the token counter (the felt's
- * upper-left is empty now the house chip pile is gone). */
+/* Powerups: top-left vertical column, below the token counter (the felt's upper-left is
+ * empty now the house chip pile is gone). On desktop there's ample vertical room, so `top`
+ * leaves a comfortable gap under the counter; the mobile override compresses it (screens
+ * short on height need the felt back). */
 .hud-powerups {
   position: absolute;
   left: 14px;
-  top: 60px;
+  top: 84px;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -209,6 +211,14 @@
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   margin-bottom: 2px;
   min-height: 1em;
+}
+
+/* The hint is empty in almost every state (it only speaks up for Bust Block / Dealer frozen /
+ * a burned card). When empty, collapse it entirely so it reserves NO line and drops out of the
+ * flex gap — otherwise a blank row pushes the whole ability stack a line below the token
+ * counter. When a hint does appear it takes its space back and the stack shifts down a touch. */
+.hud-powerhint:empty {
+  display: none;
 }
 
 .hud-powerups button {
@@ -589,7 +599,7 @@ button.is-hidden,
 
   .hud-powerups {
     left: 10px;
-    top: 48px;
+    top: 50px;
     gap: 6px;
   }
 

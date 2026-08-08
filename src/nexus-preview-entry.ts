@@ -1,9 +1,9 @@
-// TEMP visual harness for the 2×2 table nexus — not shipped. Draws the device in a
-// few charge states so the lens grid + colours can be eyeballed, plus faithfully
-// layered Analyze panels (fx / cards / overlay stacked like the real game) in BOTH
-// landscape and portrait. The holo projector is always on: its glowing lens cycles,
-// and it casts 5-ray white fans onto each "count" (here: the analysis rows + a couple
-// of fake card/chip count boxes). No darkness mask. Animated.
+// TEMP visual harness for the 2-lens table nexus — not shipped. Draws the device in a
+// few charge states so the two lenses (top utility light + bottom holo) + their colours
+// can be eyeballed, plus faithfully layered Analyze panels (fx / cards / overlay stacked
+// like the real game) in BOTH landscape and portrait. The holo projector is always on:
+// its glowing lens cycles, and it casts 5-ray white fans onto each "count" (here: the
+// analysis rows + a couple of fake card/chip count boxes). No darkness mask. Animated.
 import { drawAnalysis } from './render/cards'
 import { drawDealerEyeGlow } from './render/dealer'
 import { drawHoloRays, drawStrikeFx, type HoloRayTarget } from './render/nexus'
@@ -13,11 +13,14 @@ const stubView = { beam: () => null, muzzle: () => null, impactSpark: () => null
 
 type Charge = Parameters<typeof drawStrikeFx>[3]
 
+// One colour lights the utility (top) lens at a time — the effects are sequenced in the
+// real game, so each state here shows a single one.
 const states: Array<{ label: string; charge: Charge }> = [
-  { label: 'idle (holo off/dark)', charge: { red: 0, heal: 0, yellow: 0, holo: 0, chargeUp: null, healBeam: null } },
+  { label: 'idle (utility dark + shiny glint, holo off)', charge: { red: 0, heal: 0, yellow: 0, holo: 0, chargeUp: null, healBeam: null } },
   { label: 'holo projecting (glow + cycle)', charge: { red: 0, heal: 0, yellow: 0, holo: 1, chargeUp: null, healBeam: null } },
-  { label: 'anticipation (red+yellow)', charge: { red: 0.6, heal: 0, yellow: 0.6, holo: 0, chargeUp: null, healBeam: null } },
-  { label: 'heal (green beam)', charge: { red: 0, heal: 0.85, yellow: 0, holo: 0, chargeUp: null, healBeam: { travel: 1, alpha: 1 } } },
+  { label: 'utility: token pulse (yellow)', charge: { red: 0, heal: 0, yellow: 0.9, holo: 1, chargeUp: null, healBeam: null } },
+  { label: 'utility: laser charge (red)', charge: { red: 0.6, heal: 0, yellow: 0, holo: 1, chargeUp: null, healBeam: null } },
+  { label: 'utility: heal (green beam)', charge: { red: 0, heal: 0.85, yellow: 0, holo: 1, chargeUp: null, healBeam: { travel: 1, alpha: 1 } } },
 ]
 
 const root = document.getElementById('root')!

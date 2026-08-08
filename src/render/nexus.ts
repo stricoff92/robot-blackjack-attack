@@ -1,18 +1,20 @@
-// The table nexus: a small TALL device floating over the right-centre of the felt with
-// a VERTICAL stack of three emitter lenses, top to bottom —
+// The table nexus: a small device floating over the right-centre of the felt with a
+// VERTICAL stack of TWO emitter lenses, top and bottom —
 //
-//     RED    the damage laser fires from here on a win; the heal beam fires from here
-//            too on a loss (they never overlap, so one lens serves both)
-//     YELLOW the reward tokens lift off from here
-//     HOLO   an RGB holo projector — dark when off, glows + cycles hues when it projects
+//     UTILITY the multi-purpose light. Idle it sits near-black with a shiny lens
+//             glint; when the nexus acts it lights up in ONE colour at a time —
+//             YELLOW as the reward tokens shoot out, RED as it charges + fires the
+//             damage laser, GREEN as it shoots the heal beam. The effects never
+//             overlap (they're sequenced one at a time), so one lens serves them all.
+//     HOLO    an RGB holo projector — dark when off, glows + cycles hues when it projects
 //
 // The narrow column hugs the screen's right edge. Mirrors the render convention —
 // geometry + paint live here; the strike timing (a StrikeView) and the light charge (a
 // NexusChargeView) are owned by the animators (ui).
 //
-// The device body is a PLACEHOLDER (a dark emitter box with four lenses); at rest
-// every lens sits dim, and the charge glow (drawn additively on the fx layer)
-// brings a lens up when the nexus is about to act. The laser is a red additive beam
+// The device body is a PLACEHOLDER (a dark emitter box with two lenses); at rest
+// both lenses sit dim, and the charge glow (drawn additively on the fx layer) brings
+// the utility lens up when the nexus is about to act. The laser is a red additive beam
 // modelled on the Analyze eye-beam (cards.ts).
 
 import { arch2, smoothEnd2, smoothEnd3, smoothStart2, smoothStart3 } from './easing'
@@ -23,16 +25,16 @@ import type { Point } from './tokens'
 // The nexus sits in the empty mid-right felt band: below the shoe (top-right of
 // centre) and the health bar (top-right), above the bankroll pile (bottom-right),
 // clear of the centred cards + bet circle. `a` (in nexusGeom) is the device's centre;
-// the four lenses stack vertically along it (see nexusRedLight … nexusHoloLight).
+// the two lenses stack vertically along it (see nexusUtilityLight / nexusHoloLight).
 export function nexusAnchor(l: Layout): Point {
   // The vertical spot: the mid-right felt band, a touch above centre. The x is anchored
   // to the screen's right edge in nexusGeom, so the stack hugs the far right.
   return { x: l.width, y: l.edgeY + (l.height - l.edgeY) * 0.45 }
 }
 
-// Shared body geometry, so the drawn device and the three emitter-light positions never
-// drift apart. The body is a narrow, TALL rounded box seating a vertical column of three
-// lenses; lens i (0=top) sits at (a.x, a.y + (i − 1)·gap).
+// Shared body geometry, so the drawn device and the two emitter-light positions never
+// drift apart. The body is a narrow rounded box seating a vertical column of two lenses;
+// lens i (0=top utility, 1=bottom holo) sits at (a.x, a.y + (i − 0.5)·gap).
 interface NexusGeom {
   a: Point // body centre (unlifted)
   w: number // body width (narrow)
@@ -59,9 +61,9 @@ function nexusGeom(l: Layout): NexusGeom {
   const s = clamp(scale * 0.12, 54, 84)
   const lensR = s * 0.1275 // 25% smaller than the old 0.17·s
   const socket = lensR * 1.14
-  const gap = lensR * 2.5 // vertical spacing between adjacent lens centres
+  const gap = lensR * 2.5 // vertical spacing between the two lens centres
   const w = socket * 2 + lensR * 0.9 // narrow body: one lens wide + side padding
-  const h = gap * 2 + socket * 2 + lensR // three stacked lenses + top/bottom padding
+  const h = gap + socket * 2 + lensR // two stacked lenses + top/bottom padding
   // Hug the screen's right edge (a small margin in), so the narrow stack sits at the far
   // right; keep the same vertical centre (a full base-scale above the anchor). On very wide
   // screens clampRightX reels the far-right position back toward centre so the device stays
@@ -94,22 +96,18 @@ function hoverLift(g: NexusGeom, now: number): number {
   return g.bob * (HOVER_MIN + (HOVER_MAX - HOVER_MIN) * hoverPhase(now))
 }
 
-// The y of stacked lens `row` (0=top … 2=bottom) at `now`, floating with the device.
+// The y of stacked lens `row` (0=top utility, 1=bottom holo) at `now`, floating with
+// the device — the two lenses straddle the centre a.y, half a gap above and below.
 function lensY(g: NexusGeom, row: number, now: number): number {
-  return g.a.y + (row - 1) * g.gap - hoverLift(g, now)
+  return g.a.y + (row - 0.5) * g.gap - hoverLift(g, now)
 }
 
-// The RED emitter (top lens): the muzzle the damage laser fires from on a win — and the
-// heal beam fires from here too on a loss (they never overlap).
-export function nexusRedLight(l: Layout, now: number): Point {
+// The UTILITY emitter (top lens): the one muzzle the reward tokens lift off from, the
+// damage laser fires from on a win, and the heal beam fires from on a loss. Only one of
+// those runs at a time (they're sequenced), so a single lens serves them all.
+export function nexusUtilityLight(l: Layout, now: number): Point {
   const g = nexusGeom(l)
   return { x: g.a.x, y: lensY(g, 0, now) }
-}
-
-// The YELLOW emitter (middle lens): where the reward tokens lift off from.
-export function nexusYellowLight(l: Layout, now: number): Point {
-  const g = nexusGeom(l)
-  return { x: g.a.x, y: lensY(g, 1, now) }
 }
 
 // The HOLO emitter (bottom lens): the RGB holo projector. Dark when off; when it
@@ -117,7 +115,7 @@ export function nexusYellowLight(l: Layout, now: number): Point {
 // projection (e.g. the end-of-game scoreboard) can anchor to its muzzle.
 export function nexusHoloLight(l: Layout, now: number): Point {
   const g = nexusGeom(l)
-  return { x: g.a.x, y: lensY(g, 2, now) }
+  return { x: g.a.x, y: lensY(g, 1, now) }
 }
 
 // Where the laser lands on the dealer: the centre of its torso (a solid target
@@ -195,11 +193,11 @@ export function drawNexus(ctx: CanvasRenderingContext2D, l: Layout, now: number)
   // power feeding the hover thrust.
   drawEdgeConduit(ctx, a.x + w / 2 - w * 0.09, top + ch, bottom - ch, w)
 
-  // The three emitter lenses, each set in a hexagonal alien bezel — top to bottom: red
-  // (laser + heal), yellow token vent, and the RGB holo projector. All idle dim; the
-  // charge glow (fx layer) brings a lens up to full when the nexus acts.
-  const lensStyles = [RED_LENS, YELLOW_LENS, HOLO_OFF_LENS]
-  for (let i = 0; i < 3; i++) {
+  // The two emitter lenses, each set in a hexagonal alien bezel — top: the utility light
+  // (idle near-black with a shiny lens glint; the charge glow on the fx layer brings it
+  // up in yellow/red/green when the nexus acts), bottom: the RGB holo projector.
+  const lensStyles = [UTILITY_LENS, HOLO_OFF_LENS]
+  for (let i = 0; i < 2; i++) {
     const ly = lensY(g, i, now)
     drawHexBezel(ctx, a.x, ly, g.lensR * 1.38)
     drawDimLens(ctx, a.x, ly, g.lensR, lensStyles[i])
@@ -349,15 +347,18 @@ function drawHoverThrust(ctx: CanvasRenderingContext2D, g: NexusGeom, cy: number
 }
 
 // The dim, idle look of a lens: a dark socket with a muted core — barely lit, so
-// the additive charge glow reads as the light powering up.
+// the additive charge glow reads as the light powering up. `glint` adds a bright
+// specular catch-light so the lens reads as a shiny convex optic even when unlit.
 interface LensStyle {
   core: string
   mid: string
   edge: string
   rim: string
+  glint?: boolean
 }
-const RED_LENS: LensStyle = { core: '#8a3232', mid: '#571c1c', edge: '#230c0c', rim: 'rgba(255, 130, 130, 0.16)' }
-const YELLOW_LENS: LensStyle = { core: '#8a7a30', mid: '#574a18', edge: '#231e0a', rim: 'rgba(255, 225, 140, 0.16)' }
+// The utility light at rest: near-black, neutral, with a shiny reflective glint — so it
+// reads as a dark glassy lens waiting to fire (yellow tokens / red laser / green heal).
+const UTILITY_LENS: LensStyle = { core: '#26282f', mid: '#121317', edge: '#050507', rim: 'rgba(185, 192, 208, 0.16)', glint: true }
 
 // The RGB holo projector's lens when it's OFF: a neutral dark-grey socket that reads
 // as unlit. When the projector powers on to cast a table projection (e.g. the
@@ -408,6 +409,43 @@ function drawDimLens(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: n
   ctx.beginPath()
   ctx.arc(0, 0, r, 0, Math.PI * 2)
   ctx.stroke()
+
+  // A shiny specular catch-light, so a dark idle lens still reads as a glossy convex
+  // optic (the "reflective artifact inside" the utility light waits behind).
+  if (s.glint) {
+    drawLensGlint(ctx, r)
+  }
+  ctx.restore()
+}
+
+// A reflective glint on a lens: a soft elongated specular streak in the upper-left plus
+// a tiny secondary catch-light lower-right, drawn additively so it reads as light caught
+// on curved glass. Drawn in the lens's own local frame (origin already at its centre).
+function drawLensGlint(ctx: CanvasRenderingContext2D, r: number): void {
+  ctx.save()
+  ctx.globalCompositeOperation = 'lighter'
+  // Main specular: an angled oval highlight offset toward the upper-left.
+  ctx.save()
+  ctx.translate(-r * 0.3, -r * 0.32)
+  ctx.rotate(-0.7)
+  ctx.scale(1, 0.46) // squash into a streak
+  const main = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.62)
+  main.addColorStop(0, 'rgba(226, 234, 248, 0.62)')
+  main.addColorStop(0.5, 'rgba(210, 222, 242, 0.22)')
+  main.addColorStop(1, 'rgba(210, 222, 242, 0)')
+  ctx.fillStyle = main
+  ctx.beginPath()
+  ctx.arc(0, 0, r * 0.62, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+  // Secondary pinprick catch-light, lower-right — sells the curvature.
+  const dot = ctx.createRadialGradient(r * 0.34, r * 0.36, 0, r * 0.34, r * 0.36, r * 0.22)
+  dot.addColorStop(0, 'rgba(210, 220, 240, 0.4)')
+  dot.addColorStop(1, 'rgba(210, 220, 240, 0)')
+  ctx.fillStyle = dot
+  ctx.beginPath()
+  ctx.arc(r * 0.34, r * 0.36, r * 0.22, 0, Math.PI * 2)
+  ctx.fill()
   ctx.restore()
 }
 
@@ -440,35 +478,35 @@ export function drawStrikeFx(
   // The floating device body itself — it hovers, so it rides this per-frame layer
   // rather than the static table, drawn under its charge glow + laser below.
   drawNexus(ctx, l, now)
-  const from = nexusRedLight(l, now)
+  const from = nexusUtilityLight(l, now)
   const to = impactPoint(l)
   const scale = Math.min(l.width, l.height)
 
-  // "Powering up": red energy balls drawn in from around the red light while it
+  // "Powering up": red energy balls drawn in from around the utility light while it
   // charges an attack. Under the light glow so they read as being absorbed by it.
   if (charge.chargeUp !== null) {
     drawChargeUp(ctx, l, charge.chargeUp.start, charge.chargeUp.cap, now)
   }
 
-  // The emitter lenses glowing — the red laser muzzle and the yellow token vent,
-  // each on its own level (anticipation, firing, or the yellow's hit pulse). Drawn
-  // first so the beam's muzzle flash (also at the red lens) still punches over it.
+  // The utility lens glowing — the reward-token vent (yellow), the laser muzzle
+  // (red, incl. its anticipation charge), and the heal emitter (green) all light up
+  // this ONE top lens, one colour at a time (they're sequenced so they never overlap).
+  // Drawn first so the beam's muzzle flash (also at this lens) still punches over it.
   if (charge.red > 0.001 || charge.heal > 0.001 || charge.yellow > 0.001 || charge.holo > 0.001) {
     const g = nexusGeom(l)
+    if (charge.yellow > 0.001) {
+      drawLightCharge(ctx, from.x, from.y, g.lensR, charge.yellow, YELLOW_GLOW)
+    }
     if (charge.red > 0.001) {
       drawLightCharge(ctx, from.x, from.y, g.lensR, charge.red, RED_GLOW)
     }
-    // A heal glows the SAME (red) lens, but green — the heal beam fires from here on a
-    // loss, and never overlaps the red laser (a win), so one lens serves both.
+    // A heal glows the same utility lens, but green — the heal beam fires on a loss and
+    // never overlaps the red laser (a win) or the yellow tokens, so one lens serves all.
     if (charge.heal > 0.001) {
       drawLightCharge(ctx, from.x, from.y, g.lensR, charge.heal, GREEN_GLOW)
     }
-    if (charge.yellow > 0.001) {
-      const yellow = nexusYellowLight(l, now)
-      drawLightCharge(ctx, yellow.x, yellow.y, g.lensR, charge.yellow, YELLOW_GLOW)
-    }
-    // The holo projector: a cycling pastel glow filling most of its dark lens (a bright
-    // disc with a thin black lens ring), its hue drifting with `now` as it cycles.
+    // The holo projector (bottom lens): a cycling pastel glow filling most of its dark
+    // lens (a bright disc with a thin black lens ring), its hue drifting with `now`.
     if (charge.holo > 0.001) {
       const holo = nexusHoloLight(l, now)
       drawLightCharge(ctx, holo.x, holo.y, g.lensR * 0.7, charge.holo, holoGlowStyle(now))
@@ -490,8 +528,8 @@ export function drawStrikeFx(
   }
 
   // The heal beam (a late dealer repairing itself after a loss): a gentle green-gold
-  // stream from the RED emitter to the dealer, opposite in feel to the red laser. Never
-  // overlaps a strike — a heal is a loss, a strike is a win — so both use the red lens.
+  // stream from the utility emitter to the dealer, opposite in feel to the red laser.
+  // Never overlaps a strike — a heal is a loss, a strike is a win — so both use it.
   if (charge.healBeam) {
     drawHealBeam(ctx, from, to, charge.healBeam.travel, charge.healBeam.alpha, scale, now)
   }
@@ -645,8 +683,8 @@ const YELLOW_GLOW: GlowStyle = {
   bloom: 1.0,
   intensity: 1.0,
 }
-// The heal glow — green, soft and cool, matching the restorative beam. Drawn on the RED
-// lens (which serves double duty) while a heal fires.
+// The heal glow — green, soft and cool, matching the restorative beam. Drawn on the
+// utility lens (which serves tokens, laser and heal in turn) while a heal fires.
 const GREEN_GLOW: GlowStyle = {
   core: 'rgba(170, 255, 150,',
   halo: 'rgba(80, 220, 90,',
@@ -779,7 +817,7 @@ function hash(i: number, seed: number): number {
 
 // --- the "powering up" charge (transient, on the fx layer) -------------------
 
-// While the red light charges an attack it draws in a stream of red energy balls
+// While the utility light charges an attack it draws in a stream of red energy balls
 // that spawn out around it and rush into its centre — the anime gun-charge look.
 // Deterministic per ball index (via hash()), so no frame-to-frame jitter. Balls
 // spawn every CHARGE_SPAWN_MS from `start` up to `cap` (which advances with `now`
@@ -796,7 +834,7 @@ const CHARGE_POP_MAX_MS = 200
 const CHARGE_POP_SCALE = 2.5
 
 function drawChargeUp(ctx: CanvasRenderingContext2D, l: Layout, start: number, cap: number, now: number): void {
-  const c = nexusRedLight(l, now)
+  const c = nexusUtilityLight(l, now)
   const g = nexusGeom(l)
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'

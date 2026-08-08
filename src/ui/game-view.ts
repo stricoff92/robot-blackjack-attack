@@ -16,7 +16,7 @@ import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawPlayerPile, drawTableMarkings } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
-import { drawHoloRays, drawStrikeFx, nexusYellowLight, type HoloRayTarget } from '../render/nexus'
+import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
@@ -252,6 +252,12 @@ class GameView {
   // (and any death → walk-in), then the card gather + shuffle, play out.
   private pendingAttack: { fromIntegrity: number; fromShift: number; toIntegrity: number; toShift: number } | null = null
   private dealAfter = 0
+  // On a winning hand the utility light shoots the reward tokens (pulsing yellow) FIRST,
+  // and only once they've landed does it transition to the red laser charge — one light,
+  // one effect at a time. This is when that token flight finishes: the Next-hand button
+  // stays disabled until then, and the red charge (anticipate) is scheduled to begin at
+  // it. 0 when no reward is in flight (self-clears once `now` passes it).
+  private attackReadyAt = 0
   // A kill that grants an upgrade pick splits the ceremony around the selector: the
   // dealer dies on the Next-hand click, and the replacement's arrival (walk-in + shred
   // + fresh deck) is deferred until the player picks. This holds what that deferred
@@ -1518,7 +1524,10 @@ class GameView {
       this.bustBlock.isAnimating(timestamp) ||
       // A dealer's heal beam holds the settle (buttons + result) until it finishes,
       // so the repair always reads in full before the player can call the next hand.
-      this.nexus.isHealing(timestamp)
+      this.nexus.isHealing(timestamp) ||
+      // A win's reward tokens shoot from the utility light BEFORE it charges the laser;
+      // hold the settle (and the Next-hand button) until they've landed.
+      timestamp < this.attackReadyAt
 
     // The card + chip sequence just finished: run the one-time settle. The health
     // bar may keep animating past this point (its drop lands after the reveal) —
@@ -2198,12 +2207,11 @@ class GameView {
       const damaged = integrity < prevIntegrity || shiftIndex > prevShift
       if (damaged && !enteringOver) {
         this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
-        // The nexus now holds a reward + strike to deliver: light both emitters in
-        // anticipation and hold the glow until the player calls the next hand. It
-        // starts only once the cards have SETTLED (anim.animEnd), not at the
-        // action — otherwise a natural blackjack, which resolves right off the
-        // deal, would have the nexus charging before the cards even land.
-        this.nexus.anticipate(this.anim.animEnd)
+        // The nexus now holds a reward + strike to deliver, but the RED laser charge is
+        // NOT started here — the utility light first shoots the reward tokens (pulsing
+        // yellow), and only once they've landed does it transition to the red charging
+        // glow (one light, one effect at a time). That transition is scheduled in the
+        // awardWinTokens block below, timed to the token flight's end.
       }
       // A late dealer that BEAT the player repairs itself (heal-on-win): integrity
       // rose with no shift change. The YELLOW emitter fires a heal beam and the bar
@@ -2234,7 +2242,15 @@ class GameView {
         // beside the bet (chips.animEnd) — no longer deferred to the Next-hand click.
         // Only a normal resolve pays the counter; a final blow ('over') ends the run.
         if (this.state.phase === 'resolved' && this.state.round) {
-          this.awardWinTokens(this.state.round, this.chips.animEnd + TOKEN_SPAWN_DELAY)
+          const tokensEnd = this.awardWinTokens(this.state.round, this.chips.animEnd + TOKEN_SPAWN_DELAY)
+          // A damaging (winning) hand: the reward tokens have just been shot from the
+          // utility light (pulsing yellow). Only once they've LANDED does the light
+          // transition to the red laser charge, and the Next-hand button unlocks — one
+          // light, one effect at a time. (`pendingAttack` is set above for exactly this.)
+          if (this.pendingAttack) {
+            this.attackReadyAt = tokensEnd
+            this.nexus.anticipate(tokensEnd)
+          }
           // Hold the points counter at its pre-resolve value; it releases and ticks up
           // once those reward tokens land (see the landed() loop), so points rise right
           // behind the reward. scoreReleaseAt is a fallback for a token-less win.
@@ -2267,7 +2283,10 @@ class GameView {
       this.chips.isAnimating(t) ||
       this.spawn.isAnimating(t) ||
       this.bustBlock.isAnimating(t) ||
-      this.nexus.isHealing(t)
+      this.nexus.isHealing(t) ||
+      // Match sequenceAnimating so the settle EDGE fires when the win tokens land (then
+      // the utility light transitions to the red charge + the Next-hand button unlocks).
+      t < this.attackReadyAt
     this.ensureLoop()
   }
 
@@ -2313,7 +2332,7 @@ class GameView {
       const amount = this.state.run.tokens - prevTokens
       const liftoff = this.anim.animEnd + TOKEN_SPAWN_DELAY
       // Launch from where the vent floats at liftoff (the device is always bobbing).
-      this.tokens.emit(nexusYellowLight(layout, liftoff), amount, liftoff)
+      this.tokens.emit(nexusUtilityLight(layout, liftoff), amount, liftoff)
       // Pulse the yellow vent as the reward token shoots out of it.
       this.nexus.pulseYellow(liftoff)
       return
@@ -2329,23 +2348,28 @@ class GameView {
     }
   }
 
-  // Fly the win/blackjack tokens up to the counter, from the nexus yellow vent,
+  // Fly the win/blackjack tokens up to the counter, from the nexus utility vent,
   // staggered per winning hand so a split's two wins cascade. Called on the resolve
   // once the won chips have slid into place (startAfter = chips settle), so the
-  // reward lands right behind the money — no waiting for the Next-hand click.
-  private awardWinTokens(round: Round, startAfter: number): void {
+  // reward lands right behind the money — no waiting for the Next-hand click. Returns
+  // the timestamp the last token LANDS (or `startAfter` if nothing flew), so the caller
+  // can hold the Next-hand button + schedule the red laser charge until after it.
+  private awardWinTokens(round: Round, startAfter: number): number {
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
+    let end = startAfter
     round.hands.forEach((hand, hi) => {
       const amount = winTokenFor(hand, round)
       if (amount > 0) {
         const liftoff = startAfter + hi * TOKEN_HAND_STAGGER
         // From where the vent floats at liftoff (the device bobs continuously).
-        this.tokens.emit(nexusYellowLight(layout, liftoff), amount, liftoff)
-        // Pulse the yellow vent as the reward shoots out of it.
+        this.tokens.emit(nexusUtilityLight(layout, liftoff), amount, liftoff)
+        // Pulse the utility light yellow as the reward shoots out of it.
         this.nexus.pulseYellow(liftoff)
+        end = Math.max(end, liftoff + FLY_MS)
       }
     })
+    return end
   }
 
   // Kick off the dealer-spawn ceremony: shred `prevRound`'s table cards into the new
@@ -2382,7 +2406,7 @@ class GameView {
     const layout = computeLayout(canvas.width, canvas.height)
     const liftoff = startAfter + KILL_DEATH_MS
     const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
-    this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
+    this.tokens.emit(nexusUtilityLight(layout, liftoff), bounty, liftoff)
     return startAfter + KILL_DEATH_MS
   }
 
@@ -2407,7 +2431,10 @@ class GameView {
   // and — on a kill — the explosion as the figure blows apart (KILL_DEATH_LEAD_MS in).
   // Centralised so every laser — deferred damage/kill and the final blow — is in step.
   private fireLaser(t: number, attackStart: number, kill: boolean): void {
-    this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS, null)
+    // The token reward already flew + the red charge has been holding; consume the
+    // ready gate so it can't re-disable the buttons for this (now-fired) attack.
+    this.attackReadyAt = 0
+    this.nexus.fire(t, attackStart, attackStart + HIT_TOTAL_MS)
     sfx.play('laser-prepare', Math.max(0, attackStart - t) / 1000)
     sfx.play('laser-impact', Math.max(0, attackStart + STRIKE_TRAVEL_MS - t) / 1000)
     if (kill) {
@@ -2434,7 +2461,7 @@ class GameView {
         // credited amount (run.ts). The upgrade pick comes after this, so the current
         // run's multiplier is the one that applied to this bounty.
         const bounty = Math.round(DESTROY_TOKEN * tokenMultiplier(this.state.run))
-        this.tokens.emit(nexusYellowLight(layout, liftoff), bounty, liftoff)
+        this.tokens.emit(nexusUtilityLight(layout, liftoff), bounty, liftoff)
       }
       return startAfter + KILL_TOTAL_MS
     }
@@ -2513,7 +2540,10 @@ class GameView {
       this.dealer.isArriving(timestamp) ||
       this.spawn.isAnimating(timestamp) ||
       this.bustBlock.isAnimating(timestamp) ||
-      this.nexus.isHealing(timestamp)
+      this.nexus.isHealing(timestamp) ||
+      // The Next-hand button stays disabled while a win's reward tokens are still flying
+      // from the utility light (it charges the red laser only once they've landed).
+      timestamp < this.attackReadyAt
 
     // Point the counters at their current values (rewards still flying are withheld);
     // the frame loop rolls them up as they land.
