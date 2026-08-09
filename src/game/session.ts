@@ -9,6 +9,7 @@ import {
   canForcedSplit,
   canMulligan,
   canReturn,
+  DEFAULT_ROUND_RULES,
   doubleDown,
   forcedSplit,
   freezeDealer,
@@ -20,6 +21,7 @@ import {
   stand,
   startRound,
   type Round,
+  type RoundRules,
 } from './round'
 import {
   addTokens,
@@ -40,13 +42,14 @@ import {
   type RunState,
 } from './run'
 import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
+import { submitScore } from './leaderboard'
 
 export const SHOE_DECKS = 6
 
 // 'choosing-upgrade' holds the deal after a non-final kill until the player picks
 // a roguelite upgrade; in the UI the dealer dies first, the selector shows, then the
 // replacement's walk-in ceremony plays once the pick releases the deal.
-export type Phase = 'betting' | 'playing' | 'resolved' | 'over' | 'choosing-upgrade'
+export type Phase = 'betting' | 'playing' | 'resolved' | 'over' | 'choosing-upgrade' | 'coda'
 
 export interface SessionOptions {
   /** Dev switch: force the player's opening two cards to be a splittable pair. */
@@ -79,6 +82,8 @@ export interface SessionState {
   /** The bust risk [0,1] of the hit that just landed and paid points, else null. Set on a
    *  surviving hit, cleared by the next move — lets the UI caption the reward ("Nice"…). */
   lastHitRisk: number | null
+  /** Coda only: a pushed double-or-nothing hand asks the UI to auto-re-deal (no re-prompt). */
+  codaRedeal: boolean
 }
 
 // Decorrelates the Analyze simulator's RNG from the deal RNG, so running odds
@@ -89,6 +94,16 @@ const ANALYSIS_SEED_SALT = 0x5f356495
 // Decorrelates the heal-on-win roll from the deal RNG, so a healing dealer's repair
 // amount never disturbs the card sequence (like ANALYSIS_SEED_SALT does for Analyze).
 const HEAL_SEED_SALT = 0x1b873593
+
+// The Banker coda's stripped rules: plain S17, no split (and no double/upgrades) — the
+// double-or-nothing hand is pure hit/stand blackjack. See the coda* methods below.
+const CODA_RULES: RoundRules = { ...DEFAULT_ROUND_RULES, allowSplit: false }
+
+// Coda-ability token costs. Analyze is FLAT (inflation-independent) — a cheap, always-on odds
+// read. The Mulligan is a BASE cost that IS inflation-adjusted (powerupCost, like the main-game
+// powerups) — an expensive, run-scaling reroll.
+export const CODA_ANALYZE_COST = 5
+export const CODA_MULLIGAN_COST = 200
 
 export class Session {
   private nextRandom: Rng
@@ -102,6 +117,9 @@ export class Session {
   // The bust risk of the last surviving hit that paid points (see hit()); cleared by the
   // next move. Drives the UI's risk caption ("WHOA!"/"Lucky!"/"Nice").
   private lastHitRisk: number | null = null
+  // Coda only: a pushed double-or-nothing hand flags the UI to auto-re-deal. Resets on each
+  // coda deal (and on restart).
+  private codaRedeal = false
   // Set when a kill just advanced the dealer (and the run isn't won): the next
   // hand is gated on a choose-upgrade pick.
   private upgradePending = false
@@ -170,6 +188,7 @@ export class Session {
       analysis: this.analysis,
       abilitiesLocked: abilitiesLocked(this.run),
       lastHitRisk: this.lastHitRisk,
+      codaRedeal: this.codaRedeal,
     }
   }
 
@@ -360,6 +379,105 @@ export class Session {
     }
   }
 
+  // --- The Banker coda: double-or-nothing on the whole score (see run.ts coda flow) ---
+
+  // Deal one stripped double-or-nothing hand (no bet, no split/double). Only from the prompt
+  // (no hand in progress). If it resolves at the deal (a natural), the outcome is left for
+  // codaResolveNext so the UI can reveal the dealt cards first.
+  codaGamble(): void {
+    if (this.phase !== 'coda' || this.round !== null) {
+      return
+    }
+    this.analysis = null
+    this.codaRedeal = false
+    this.round = startRound(this.shuffleShoe(), 0, CODA_RULES)
+  }
+
+  codaHit(): void {
+    if (this.phase !== 'coda' || this.round === null || this.round.status !== 'player-turn') {
+      return
+    }
+    this.analysis = null
+    this.round = hit(this.round) // a bust resolves the round; codaResolveNext reads the outcome
+  }
+
+  codaStand(): void {
+    if (this.phase !== 'coda' || this.round === null || this.round.status !== 'player-turn') {
+      return
+    }
+    this.analysis = null
+    this.round = stand(this.round)
+  }
+
+  // Advance the coda past the resolved hand on the table — called by the UI after the reveal
+  // (or, at coda entry, after the boss-death + Banker ceremony). The main-game hand that
+  // ENTERED the coda carries a real bet and was already scored by applyRound, so it's simply
+  // dismissed to reveal the prompt. A coda double-or-nothing hand (bet 0) applies its outcome:
+  // a win DOUBLES the score and returns to the prompt; a push re-deals (score unchanged); any
+  // loss or bust ZEROES the score and ends the run. A losing coda hand is left on the table for
+  // the game-over shred; the round is cleared only on a win/push (or the dismissed killing hand).
+  codaResolveNext(): void {
+    if (this.phase !== 'coda' || this.round === null || this.round.status !== 'resolved') {
+      return
+    }
+    const hand = this.round.hands[0]
+    this.analysis = null
+    if (hand.bet > 0) {
+      // The killing hand from the main game — already scored; just dismiss it to the prompt.
+      this.round = null
+      this.codaRedeal = false
+      return
+    }
+    const outcome = hand.outcome
+    if (outcome === 'win' || outcome === 'blackjack') {
+      this.run = { ...this.run, score: this.run.score * 2 }
+      this.round = null
+      this.codaRedeal = false
+    } else if (outcome === 'push' || outcome === 'voided') {
+      this.round = null
+      this.codaRedeal = true
+    } else {
+      this.run = { ...this.run, score: 0 }
+      this.enterOver()
+    }
+  }
+
+  // Walk away from the coda, banking the current score. Only from the prompt (no hand up).
+  codaCashOut(): void {
+    if (this.phase !== 'coda' || this.round !== null) {
+      return
+    }
+    this.run = { ...this.run, cashedOut: true }
+    this.enterOver()
+  }
+
+  // Coda Analyze: cheap, flat-priced, ALWAYS fires — the "should I let it ride?" odds readout.
+  codaAnalyze(): void {
+    if (this.phase !== 'coda' || this.round === null || this.round.status !== 'player-turn') {
+      return
+    }
+    if (this.analysis !== null || this.run.tokens < CODA_ANALYZE_COST) {
+      return
+    }
+    this.run = spendTokens(this.run, CODA_ANALYZE_COST)
+    this.analysis = computeAnalysis(this.round, { hole: null }, this.analysisRandom)
+  }
+
+  // Coda Mulligan: expensive, flat-priced — discards the opening two and redraws (guaranteed,
+  // no gamble). Only on an untouched opening hand (canMulligan) and if affordable.
+  codaMulligan(): void {
+    if (this.phase !== 'coda' || this.round === null || !canMulligan(this.round)) {
+      return
+    }
+    const cost = powerupCost(CODA_MULLIGAN_COST, this.run)
+    if (this.run.tokens < cost) {
+      return
+    }
+    this.analysis = null
+    this.run = spendTokens(this.run, cost)
+    this.round = mulligan(this.round)
+  }
+
   nextHand(): void {
     if (this.phase !== 'resolved') {
       return
@@ -392,6 +510,7 @@ export class Session {
     this.peeked = false
     this.analysis = null
     this.lastHitRisk = null
+    this.codaRedeal = false
     this.upgradePending = false
     this.phase = 'betting'
   }
@@ -414,12 +533,31 @@ export class Session {
   private settle(): void {
     const beforeShift = this.run.shiftIndex
     this.run = applyRound(this.run, this.requireRound(), this.healRandom)
-    // A non-final kill (the dealer advanced but the run isn't won) earns an upgrade
-    // pick, taken after the player calls the next hand.
-    if (!this.run.over && this.run.shiftIndex > beforeShift) {
+    // A non-final kill (the dealer advanced, but it wasn't the 6th) earns an upgrade pick,
+    // taken after the player calls the next hand. The 6th kill enters the coda instead, so
+    // it must never arm an upgrade selector.
+    if (!this.run.over && !this.run.coda && this.run.shiftIndex > beforeShift) {
       this.upgradePending = true
     }
-    this.phase = this.run.over ? 'over' : 'resolved'
+    if (this.run.over) {
+      this.enterOver() // a chip bust-out — funnel through the single submit seam
+    } else if (this.run.coda) {
+      this.phase = 'coda' // the 6th dealer fell → the Banker coda begins
+    } else {
+      this.phase = 'resolved'
+    }
+  }
+
+  // The single game-end choke point: mark the run over, surface the score screen, and submit
+  // the final score to the leaderboard exactly once. Every ending funnels here — a chip
+  // bust-out (settle), a coda bust, and a coda cash-out — so the SDK hook lives in one place.
+  // The score is submitted as-is: 0 on a coda bust (you gamble the whole score, record too).
+  private enterOver(): void {
+    if (!this.run.over) {
+      this.run = { ...this.run, over: true }
+    }
+    this.phase = 'over'
+    submitScore(this.run.score)
   }
 
   // A powerup's live cost — its base price inflated by the run's token inflation.

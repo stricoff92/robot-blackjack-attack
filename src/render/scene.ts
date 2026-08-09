@@ -32,9 +32,12 @@ const RAIL_OVERLAP = 2
 // 1.72 headR (drawBowtie: cy = headCenterY + 1.5·headR, wingH/2 = 0.22·headR). Keep
 // in sync with render/dealer.ts if the bowtie moves.
 const FIGURE_EXTENT = 2.72
-// A touch of clearance (in head-radius units) so the bowtie's tip rests just above
-// the wood rail rather than flush against it.
-const BOWTIE_CLEARANCE = 0.15
+// The gap between the bowtie's lower tip and the wood rail's top edge, in head-radius units.
+// This is the ONE knob setting how high the table sits relative to the dealer, and it's applied
+// the same way at every screen size (see computeLayout), so the amount of hidden body is
+// constant. Big enough that the rail rests a touch below the bowtie rather than flush against
+// it; small enough that it still hides most of the torso.
+const BOWTIE_CLEARANCE = 0.45
 
 // Top gap above the head, and the head's natural radius — both a function of screen
 // size ALONE (not apexY), so computeLayout and dealerBox agree on the figure's size.
@@ -95,25 +98,25 @@ export class Scene {
 }
 
 export function computeLayout(w: number, h: number): Layout {
-  // On wide/landscape screens the felt would sit too high and bury the dealer
-  // behind the table, so give the top room band more height there (a desktop has
-  // ample horizontal room for chips). Portrait keeps the original tight band. The
-  // felt's curve depth (edgeY − apexY) stays constant so the arch looks the same.
-  const aspect = w / Math.max(1, h)
-  const apexFrac = clamp(0.165 + Math.max(0, aspect - 0.9) * 0.12, 0.165, 0.28)
-  const curveDepth = h * 0.07
   const rail = railThickness(w, h)
+  // How far the felt/rail arch drops from the centre apex to the screen edges. Kept modest:
+  // the rail hides the dealer's lower body, and the coverage line falls by exactly this much
+  // from centre to edge — so a deep arch would expose the bottom of a dealer's body as it
+  // walks in/off through the screen edges. A shallow arch keeps the rail covering a roughly
+  // even slice of body all the way across (the walk-in/off path stays a straight line).
+  const curveDepth = h * 0.035
 
-  // Guarantee the room band is tall enough for the WHOLE dealer figure — head AND
-  // bowtie — to clear the rail's top edge at any aspect. The aspect ramp above only
-  // handles landscape; a tall portrait / near-square screen (e.g. 1200×1450) keeps
-  // the minimum band while the dealer is still drawn at full size (it's sized from
-  // the short edge, not apexY), so its bowtie would be swallowed by the rail. Size
-  // the figure the same way dealerBox does and push apexY down until it fits.
+  // Anchor the table DIRECTLY to the dealer figure: place the rail a fixed BOWTIE_CLEARANCE
+  // below the bowtie's lower tip, so the same slice of body is hidden on every screen. The old
+  // layout took max(h·fraction, figureFit) instead — on tall screens the h·fraction term shoved
+  // the table low (too much torso showed), while on short/near-square screens figureFit jammed
+  // the rail right under the bowtie. Because the figure is sized off min(w,h) but that fraction
+  // was off h alone, which term won — and how much body showed — swung wildly with aspect ratio.
+  // Sizing the figure exactly as dealerBox does keeps the two in agreement on the bowtie tip.
   const topMargin = dealerTopMargin(h)
   const headR = dealerHeadRadius(w, h)
-  const figureBottom = topMargin + FIGURE_EXTENT * headR
-  const apexY = Math.max(h * apexFrac, figureBottom + rail + headR * BOWTIE_CLEARANCE)
+  const figureBottom = topMargin + FIGURE_EXTENT * headR // the bowtie's lower tip
+  const apexY = figureBottom + rail + headR * BOWTIE_CLEARANCE
 
   const edgeY = apexY + curveDepth
   return {

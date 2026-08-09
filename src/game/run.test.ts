@@ -14,6 +14,7 @@ import {
   isLastCall,
   nextBet,
   powerupCost,
+  runMultiplier,
   spendTokens,
   startRun,
 } from './run'
@@ -105,11 +106,11 @@ describe('startRun', () => {
 
 describe('getShift', () => {
   it('reads the fixed ladder for early shifts', () => {
-    expect(getShift(4)).toMatchObject({ minBet: 160, maxBet: 850, scoreMultiplier: 1.35 })
+    expect(getShift(4)).toMatchObject({ minBet: 160, maxBet: 850, maxIntegrity: 150 })
   })
 
   it('extrapolates prototype units beyond the table', () => {
-    expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, scoreMultiplier: 3.2, maxIntegrity: 265 })
+    expect(getShift(7)).toMatchObject({ minBet: 1600, maxBet: 16000, maxIntegrity: 265 })
   })
 })
 
@@ -295,17 +296,26 @@ describe('kill reward', () => {
   })
 })
 
-describe('victory', () => {
-  it('wins the run when the sixth dealer is destroyed and awards no further seed', () => {
+describe('victory → the Banker coda', () => {
+  it('enters the coda when the sixth dealer is destroyed (not won, not over)', () => {
     let run = startRun(1)
-    while (!run.over) {
+    while (!run.coda) {
       run = applyRound(run, dealerBustWin(10))
     }
 
-    expect(run.won).toBe(true)
-    expect(run.over).toBe(true)
+    // The 6th kill no longer wins outright — it hands off to the double-or-nothing coda.
+    expect(run.coda).toBe(true)
+    expect(run.won).toBe(false)
+    expect(run.over).toBe(false)
     expect(run.kills).toEqual([1, 2, 3, 4, 5, 6])
     expect(run.shiftIndex).toBe(7)
+  })
+
+  it('awards no bankroll seed on the sixth kill (the coda branch skips it)', () => {
+    const nearDead = { ...startRun(1), shiftIndex: 6, integrity: 10, kills: [1, 2, 3, 4, 5], chips: 1000 }
+    const after = applyRound(nearDead, beatTwentyWin(10))
+    expect(after.coda).toBe(true)
+    expect(after.chips).toBe(1010) // the +10 win only; no 3x-min-bet kill seed
   })
 })
 
@@ -373,7 +383,7 @@ describe('combo multiplier on resolved hands (score)', () => {
   // `combo` is now the accumulated bonus fraction: 0.5 → x1.5, 1.0 → x2 (capped).
   it('multiplies a won hand chip score by the current combo', () => {
     const run = applyRound({ ...startRun(1), combo: 0.5 }, standWin(10)) // x1.5
-    expect(run.score).toBe(15) // round(10 chips * mult 1.0 * combo 1.5)
+    expect(run.score).toBe(15) // round(10 chips * run mult 1.0 [0 kills] * combo 1.5)
   })
 
   it('multiplies the kill bounty by the current combo', () => {
@@ -399,6 +409,32 @@ describe('combo multiplier on resolved hands (score)', () => {
     expect(applyRound(held, resolvedSplit(['lose', 'bust'])).combo).toBe(0) // every hand lost
     expect(applyRound(held, resolvedSplit(['lose', 'win'])).combo).toBe(0.4) // one win holds it
     expect(applyRound(held, resolvedSplit(['bust', 'push'])).combo).toBe(0.4) // a push holds it
+  })
+})
+
+describe('run multiplier (compounding score)', () => {
+  it('compounds x1.5 per dealer already killed', () => {
+    expect(runMultiplier(startRun(1))).toBe(1) // 0 kills
+    expect(runMultiplier({ ...startRun(1), kills: [1] })).toBeCloseTo(1.5)
+    expect(runMultiplier({ ...startRun(1), kills: [1, 2] })).toBeCloseTo(2.25)
+    expect(runMultiplier({ ...startRun(1), kills: [1, 2, 3, 4, 5] })).toBeCloseTo(7.59375) // by the boss
+  })
+
+  it('scales a won hand chip score by the run multiplier', () => {
+    // At dealer 3 (2 prior kills → x2.25), a beat-17 win of 10 chips, no combo:
+    // round(10 * 2.25 * 1) = 23 (vs 10 at dealer 1 / 0 kills).
+    const run = { ...startRun(1), shiftIndex: 3, integrity: 125, kills: [1, 2] }
+    expect(applyRound(run, standWin(10)).score).toBe(23)
+  })
+
+  it('scales the kill bounty by the pre-this-kill run multiplier', () => {
+    // Killing dealer 3 (2 prior kills → x2.25): bounty 400*3 = 1200, x2.25 = 2700; plus the
+    // +10 chip win round(10*2.25) = 23 → 2723. The landing kill uses the SAME pre-kill count
+    // (2) as its chip win, so the two stay consistent.
+    const nearDead = { ...startRun(1), shiftIndex: 3, integrity: 22, kills: [1, 2] }
+    const run = applyRound(nearDead, standWin(10))
+    expect(run.kills).toEqual([1, 2, 3])
+    expect(run.score).toBe(2723)
   })
 })
 
@@ -464,10 +500,10 @@ describe('token inflation', () => {
     expect(half.tokenInflation).toBeCloseTo(0.035, 5)
   })
 
-  it('does not inflate on the winning Dealer 6 kill', () => {
+  it('does not inflate on the Dealer 6 kill (which enters the coda)', () => {
     const run = { ...startRun(1), shiftIndex: 6, integrity: 10, kills: [1, 2, 3, 4, 5], chips: 5000, tokensThisShift: 300 }
     const after = applyRound(run, beatTwentyWin(10))
-    expect(after.won).toBe(true)
+    expect(after.coda).toBe(true)
     expect(after.tokenInflation).toBe(0)
   })
 

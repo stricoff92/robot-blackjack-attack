@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { cardValue, isBlackjack } from './hand'
+import { submitScore } from './leaderboard'
 import { bustChanceOnHit } from './odds'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
 import { comboGain, getShift, hitTokens, powerupCost } from './run'
-import { Session } from './session'
+import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session } from './session'
+
+// The submit seam is a no-op stub until the SDK lands; mock it so the coda tests can observe
+// that each game-end funnels the final score through it.
+vi.mock('./leaderboard', () => ({ submitScore: vi.fn() }))
 
 describe('Session', () => {
   it('opens in the betting phase with the starting bankroll', () => {
@@ -560,5 +565,164 @@ describe('Session startDealer dev override', () => {
     const run = session.snapshot().run
     expect(run.shiftIndex).toBe(3)
     expect(run.kills).toEqual([1, 2])
+  })
+})
+
+describe('Session Banker coda', () => {
+  // Session at the MOMENT the coda is entered: jump to dealer 6 at ~1% health, then win a hand
+  // to land the 6th kill. The killing hand is still on the table (a real bet), awaiting the
+  // entry ceremony. Fat chips so a cold streak rarely busts out first; null if it busts out.
+  function codaEntry(seed: number): Session | null {
+    const session = new Session(seed, { startDealer: 6, dealerHealth: 1, startChips: 100000, startTokens: 500 })
+    for (let guard = 0; guard < 60; guard += 1) {
+      const phase = session.snapshot().phase
+      if (phase === 'coda') return session
+      if (phase === 'over') return null
+      if (phase === 'betting') { session.deal(); continue }
+      if (phase === 'resolved') { session.nextHand(); continue }
+      if (phase === 'choosing-upgrade') { session.chooseUpgrade('tokenEco'); continue }
+      session.stand() // a win kills the ~2 HP dealer 6 → the coda
+    }
+    return null
+  }
+
+  function firstCodaEntry(): Session {
+    for (let seed = 1; seed < 4000; seed += 1) {
+      const session = codaEntry(seed)
+      if (session) return session
+    }
+    throw new Error('no seed reached the coda')
+  }
+
+  // Session at the coda PROMPT — killing hand dismissed (codaResolveNext), awaiting DOUBLE / CASH OUT.
+  function codaPrompt(seed: number): Session | null {
+    const session = codaEntry(seed)
+    if (!session) return null
+    session.codaResolveNext() // dismiss the killing hand → the prompt
+    return session
+  }
+
+  function firstPrompt(): Session {
+    for (let seed = 1; seed < 4000; seed += 1) {
+      const session = codaPrompt(seed)
+      if (session) return session
+    }
+    throw new Error('no seed reached the coda prompt')
+  }
+
+  // Session parked on a LIVE double-or-nothing hand (dealt, not resolved at the deal).
+  function codaHand(): Session {
+    for (let seed = 1; seed < 4000; seed += 1) {
+      const session = codaPrompt(seed)
+      if (!session) continue
+      session.codaGamble()
+      const round = session.snapshot().round
+      if (round && round.status === 'player-turn') return session
+    }
+    throw new Error('no seed produced a live coda hand')
+  }
+
+  it('enters with the killing hand present, then dismisses to the prompt', () => {
+    const session = firstCodaEntry()
+    const entry = session.snapshot()
+    // At coda entry the killing hand (a real bet) is still on the table for the ceremony.
+    expect(entry.phase).toBe('coda')
+    expect(entry.round).not.toBeNull()
+    expect(entry.round!.hands[0].bet).toBeGreaterThan(0)
+    expect(entry.run.coda).toBe(true)
+    expect(entry.run.over).toBe(false)
+    expect(entry.run.won).toBe(false)
+    expect(entry.run.score).toBeGreaterThan(0)
+    const score = entry.run.score
+
+    session.codaResolveNext() // after the ceremony → the prompt
+
+    const prompt = session.snapshot()
+    expect(prompt.phase).toBe('coda')
+    expect(prompt.round).toBeNull()
+    expect(prompt.run.score).toBe(score) // dismissing the killing hand does NOT double it
+  })
+
+  it('cashes out — banks the score, ends the run, and submits it once', () => {
+    const submit = vi.mocked(submitScore)
+    const session = firstPrompt()
+    const score = session.snapshot().run.score
+    submit.mockClear() // discard any submits from busted setup seeds
+
+    session.codaCashOut()
+
+    const after = session.snapshot()
+    expect(after.phase).toBe('over')
+    expect(after.run.over).toBe(true)
+    expect(after.run.cashedOut).toBe(true)
+    expect(after.run.score).toBe(score) // preserved
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledWith(score)
+  })
+
+  it('resolves every coda outcome — win doubles, loss zeroes + submits 0, push re-deals', () => {
+    const submit = vi.mocked(submitScore)
+    let sawWin = false
+    let sawLoss = false
+    let sawPush = false
+    for (let seed = 1; seed < 4000 && !(sawWin && sawLoss && sawPush); seed += 1) {
+      const session = codaPrompt(seed)
+      if (!session) continue
+      const entry = session.snapshot().run.score
+      session.codaGamble()
+      let snap = session.snapshot()
+      while (snap.round && snap.round.status === 'player-turn') {
+        session.codaStand()
+        snap = session.snapshot()
+      }
+      const outcome = session.snapshot().round!.hands[0].outcome!
+      submit.mockClear()
+      session.codaResolveNext()
+      const after = session.snapshot()
+      if (outcome === 'win' || outcome === 'blackjack') {
+        expect(after.run.score).toBe(entry * 2)
+        expect(after.phase).toBe('coda')
+        expect(after.round).toBeNull()
+        sawWin = true
+      } else if (outcome === 'push' || outcome === 'voided') {
+        expect(after.run.score).toBe(entry)
+        expect(after.phase).toBe('coda')
+        expect(after.codaRedeal).toBe(true)
+        sawPush = true
+      } else {
+        expect(after.run.score).toBe(0)
+        expect(after.phase).toBe('over')
+        expect(after.run.over).toBe(true)
+        expect(submit).toHaveBeenCalledWith(0)
+        sawLoss = true
+      }
+    }
+    expect(sawWin).toBe(true)
+    expect(sawLoss).toBe(true)
+    expect(sawPush).toBe(true)
+  })
+
+  it('Analyze is cheap, always fires, and does not pay twice', () => {
+    const session = codaHand()
+    const before = session.snapshot().run.tokens
+
+    session.codaAnalyze()
+
+    const shown = session.snapshot()
+    expect(shown.analysis).not.toBeNull()
+    expect(shown.run.tokens).toBe(before - CODA_ANALYZE_COST)
+    session.codaAnalyze() // a second buy while a reading is up is a no-op
+    expect(session.snapshot().run.tokens).toBe(before - CODA_ANALYZE_COST)
+  })
+
+  it('Mulligan spends a flat cost and always redraws the opening two', () => {
+    const session = codaHand()
+    const before = session.snapshot().run.tokens
+
+    session.codaMulligan()
+
+    const after = session.snapshot()
+    expect(after.run.tokens).toBe(before - CODA_MULLIGAN_COST)
+    expect(after.round!.mulliganed).toBe(true)
   })
 })

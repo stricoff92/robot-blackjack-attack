@@ -96,7 +96,7 @@ function renderSprite(card: Card | null, cw: number, ch: number, dpr: number, ba
   if (card) {
     drawFace(ctx, padX, padY, cw, ch, card)
   } else {
-    drawBack(ctx, padX, padY, cw, ch, back)
+    drawBack(ctx, padX, padY, cw, ch, back, dpr)
   }
 
   return { canvas, cw, ch, padX, padY }
@@ -136,7 +136,7 @@ function drawFace(ctx: Ctx2D, x: number, y: number, w: number, h: number, card: 
   ctx.fillText(suit, x + w * 0.5, y + h * 0.56)
 }
 
-function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number, back: CardBack): void {
+function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number, back: CardBack, dpr: number): void {
   const radius = w * 0.09
 
   ctx.save()
@@ -172,8 +172,54 @@ function drawBack(ctx: Ctx2D, x: number, y: number, w: number, h: number, back: 
   ctx.save()
   roundRectPath(ctx, bx, by, bw, bh, radius * 0.7)
   ctx.clip()
-  drawPcb(ctx, bx, by, bw, bh, { tech: back.tech, seed: back.seed })
+  if (back.id === BANKER_BACK_ID) {
+    // THE BANKER's deck: the same greebles etched in SHINY GOLD instead of copper. Baked with a
+    // soft gold bloom UNDER a crisp second pass, so the paths/pads read as bright polished metal
+    // (a static shine — no per-frame glow). The double draw also lifts the faint traces so the
+    // whole circuit reads bright, not just the pads.
+    const gold = renderGoldGreebles(bw, bh, dpr, back.tech, back.seed)
+    ctx.save()
+    ctx.shadowColor = GOLD_GLOW
+    ctx.shadowBlur = Math.min(bw, bh) * 0.06
+    ctx.drawImage(gold, bx, by, bw, bh) // bloom pass (casts the gold halo)
+    ctx.shadowBlur = 0
+    ctx.drawImage(gold, bx, by, bw, bh) // crisp etch on top
+    ctx.restore()
+  } else {
+    drawPcb(ctx, bx, by, bw, bh, { tech: back.tech, seed: back.seed })
+  }
   ctx.restore()
+}
+
+// THE BANKER's deck id (see palette.ts BANKER_COLORS.back.id) — the discriminator that
+// switches the card back to the gold-greeble + at-rest-glow treatment.
+const BANKER_BACK_ID = 'banker'
+
+// The Banker's shiny-gold ramp (reuses BANKER_COLORS' #e3c169, with a brighter crown and a
+// deeper foot so the etch reads as polished metal down the card).
+const GOLD_HI = '#ffe9a0'
+const GOLD_MID = '#f0cf78'
+const GOLD_LO = '#d4ad57'
+// Baked bloom: a soft gold halo baked UNDER the crisp etch so the greebles read as bright,
+// shiny polished metal at rest (a static shine — the old per-frame pulse was removed).
+const GOLD_GLOW = 'rgba(255, 226, 150, 0.9)'
+
+// Render the PCB greebles for a bw×bh panel onto a fresh offscreen, then recolour the whole
+// etch to GOLD: `source-in` keeps each feature's own alpha (traces faint, pads/chips bright)
+// as the gold's brightness, so the board reads as a gold-etched circuit rather than copper.
+// A top→bottom gold gradient gives it a metallic sheen. Returned alpha-masked on transparent.
+function renderGoldGreebles(bw: number, bh: number, dpr: number, tech: number, seed: number): HTMLCanvasElement {
+  const { canvas, ctx } = createSpriteCanvas(Math.round(bw * dpr), Math.round(bh * dpr))
+  ctx.scale(dpr, dpr)
+  drawPcb(ctx, 0, 0, bw, bh, { tech, seed })
+  ctx.globalCompositeOperation = 'source-in' // repaint every drawn pixel gold, keeping its alpha
+  const g = ctx.createLinearGradient(0, 0, 0, bh)
+  g.addColorStop(0, GOLD_HI)
+  g.addColorStop(0.5, GOLD_MID)
+  g.addColorStop(1, GOLD_LO)
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, bw, bh)
+  return canvas
 }
 
 function roundRectPath(ctx: Ctx2D, x: number, y: number, w: number, h: number, radius: number): void {

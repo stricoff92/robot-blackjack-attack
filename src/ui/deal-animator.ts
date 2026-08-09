@@ -104,15 +104,24 @@ export class DealAnimation implements CardAnim {
     }
   }
 
-  // Gather the ending hand's cards back into the deck, then slide the deck out
-  // in front of the dealer, riffle it, and slide it back to rest.
-  collect(round: Round, now: number): void {
+  // Gather the ending hand's cards back into the deck, then (unless `shuffle` is false) slide
+  // the deck out in front of the dealer, riffle it, and slide it back to rest. A game-over
+  // gather passes shuffle=false — the cards return to the deck with no riffle (no next hand).
+  collect(round: Round, now: number, shuffle = true): void {
     this.collectStart.clear()
     let cursor = now
     for (const key of this.allKeys(round)) {
       this.collectStart.set(key, cursor)
       this.end = Math.max(this.end, cursor + COLLECT_MS)
       cursor += COLLECT_STAGGER
+    }
+    if (!shuffle) {
+      // No riffle: the deck stays at its rest spot (no slide-out / shuffle / slide-back).
+      this.slideOutStart = null
+      this.shuffleStart = null
+      this.shuffleStop = null
+      this.slideBackStart = null
+      return
     }
     this.slideOutStart = this.end + SHUFFLE_GAP
     this.shuffleStart = this.slideOutStart + SLIDE_MS

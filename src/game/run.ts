@@ -55,7 +55,12 @@ import {
 //      grows ~40x across dealers, so the multiplier no longer needs to do the heavy lifting;
 //      and the kill bounty base drops 1000 -> 400 so bounties don't dominate the smaller
 //      totals. Blackjack still scores via chips (3:2 + upgrades), deliberately unchanged.
-export const RULES_VERSION = 24
+// v25: score now COMPOUNDS with depth — the flat per-dealer scoreMultiplier (1..1.7) is
+//      replaced by runMultiplier = 1.5^kills (1, 1.5, 2.25, 3.4, 5.06, 7.59 by dealer 6),
+//      applied to the won-hand chip score and the kill bounty, so deep runs are worth
+//      exponentially more (feeding the double-or-nothing Banker coda). The per-shift
+//      scoreMultiplier field is removed — bet size + this now carry the score curve.
+export const RULES_VERSION = 25
 export const STARTING_CHIPS = 300
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
@@ -95,7 +100,6 @@ const HAND_BET_STEP = 0.5
 // so the escalating min-bet ladder stays survivable instead of starving the run.
 const KILL_REWARD_RATIO = 3
 const PROTOTYPE_MIN_GROWTH = 2.5
-const PROTOTYPE_MULTIPLIER_STEP = 1.5
 // Dealers past the table (only reached by a dev jump; the run ends at dealer 6)
 // keep gaining HP so a jumped-to late dealer is still a real fight.
 const PROTOTYPE_HP_STEP = 45
@@ -130,7 +134,6 @@ export interface Shift {
   index: number
   minBet: number
   maxBet: number
-  scoreMultiplier: number
   /** The dealer's full integrity — how much damage destroying it takes. */
   maxIntegrity: number
   /** On a hand the dealer wins, it repairs a random amount of HP in [min, max],
@@ -183,6 +186,11 @@ export interface RunState {
   freeDoubleWins: number
   over: boolean
   won: boolean
+  // The Banker coda: set true (in place of `won`) when the 6th dealer is destroyed, so the run
+  // enters the double-or-nothing endgame instead of ending. Stays true through the coda.
+  coda: boolean
+  // Set when the player cashes OUT of the coda (vs. busting it) — drives the score-screen title.
+  cashedOut: boolean
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
   upgrades: RunUpgrades
 }
@@ -195,12 +203,12 @@ export interface RunState {
 // to a cold streak, more score) — and dealer 6 repairs 10-15 HP whenever it beats you,
 // so a stumble against it costs progress, not just chips.
 const SHIFT_TABLE: readonly Shift[] = [
-  { index: 1, minBet: 20, maxBet: 200, scoreMultiplier: 1.0, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
-  { index: 2, minBet: 40, maxBet: 350, scoreMultiplier: 1.1, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
-  { index: 3, minBet: 80, maxBet: 550, scoreMultiplier: 1.2, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
-  { index: 4, minBet: 160, maxBet: 850, scoreMultiplier: 1.35, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
-  { index: 5, minBet: 320, maxBet: 1700, scoreMultiplier: 1.5, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
-  { index: 6, minBet: 640, maxBet: 2750, scoreMultiplier: 1.7, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
+  { index: 1, minBet: 20, maxBet: 200, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
+  { index: 2, minBet: 40, maxBet: 350, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
+  { index: 3, minBet: 80, maxBet: 550, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
+  { index: 4, minBet: 160, maxBet: 850, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
+  { index: 5, minBet: 320, maxBet: 1700, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
+  { index: 6, minBet: 640, maxBet: 2750, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
 ]
 
 export function startRun(seed: number): RunState {
@@ -223,6 +231,8 @@ export function startRun(seed: number): RunState {
     freeDoubleWins: 0,
     over: false,
     won: false,
+    coda: false,
+    cashedOut: false,
     upgrades: emptyUpgrades(),
   }
 }
@@ -257,7 +267,6 @@ export function getShift(index: number): Shift {
     index,
     minBet,
     maxBet: minBet * 10,
-    scoreMultiplier: base.scoreMultiplier + PROTOTYPE_MULTIPLIER_STEP * shiftsBeyond,
     maxIntegrity: base.maxIntegrity + PROTOTYPE_HP_STEP * shiftsBeyond,
     healOnWin: base.healOnWin,
     minBetPct: base.minBetPct,
@@ -377,7 +386,7 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
 
   const roundTokens = tokensForRound(round)
   let chips = run.chips + net
-  let score = run.score + Math.round(chipsWon * shift.scoreMultiplier * combo * doubleBoost)
+  let score = run.score + Math.round(chipsWon * runMultiplier(run) * combo * doubleBoost)
   let tokens = run.tokens + roundTokens
   let tokensThisShift = run.tokensThisShift + roundTokens
   let tokenInflation = run.tokenInflation
@@ -395,6 +404,8 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
   let handsThisDealer = run.handsThisDealer + 1
   let kills = run.kills
   let won = false
+  // The 6th kill enters the Banker coda (double-or-nothing) instead of winning outright.
+  let coda = run.coda
 
   if (integrity <= 0) {
     // The kill bounty scales with the Token eco multiplier, like every other reward.
@@ -406,16 +417,19 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     // reset the tally for the next dealer.
     tokenInflation += inflationIncrement(shift, tokensThisShift, inflationResistanceFor(run.upgrades))
     tokensThisShift = 0
-    // Base bounty (400 × dealer), scaled by the current combo — a kill lands on a won
+    // Base bounty (400 × dealer), scaled by the run multiplier (1.5^kills, read pre-this-kill
+    // — run.kills isn't extended until below) and the current combo — a kill lands on a won
     // hand, so the streak still applies.
     const bounty = DESTRUCTION_SCORE_BASE * shiftIndex
-    score += Math.round(bounty * combo)
+    score += Math.round(bounty * runMultiplier(run) * combo)
     kills = [...kills, shiftIndex]
     shiftIndex += 1
     handsThisDealer = 0
     integrity = getShift(shiftIndex).maxIntegrity
     if (kills.length >= TOTAL_DEALERS) {
-      won = true
+      // The final dealer is down — enter the Banker coda rather than ending the run. `won`
+      // is never set now; the coda's outcome (cash out / bust) ends the run via Session.
+      coda = true
     } else {
       chips += KILL_REWARD_RATIO * getShift(shiftIndex).minBet
     }
@@ -438,6 +452,7 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     tokensThisShift,
     kills,
     won,
+    coda,
     over: won || chips <= 0,
   }
 }
@@ -457,6 +472,16 @@ function inflationIncrement(shift: Shift, tokensThisShift: number, resistance: n
 // combo, climbing with the risk-weighted hits banked, capped at x2 (COMBO_MAX_BONUS).
 export function comboMultiplier(combo: number): number {
   return 1 + Math.min(Math.max(combo, 0), COMBO_MAX_BONUS)
+}
+
+// The run's compounding score multiplier: 1.5 per dealer already killed, so score grows
+// exponentially with depth (1 → 1.5 → 2.25 → 3.375 → 5.06 → 7.59 by the boss). Replaces the
+// old flat per-dealer scoreMultiplier; multiplies the won-hand chip score and the kill
+// bounty. Derived from run.kills.length, which applyRound never mutates in place, so within
+// a single applyRound it's constant at 1.5^(kills before this hand) for both the win and the
+// bounty — internally consistent even on the hand that lands a kill.
+export function runMultiplier(run: RunState): number {
+  return Math.pow(1.5, run.kills.length)
 }
 
 // Add a surviving hit's risk-weighted gain to the combo, capped at COMBO_MAX_BONUS. Score

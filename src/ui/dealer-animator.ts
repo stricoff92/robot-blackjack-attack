@@ -243,14 +243,33 @@ export class DealerAnimation implements DealerView, StrikeView {
       this.walkStart = start
       this.stepsFired = 0
     }
+    // The WALK_STEPS visible strides on the felt (each on a |sin| bob dip, render/dealer.ts), plus
+    // ONE extra footfall at the OFF-SCREEN edge of the walk — a first thud as a walk-in enters from
+    // the edge, or a last thud as a walk-off clears it off-screen.
+    const fractions = this.footstepFractions()
     let fired = 0
-    // Footfall i (0-based) lands at (i + 0.5)/WALK_STEPS of the arrival — the same
-    // fractions the |sin| walk bob dips down at (render/dealer.ts).
-    while (this.stepsFired < WALK_STEPS && now >= start + ((this.stepsFired + 0.5) / WALK_STEPS) * KILL_ARRIVE_MS) {
+    while (this.stepsFired < fractions.length && now >= start + fractions[this.stepsFired] * KILL_ARRIVE_MS) {
       this.stepsFired += 1
       fired += 1
     }
     return fired
+  }
+
+  // Footfall timings (fractions of KILL_ARRIVE_MS): the WALK_STEPS on-felt strides, plus one at the
+  // OFF-SCREEN edge — prepended for a walk-in (entering from the edge), appended for a walk-off
+  // (stepping off past it). Kept in time order so they fire sequentially.
+  private footstepFractions(): number[] {
+    const steps: number[] = []
+    for (let i = 0; i < WALK_STEPS; i += 1) {
+      steps.push((i + 0.5) / WALK_STEPS)
+    }
+    // A walk-OFF keeps striding off past the edge: one more footfall a FULL beat after the last
+    // on-felt stride (so the rhythm stays even), landing once it's fully off-screen. A walk-in's
+    // first stride already lands as it enters from the edge, so it needs no extra one.
+    if (this.mode === 'walkoff') {
+      steps.push((WALK_STEPS + 0.5) / WALK_STEPS)
+    }
+    return steps
   }
 
   // True while any strike/hit/kill sequence is playing OR the eyes are flickering

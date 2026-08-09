@@ -752,12 +752,13 @@ export function drawHoloText(
   size: number,
   style: HoloTextStyle,
   now: number,
+  glowScale = 1, // >1 widens/strengthens this label's glow halo (default: the standard holo glow)
 ): void {
   // The glow (two shadowBlur passes) is expensive and identical frame to frame, so it's
   // baked into a cached sprite; only the per-frame holoFlicker pulse stays live, applied
   // as the blit alpha on top of the caller's current globalAlpha. The caller's font +
   // alignment + baseline are read straight off the context, exactly as fillText used them.
-  const sprite = getGlowLabelSprite(text, ctx.font, size, style, ctx.textAlign, ctx.textBaseline, deviceDpr())
+  const sprite = getGlowLabelSprite(text, ctx.font, size, style, ctx.textAlign, ctx.textBaseline, deviceDpr(), glowScale)
   blitGlowLabel(ctx, sprite, x, y, holoFlicker(now))
 }
 

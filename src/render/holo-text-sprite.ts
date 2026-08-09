@@ -33,14 +33,15 @@ export function getGlowLabelSprite(
   align: CanvasTextAlign,
   baseline: CanvasTextBaseline,
   dpr: number,
+  glowScale = 1, // widen the soft glow halo (>1) for a label that needs to read stronger
 ): GlowLabelSprite {
-  const key = `${text}|${font}|${align}|${baseline}|${style.glow}|${style.bloom}|${style.core}|${dpr}`
+  const key = `${text}|${font}|${align}|${baseline}|${style.glow}|${style.bloom}|${style.core}|${dpr}|${glowScale}`
   let sprite = cache.get(key)
   if (!sprite) {
     if (cache.size > 512) {
       cache.clear() // bound memory — a run scrolls through many distinct counts/labels
     }
-    sprite = renderGlowLabel(text, font, size, style, align, baseline, dpr)
+    sprite = renderGlowLabel(text, font, size, style, align, baseline, dpr, glowScale)
     cache.set(key, sprite)
   }
   return sprite
@@ -69,6 +70,7 @@ function renderGlowLabel(
   align: CanvasTextAlign,
   baseline: CanvasTextBaseline,
   dpr: number,
+  glowScale = 1,
 ): GlowLabelSprite {
   const advance = measureAdvance(text, font)
 
@@ -78,7 +80,7 @@ function renderGlowLabel(
   // just has to be big enough to hold the ink plus the glow blur — extra room is only
   // transparent pixels, so the estimates are deliberately generous.
   const fontHeight = size * 1.3
-  const blurMargin = size * 0.7 // shadowBlur peaks at size * 0.5
+  const blurMargin = size * 0.7 * Math.max(1, glowScale) // shadowBlur peaks at size * 0.5 · glowScale
   const [inkLeft, inkRight] = horizontalInk(align, advance)
   const [inkTop, inkBottom] = verticalInk(baseline, fontHeight)
   const left = inkLeft - blurMargin
@@ -98,7 +100,7 @@ function renderGlowLabel(
   // brighter but still translucent core — baked at full opacity (the flicker is applied
   // at blit time).
   ctx.shadowColor = style.glow
-  ctx.shadowBlur = size * 0.5
+  ctx.shadowBlur = size * 0.5 * glowScale
   ctx.fillStyle = style.bloom
   ctx.fillText(text, anchorX, anchorY)
   ctx.shadowBlur = size * 0.14

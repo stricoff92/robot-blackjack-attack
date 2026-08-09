@@ -40,6 +40,29 @@ const EPAULET_MID = '#cfa63c'
 const EPAULET_LO = '#7d5e18'
 const EPAULET_EDGE = '#4f3d10'
 
+// The Banker (the coda's sentinel shift, one past the real dealers) wears a three-piece
+// charcoal suit in place of the robot's bowtie + epaulets: a lighter waistcoat panel down
+// the chest, framed by two darker jacket lapels that meet in a V at the button break. Each
+// tone steps up from the near-black torso so the layers separate (torso → lapel → vest).
+// The gold accents (vest buttons, watch chain, monocle rim) reuse the figure's resolved
+// "bowtie" colour, which the Banker's palette entry sets to gold. Absolutely no cigar.
+const SUIT_LAPEL = '#181d29'
+const SUIT_VEST = '#20232f'
+const SUIT_VEST_EDGE = '#2b3040'
+// A neutral gray silk necktie hanging in the waistcoat V: a narrow knot at the collar
+// that widens to a pointed tip partway down the vest. The knot is a touch darker than the
+// blade; a soft dark edge separates the gray from the charcoal vest, and a faint lighter
+// crease down the centre reads as silk sheen. Deliberately gray, not gold — the tie is the
+// one quiet note against the gold buttons/chain/monocle.
+const TIE_SILK = '#727680'
+const TIE_KNOT = '#5c606a'
+const TIE_EDGE = '#3c404a'
+const TIE_SHEEN = 'rgba(190, 194, 204, 0.5)'
+// A pale dress shirt fills the collar V behind the tie; a near-white folded silk pocket square
+// peeks from the breast pocket. Both read bright against the charcoal suit.
+const SHIRT = '#c6cbd5'
+const POCKET_SQUARE = '#e6e9ef'
+
 // The walk-in gait: the figure takes this many steps crossing from the edge to its
 // spot, dipping (bobbing DOWN) once per footfall. The footfalls are evenly spaced in
 // the walk-in progress, centred in each step's slice — footfall i (0-based) lands at
@@ -161,7 +184,10 @@ export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: 
   // The bowtie's colour is this dealer's identity (RGB dealers shimmer with `now`).
   const shift = view.figureShift(now)
   const colors = dealerColors(shift, now)
-  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), angerFor(shift), colors.bowtie, colors.bowtieKnot, shift >= TOTAL_DEALERS, view.voice(now), now)
+  // The Banker coda sets the figure's shift to the sentinel one past the real dealers
+  // (TOTAL_DEALERS + 1): it renders as THE BANKER (charcoal suit + monocle), not a robot.
+  const banker = shift > TOTAL_DEALERS
+  drawFigure(ctx, d, view.eyeCore(now), view.browFear(now), angerFor(shift), colors.bowtie, colors.bowtieKnot, shift >= TOTAL_DEALERS, banker, view.voice(now), now)
 
   if (hit.flash > 0.001) {
     drawHitFlash(ctx, d, hit.flash)
@@ -204,6 +230,10 @@ export function drawDealerEyeGlow(ctx: CanvasRenderingContext2D, layout: Layout,
   ctx.restore()
 }
 
+// The Banker is a portly, well-fed house man — his torso + suit are drawn this much wider than
+// a standard dealer's. His head/face keep their geometry, so only the body reads broader.
+const BANKER_BODY_WIDEN = 1.26
+
 // --- the figure (torso + head + bowtie + eyes) --------------------------------
 
 function drawFigure(
@@ -215,17 +245,30 @@ function drawFigure(
   bowtie: string,
   bowtieKnot: string,
   imposing: boolean,
+  banker: boolean,
   voice: VoiceEmote | null,
   now: number,
 ): void {
   ctx.save()
+
+  // The Banker is stouter than the robots — widen his torso about its centre. Only the body
+  // bounds change here (the suit is widened to match, below); the head/eyes/mouth keep their
+  // geometry, so a normal-sized head sits on a broader body.
+  if (banker) {
+    const half = ((d.bodyRight - d.bodyLeft) / 2) * BANKER_BODY_WIDEN
+    d = { ...d, bodyLeft: d.cx - half, bodyRight: d.cx + half }
+  }
 
   ctx.fillStyle = TORSO
   ctx.beginPath()
   ctx.roundRect(d.bodyLeft, d.bodyTop, d.bodyRight - d.bodyLeft, d.baseY - d.bodyTop, d.headR * 0.18)
   ctx.fill()
 
-  if (imposing) {
+  if (banker) {
+    // THE BANKER: a three-piece charcoal suit over the torso, in place of the robot's
+    // epaulets. Its gold accent reuses the resolved bowtie colour. Widened to match the torso.
+    drawBankerSuit(ctx, d, bowtie, bowtieKnot, BANKER_BODY_WIDEN)
+  } else if (imposing) {
     // The final dealer wears ceremonial epaulets — an old-guard officer. Anchored well
     // inboard of the torso's top corners so the pair sits close together across the
     // shoulders rather than flaring out to the arms.
@@ -238,7 +281,11 @@ function drawFigure(
   ctx.roundRect(d.cx - d.headR, d.headCenterY - d.headR, d.headR * 2, d.headR * 2, d.headR * 0.35)
   ctx.fill()
 
-  drawBowtie(ctx, d, bowtie, bowtieKnot)
+  // The Banker has no bowtie — his suit does the talking. Every other dealer wears one,
+  // its colour marking which dealer this is.
+  if (!banker) {
+    drawBowtie(ctx, d, bowtie, bowtieKnot)
+  }
 
   // Eye cores — same geometry as dealerEyes() in scene.ts (−0.1·headR y, ±0.42·headR
   // x, 0.16·headR r), so the cores sit exactly under the emissive glow, which is a
@@ -266,7 +313,7 @@ function drawFigure(
   // dealer's brows sit level and the last's bear down hardest. Drawn after the eyes
   // so the hood cuts the red core. On a hit they swing up into a scared /\
   // (browFear 0..1) and roll back.
-  drawBrows(ctx, d, eyeY, browFear, anger)
+  drawBrows(ctx, d, eyeY, browFear, banker ? 0 : anger) // the Banker is amused/indifferent — level brows, never menacing
 
   // Rectangular mouth panel, a little lighter than the head, set below the eyes. When
   // the dealer emotes (an evil laugh), the panel LIGHTS UP — the resting near-black grey
@@ -297,6 +344,12 @@ function drawFigure(
   for (let i = 1; i <= teeth; i++) {
     const x = mouthX + (mouthW * i) / (teeth + 1) - sepW / 2
     ctx.fillRect(x, mouthTop, sepW, mouthH)
+  }
+
+  // THE BANKER's monocle, over the right eye (same eye geometry as above). Drawn last so
+  // its gold rim sits cleanly over the eye and brow.
+  if (banker) {
+    drawMonocle(ctx, d, eyeY, eyeR, bowtie, bowtieKnot)
   }
 
   ctx.restore()
@@ -551,6 +604,211 @@ function drawEpaulet(ctx: CanvasRenderingContext2D, r: number, sx: number, shoul
   ctx.beginPath()
   ctx.arc(crescentCX, crescentCY, crescentRY * 0.34, 0, Math.PI * 2)
   ctx.fill()
+}
+
+// THE BANKER's three-piece suit, painted over the black torso in place of the robot's
+// bowtie + epaulets: a charcoal waistcoat panel down the chest, framed by two darker
+// jacket lapels that meet in a V at the button break, with gold vest buttons and a
+// watch-chain swag. `gold`/`goldDark` are the figure's resolved bowtie colours (the
+// Banker's palette sets them to gold). All geometry is anchored on the torso box, so the
+// suit rides the walk-in / tremor / break-apart with the rest of the figure for free.
+function drawBankerSuit(ctx: CanvasRenderingContext2D, d: DealerBox, gold: string, goldDark: string, xScale = 1): void {
+  const r = d.headR
+  const topY = d.bodyTop
+  const breakY = topY + r * 1.7 // where the jacket closes and the lapels meet
+  const vestHalf = r * 0.52
+  const neckHalf = r * 0.3 // half-width of the collar gap at the top
+  const shoulderHalf = r * 0.98 // lapel outer edge, just inside the torso corners
+
+  ctx.save()
+
+  // Widen the whole suit horizontally about the torso centre (the Banker is stout), matched to
+  // the torso's own widening in drawFigure so the jacket fills the broader body. Vertical
+  // extents (collar, break, tie) are unchanged — he's wider, not taller.
+  if (xScale !== 1) {
+    ctx.translate(d.cx, 0)
+    ctx.scale(xScale, 1)
+    ctx.translate(-d.cx, 0)
+  }
+
+  // A pale dress shirt fills the collar V behind the tie — drawn first so the tie, waistcoat,
+  // and lapels all layer over it. A touch wider than the lapel gap so the lapels overlap its
+  // edges cleanly (no seam).
+  ctx.fillStyle = SHIRT
+  ctx.beginPath()
+  ctx.moveTo(d.cx - neckHalf * 1.15, topY)
+  ctx.lineTo(d.cx + neckHalf * 1.15, topY)
+  ctx.lineTo(d.cx, breakY)
+  ctx.closePath()
+  ctx.fill()
+
+  // Gray silk necktie, hanging from the collar. Drawn BEFORE the waistcoat so its lower blade
+  // TUCKS BEHIND the vest neckline (a real three-piece look) rather than sitting on top of the
+  // vest; the knot goes on later, over the collar. Anchored on topY/breakY so it rides the
+  // walk-in / tremor / break-apart with the figure.
+  const knotTop = topY + r * 0.02
+  const knotBot = topY + r * 0.3
+  const knotTopHalf = r * 0.1
+  const knotBotHalf = r * 0.13
+  const bladeTopHalf = r * 0.08
+  const bladeHalf = r * 0.2 // widest, just above where the vest neckline swallows the blade
+  const tipY = breakY + r * 0.12 // pointed tip, tucked behind the vest (below the neckline point)
+  const wideY = tipY - r * 0.42 // the blade's widest point, above the tuck
+
+  // Blade (narrow under the knot → widest → centre point).
+  ctx.fillStyle = TIE_SILK
+  ctx.beginPath()
+  ctx.moveTo(d.cx - bladeTopHalf, knotBot - r * 0.02)
+  ctx.lineTo(d.cx + bladeTopHalf, knotBot - r * 0.02)
+  ctx.lineTo(d.cx + bladeHalf, wideY)
+  ctx.lineTo(d.cx, tipY)
+  ctx.lineTo(d.cx - bladeHalf, wideY)
+  ctx.closePath()
+  ctx.fill()
+  ctx.strokeStyle = TIE_EDGE
+  ctx.lineWidth = Math.max(1, r * 0.02)
+  ctx.stroke()
+
+  // A faint lighter crease down the blade's centre — a hint of silk sheen.
+  ctx.strokeStyle = TIE_SHEEN
+  ctx.lineWidth = Math.max(1, r * 0.02)
+  ctx.beginPath()
+  ctx.moveTo(d.cx, knotBot)
+  ctx.lineTo(d.cx, tipY - r * 0.05)
+  ctx.stroke()
+
+  // Waistcoat: the two front panels rise to the shoulders and the neckline dips to a point at
+  // the button break — the tie disappears behind the vest here. Drawn OVER the tie's lower
+  // blade and UNDER the lapels; runs to baseY so it tucks behind the rail like the torso.
+  ctx.fillStyle = SUIT_VEST
+  ctx.beginPath()
+  ctx.moveTo(d.cx - vestHalf, topY)
+  ctx.lineTo(d.cx, breakY)
+  ctx.lineTo(d.cx + vestHalf, topY)
+  ctx.lineTo(d.cx + vestHalf, d.baseY)
+  ctx.lineTo(d.cx - vestHalf, d.baseY)
+  ctx.closePath()
+  ctx.fill()
+
+  // Jacket lapels: a triangle per side, from the collar/shoulder down to the button break,
+  // framing the shirt/tie V between them. Lighter than the near-black torso so the fold reads
+  // against the jacket shoulders that stay torso-dark outside them.
+  ctx.fillStyle = SUIT_LAPEL
+  for (const sx of [-1, 1]) {
+    ctx.beginPath()
+    ctx.moveTo(d.cx + sx * neckHalf, topY) // inner collar point
+    ctx.lineTo(d.cx + sx * shoulderHalf, topY) // outer shoulder
+    ctx.lineTo(d.cx + sx * shoulderHalf, breakY) // down the torso side
+    ctx.lineTo(d.cx, breakY) // in to the button break
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  // A thin highlight down each lapel's inner (V) edge — the folded-collar seam.
+  ctx.strokeStyle = SUIT_VEST_EDGE
+  ctx.lineWidth = Math.max(1, r * 0.03)
+  for (const sx of [-1, 1]) {
+    ctx.beginPath()
+    ctx.moveTo(d.cx + sx * neckHalf, topY)
+    ctx.lineTo(d.cx, breakY)
+    ctx.stroke()
+  }
+
+  // Knot, over the collar where the lapels meet the neck — a small trapezoid a shade darker
+  // than the blade, capping the shirt V.
+  ctx.fillStyle = TIE_KNOT
+  ctx.beginPath()
+  ctx.moveTo(d.cx - knotTopHalf, knotTop)
+  ctx.lineTo(d.cx + knotTopHalf, knotTop)
+  ctx.lineTo(d.cx + knotBotHalf, knotBot)
+  ctx.lineTo(d.cx - knotBotHalf, knotBot)
+  ctx.closePath()
+  ctx.fill()
+  ctx.strokeStyle = TIE_EDGE
+  ctx.lineWidth = Math.max(1, r * 0.02)
+  ctx.stroke()
+
+  // Gold vest buttons down the centre, from the button break downward (stopping before the
+  // rail line).
+  ctx.fillStyle = gold
+  const buttonR = r * 0.06
+  for (let i = 0; i < 3; i++) {
+    const by = breakY + r * 0.3 + i * r * 0.42
+    if (by > d.baseY) {
+      break
+    }
+    ctx.beginPath()
+    ctx.arc(d.cx, by, buttonR, 0, Math.PI * 2)
+    ctx.fill()
+  }
+
+  // Gold watch-chain swag across the waistcoat, dipping between two anchor points.
+  ctx.strokeStyle = goldDark
+  ctx.lineWidth = Math.max(1, r * 0.035)
+  const chainY = breakY + r * 0.5
+  ctx.beginPath()
+  ctx.moveTo(d.cx - vestHalf * 0.85, chainY)
+  ctx.quadraticCurveTo(d.cx, chainY + r * 0.42, d.cx + vestHalf * 0.85, chainY)
+  ctx.stroke()
+
+  // A folded silk pocket square in the jacket's breast pocket (the wearer's-left lapel, i.e.
+  // viewer's right). Three pale peaks poke up from a short dark welt — a dressy flourish.
+  const psCx = d.cx + r * 0.58
+  const psY = topY + r * 0.86 // the pocket welt line
+  const psW = r * 0.32
+  const psPeakH = r * 0.17
+  ctx.fillStyle = POCKET_SQUARE
+  for (const k of [-1, 0, 1]) {
+    const peakCx = psCx + k * psW * 0.28
+    ctx.beginPath()
+    ctx.moveTo(peakCx - psW * 0.17, psY)
+    ctx.lineTo(peakCx, psY - psPeakH)
+    ctx.lineTo(peakCx + psW * 0.17, psY)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)'
+  ctx.lineWidth = Math.max(1, r * 0.05)
+  ctx.beginPath()
+  ctx.moveTo(psCx - psW / 2, psY)
+  ctx.lineTo(psCx + psW / 2, psY)
+  ctx.stroke()
+
+  ctx.restore()
+}
+
+// THE BANKER's monocle: a stroked gold ring over the RIGHT eye (the existing eye
+// geometry passed in), a small bright glint on the rim, and a short cord dropping from
+// it. `gold`/`goldDark` are the figure's resolved bowtie colours (gold for the Banker).
+function drawMonocle(ctx: CanvasRenderingContext2D, d: DealerBox, eyeY: number, eyeR: number, gold: string, goldDark: string): void {
+  const ex = d.cx + d.headR * 0.42 // over the right eye
+  const rimR = eyeR * 1.95
+
+  ctx.save()
+
+  // Rim.
+  ctx.strokeStyle = gold
+  ctx.lineWidth = Math.max(1, d.headR * 0.05)
+  ctx.beginPath()
+  ctx.arc(ex, eyeY, rimR, 0, Math.PI * 2)
+  ctx.stroke()
+
+  // Glint: a short bright arc on the upper-left of the rim.
+  ctx.strokeStyle = 'rgba(255, 250, 230, 0.85)'
+  ctx.lineWidth = Math.max(1, d.headR * 0.03)
+  ctx.beginPath()
+  ctx.arc(ex, eyeY, rimR * 0.78, Math.PI * 1.02, Math.PI * 1.34)
+  ctx.stroke()
+
+  // Cord: a short strand dropping from the rim's outer-bottom down the cheek.
+  ctx.strokeStyle = goldDark
+  ctx.lineWidth = Math.max(1, d.headR * 0.028)
+  ctx.beginPath()
+  ctx.moveTo(ex + rimR * 0.62, eyeY + rimR * 0.62)
+  ctx.quadraticCurveTo(ex + rimR * 0.9, eyeY + rimR * 1.7, ex + rimR * 0.5, eyeY + rimR * 2.4)
+  ctx.stroke()
+
+  ctx.restore()
 }
 
 // A white additive over-exposure of the figure on impact, fading with `flash`.

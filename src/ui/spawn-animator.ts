@@ -86,7 +86,7 @@ export class SpawnAnimation {
   // fully unwrapped and ready — the moment the next hand may deal.
   // `shredOnly` (game over): shred the table cards but fly NO fresh deck in — the run is
   // over, so there's no replacement. endAt is just the shred (+ its lingering chunks).
-  begin(now: number, cardCount: number, shredOldDeck = false, grand = false, shredOnly = false): number {
+  begin(now: number, cardCount: number, shredOldDeck = false, grand = false, shredOnly = false, deckShredDelay = 0): number {
     this.begun = true
     this.t0 = now
     this.n = Math.max(0, cardCount)
@@ -103,9 +103,10 @@ export class SpawnAnimation {
     const lastCardSuckStart = this.n > 0 ? (this.n - 1) * SHRED_STAGGER_MS : 0
     const lastCardSuckEnd = this.n > 0 ? lastCardSuckStart + SHRED_SUCK_MS : 0
 
-    // The old deck starts shredding one stagger step after the last table card starts, so
-    // its cards are drawn in last; the fresh deck then flies once the shoe is clear.
-    this.deckShredStart = now + this.n * SHRED_STAGGER_MS
+    // The old deck starts shredding one stagger step after the last table card starts, so its
+    // cards are drawn in last; the fresh deck then flies once the shoe is clear. `deckShredDelay`
+    // inserts a pause between the table cards and the deck (the Banker's entry uses it).
+    this.deckShredStart = now + this.n * SHRED_STAGGER_MS + deckShredDelay
     const lastDeckCardStart = this.deckShredStart + (DECK_SHRED_CARDS - 1) * DECK_CARD_STAGGER_MS
     this.deckShredEnd = lastDeckCardStart + DECK_CARD_SUCK_MS
 
@@ -150,6 +151,12 @@ export class SpawnAnimation {
 
   isAnimating(now: number): boolean {
     return this.begun && now < this.endAt
+  }
+
+  // The moment the previous dealer's DECK starts being shredded (after every table card has begun
+  // its own suck) — for effects that should land as the deck goes in, not the cards.
+  get oldDeckShredStart(): number {
+    return this.deckShredStart
   }
 
   // True while cards are being sucked into the mouth + shredded — drives the shredder

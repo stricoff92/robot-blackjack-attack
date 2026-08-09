@@ -50,6 +50,17 @@
   transform-origin: 100% 50%; /* swell toward the pinned right edge, never off-screen */
 }
 
+/* High scores shrink by digit count (data-len set in updatePointsCounter) so the
+ * double-or-nothing coda's big totals never crowd the corner. Only 7+ digits are touched, so
+ * normal scores keep the responsive up-scaling below; these deliberately override it for long
+ * numbers (a 10-digit total shouldn't render at 56px even on a wide monitor). */
+.hud-points__count[data-len='7'] { font-size: 30px; }
+.hud-points__count[data-len='8'] { font-size: 27px; }
+.hud-points__count[data-len='9'] { font-size: 24px; }
+.hud-points__count[data-len='10'] { font-size: 21px; }
+.hud-points__count[data-len='11'] { font-size: 19px; }
+.hud-points__count[data-len='12'] { font-size: 17px; }
+
 /* The "+N" reward delta under the counter, then a caption under that. Both sit in normal
  * flow below the count (right-aligned) so they stack; both are invisible at rest and play
  * a one-shot keyframe on .is-flashing. The count's swell is a transform, so it never
@@ -75,6 +86,20 @@
   /* Fade + scale IN, then HOLD (forwards) — the reward stays up until the next hand clears
    * it (game-view drops .is-flashing on the next-hand transition), so it never fades early. */
   animation: points-delta 320ms ease-out forwards;
+}
+
+.hud-points__delta.is-flashing-coda {
+  /* The Banker coda has no next-hand click to clear the delta, so it SELF-FADES: flash in,
+   * hold ~3s, then fade out. Same 2 -> 1 scale-in as .is-flashing. */
+  animation: points-delta-coda 3600ms ease-out forwards;
+}
+
+/* Flash in (~325ms), hold until ~3s, then fade out over the last ~600ms. */
+@keyframes points-delta-coda {
+  0% { opacity: 0; transform: scale(2); }
+  9% { opacity: 1; transform: scale(1); }
+  83% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
 }
 
 /* Fade + big scale-in (2 → 1) over 320ms, ending at full opacity; `forwards` holds it there
@@ -205,6 +230,48 @@
   background: linear-gradient(#d2dbe9, #aeb9cf);
 }
 
+/* The Banker coda's ability column — pinned top-LEFT, where the powerups sit in the main game
+ * (they're hidden during the coda). Reuses the powerup button look + its cost pill. */
+.hud-coda-powers {
+  position: absolute;
+  left: 14px;
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 44vw;
+  pointer-events: none;
+}
+
+.hud-coda-powers button {
+  position: relative; /* anchors the absolutely-placed cost pill */
+  pointer-events: auto;
+  text-align: left;
+  font: 600 15px system-ui, -apple-system, sans-serif;
+  color: #1c2436;
+  background: linear-gradient(#c2ccdd, #9fadc6);
+  border: none;
+  border-radius: 10px;
+  padding: 7px 11px 23px;
+  min-width: 128px;
+  min-height: 48px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #5f6b82, 0 3px 6px rgba(0, 0, 0, 0.35);
+}
+
+.hud-coda-powers button:hover {
+  background: linear-gradient(#d2dbe9, #aeb9cf);
+}
+
+.hud-coda-powers button.is-hidden {
+  display: none;
+}
+
+.hud-coda-powers button.is-active {
+  box-shadow: 0 0 0 2px #ffd34d, 0 2px 0 #5f6b82, 0 3px 10px rgba(255, 200, 70, 0.5);
+}
+
 .power-label {
   display: block;
   line-height: 1.05; /* keep the label tight so the bigger font adds no leading */
@@ -331,7 +398,8 @@
 }
 
 .hud-actions button:disabled,
-.hud-powerups button:disabled {
+.hud-powerups button:disabled,
+.hud-coda-powers button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
@@ -365,7 +433,9 @@ button.is-hidden,
  * the dimmed :disabled look — armed reads as "on", not unavailable — and clears
  * itself once the shield is spent and syncOverlay drops the class. */
 .hud-powerups button.is-active,
-.hud-powerups button.is-active:disabled {
+.hud-powerups button.is-active:disabled,
+.hud-coda-powers button.is-active,
+.hud-coda-powers button.is-active:disabled {
   opacity: 1;
   cursor: default;
   color: #2a1e04;
@@ -568,6 +638,24 @@ button.is-hidden,
   .hud-powerups button {
     font-size: 12px;
     padding: 4px 7px 19px; /* tighter top/side; bottom still clears the corner pill */
+    min-height: 38px;
+    border-radius: 8px;
+  }
+
+  /* The coda ability column sits exactly where the powerups do (which are hidden during the
+   * coda), so it takes the SAME mobile shrink — otherwise the two coda buttons keep their full
+   * desktop size and read way too big on a phone. Mirrors the .hud-powerups shrink above, plus
+   * the coda button's own min-width floor. */
+  .hud-coda-powers {
+    left: 10px;
+    top: 50px;
+    gap: 6px;
+  }
+
+  .hud-coda-powers button {
+    font-size: 12px;
+    padding: 4px 7px 19px;
+    min-width: 96px;
     min-height: 38px;
     border-radius: 8px;
   }

@@ -354,17 +354,17 @@ class VoiceService {
   // Fire an emote from its pattern, dispatching on kind. `delaySeconds` schedules it
   // slightly after the trigger (so a laugh lands just behind the loss sting). Fully
   // synthesised — works the instant the context exists.
-  play(pattern: VoicePattern, delaySeconds = 0): void {
+  play(pattern: VoicePattern, delaySeconds = 0, gainScale = 1): void {
     if (pattern.kind === 'angry') {
       this.playGrowl(pattern, delaySeconds)
     } else {
-      this.playLaugh(pattern, delaySeconds)
+      this.playLaugh(pattern, delaySeconds, gainScale)
     }
   }
 
   // The evil laugh: bright "HA HA HA" bursts (glottal saws → /a/ formants → syllable
   // envelope, with a breath transient + slap-back echo).
-  private playLaugh(pattern: VoicePattern, delaySeconds = 0): void {
+  private playLaugh(pattern: VoicePattern, delaySeconds = 0, gainScale = 1): void {
     const ctx = this.context()
     if (ctx.state === 'suspended') {
       void ctx.resume()
@@ -377,7 +377,7 @@ class VoiceService {
     // stack on the loud syllables, so the compressor catches them (no clipping) and lets
     // the laugh sit clearly + consistently loud rather than spiking then vanishing.
     const out = ctx.createGain()
-    out.gain.value = VOICE_MASTER
+    out.gain.value = VOICE_MASTER * gainScale
     const comp = ctx.createDynamicsCompressor()
     comp.threshold.value = -14
     comp.knee.value = 12

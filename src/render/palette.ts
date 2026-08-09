@@ -38,6 +38,32 @@ export interface DealerColors {
 // the spectrum instead of holding a fixed hue.
 const RGB_DEALER = TOTAL_DEALERS
 
+// The Banker coda's sentinel identity: one past the last real dealer (TOTAL_DEALERS + 1).
+// It sits "past" the RGB dealer but is deliberately NOT one of the shimmering bosses — it
+// gets its own fixed charcoal-and-gold kit (see BANKER_COLORS / dealerColors), and the
+// figure renders it as THE BANKER (drawFigure), not a robot dealer.
+const BANKER_SHIFT = TOTAL_DEALERS + 1
+
+// THE BANKER's colour kit: a distinguished house money-man in deep charcoal with gold
+// accents, not a synthesised prototype colour. The figure reuses `bowtie` as the suit's
+// gold (vest buttons, watch chain, monocle rim); `back` is a charcoal deck for the coda.
+const BANKER_GOLD = '#e3c169'
+const BANKER_GOLD_DEEP = '#b8933b'
+const BANKER_COLORS: DealerColors = {
+  bowtie: BANKER_GOLD,
+  bowtieKnot: BANKER_GOLD_DEEP,
+  back: {
+    id: 'banker',
+    outer: '#14161d',
+    panel: '#23262f',
+    deckBase: '#0f1116',
+    deckDark: '#1a1d24',
+    deckLight: '#2a2e38',
+    tech: 1,
+    seed: BANKER_SHIFT * 2654435761,
+  },
+}
+
 // Fixed hues for dealers 1..5: blue, purple, green, yellow, red.
 const DEALER_HUES = [220, 275, 140, 48, 2] as const
 
@@ -50,7 +76,9 @@ const RGB_PERIOD_MS = 600
 const RGB_STEPS = 16
 
 export function isRgbDealer(shiftIndex: number): boolean {
-  return shiftIndex >= RGB_DEALER
+  // The final dealer and anything past it shimmer — EXCEPT the Banker coda's sentinel,
+  // which has its own fixed charcoal-and-gold kit and must not be treated as RGB.
+  return shiftIndex >= RGB_DEALER && shiftIndex !== BANKER_SHIFT
 }
 
 // The fixed dealers' colour kits are constant per shiftIndex, but dealerColors is
@@ -62,6 +90,9 @@ const fixedColorsCache = new Map<number, DealerColors>()
 // The colour kit for the dealer at `shiftIndex` (1-based). `now` only matters for
 // the RGB dealer, whose colour advances with time.
 export function dealerColors(shiftIndex: number, now: number): DealerColors {
+  if (shiftIndex === BANKER_SHIFT) {
+    return BANKER_COLORS // THE BANKER: fixed charcoal + gold, not a shimmering boss
+  }
   if (isRgbDealer(shiftIndex)) {
     const bowtieRgb = desaturate(cycleRgb(now, RGB_PERIOD_MS))
     // Snap the deck to the centre of the current phase step, so a whole step shares

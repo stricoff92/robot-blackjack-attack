@@ -3,11 +3,11 @@ import './game-view.css'
 import { readDebugFlags } from '../game/debug'
 import type { Card, Suit } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
 import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
-import { Session, SHOE_DECKS, type SessionState } from '../game/session'
+import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
@@ -22,6 +22,7 @@ import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
 import { drawScoreSheet, type ScoreReadout } from '../render/score-sheet'
 import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
+import { drawCodaStake } from '../render/coda-stake'
 import { drawTapToStart } from '../render/tap-to-start'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
@@ -38,7 +39,7 @@ import { FLY_MS, TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
 import { sfx } from '../audio/sfx'
 import { music } from '../audio/music'
-import { angryGrowlPattern, evilLaughPattern, voice, voiceSeedFor } from '../audio/voice'
+import { angryGrowlPattern, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
 
 // The token icon, imported once so Vite fingerprints the URL and the browser
 // fetches it a single time on load; every <img> that references it (the token
@@ -118,6 +119,33 @@ const SHRED_ARRIVE_OVERLAP = 140
 // landed and settled before the selector takes over the screen, plus a breath.
 const UPGRADE_REVEAL_LEAD = 1400
 const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
+// The Banker coda's timing: the beat after the entry ceremony before the prompt appears, and
+// the beat a resolved double-or-nothing hand holds (so its result reads) before it doubles/ends.
+const CODA_ENTRY_HOLD = 500
+const CODA_RESULT_HOLD = 900
+// Extra beat when a coda hand resolves ON THE DEAL (a natural blackjack — auto-resolved, no
+// hit/stand prompt): hold the cards on the felt this much longer before pulling them back, so
+// the player can register the instant blackjack/outcome.
+const CODA_NATURAL_HOLD = 2500
+// Beat after the boss is fully gone before the Banker strides in (a clear pause).
+const CODA_WALKIN_DELAY = 500
+// How long the player's chip stack takes to fade out once the last dealer dies (the coda).
+const CODA_CHIPS_FADE_MS = 700
+// How long the stake projection takes to fade out when the prompt closes (DOUBLE / cash-out).
+const CODA_STAKE_FADE_MS = 260
+// The Banker's congratulations, one picked at random each time the player wins a coda hand.
+const CONGRATS = ['Bravo', 'Well done', 'Lovely', 'Good for you', 'Well played', 'Superb']
+// The Banker figure's shift sentinel — one past the last real dealer. drawFigure/dealerColors
+// key off it for the Banker's look; the coda run sits at run.shiftIndex 7 too, so the health
+// math (integrity / maxIntegrityFor(7)) reads full.
+const BANKER_SHIFT = TOTAL_DEALERS + 1
+// The Banker's amused-cackle identity: a fixed seed (same voice every run) and a mid-shift
+// laugh — lighter + quicker than the menacing final-boss cackle. He's entertained, not
+// threatening; fired on his walk-in, on each double-or-nothing, and on a losing hand.
+const BANKER_VOICE_SEED = 0x8a17c30d
+const BANKER_LAUGH_SHIFT = 3
+// The Banker's cackle plays louder than the dealers' voices (a gain scale on voice.play).
+const BANKER_LAUGH_GAIN = 1.6
 // Tolerance (ms) for matching a walk-in/off's derived start stamp frame-to-frame, so its
 // entrance voice fires once. Far above the ~1ms float jitter, far below the seconds between
 // two real entrances.
@@ -149,9 +177,13 @@ const SUIT_SYMBOLS: Record<Suit, string> = {
 interface ButtonDef {
   key: string
   label: string
-  group: 'action' | 'power'
-  /** Token price, shown as a cost pill on the button (powerups only). */
+  group: 'action' | 'power' | 'coda-power'
+  /** True for the Banker-coda buttons — routed through runCoda, not run(). */
+  coda?: boolean
+  /** Token price, shown as a cost pill on the button (powerups + coda abilities). */
   cost?: number
+  /** Coda ability whose `cost` is inflation-adjusted (powerupCost) rather than flat. */
+  inflated?: boolean
   act: () => void
   visible: (s: SessionState) => boolean
   enabled: (s: SessionState) => boolean
@@ -294,6 +326,37 @@ class GameView {
   private scoreRevealed = false
   private endShredDone = false
   private spawnShredOnly = false
+  // The Banker coda: `codaAdvanceAt` fires codaResolveNext once a resolved coda hand's reveal
+  // beat passes (0 = nothing pending); `codaStakeShownAt` is the strike-in stamp for the
+  // "points at risk" projection.
+  private codaAdvanceAt = 0
+  private codaStakeShownAt = 0
+  // Fade-out of the stake projection once the prompt closes (DOUBLE / cash-out): when the fade
+  // began, plus the content frozen at that moment so it fades the prompt, not the live hand.
+  private codaStakeHideAt = 0
+  private codaStakeFadePoints = 0
+  private codaStakeFadeCongrats: string | null = null
+  // True from the Banker's entry until his shred finishes, so the killing hand's cards are
+  // marked gone (endShredDone) at the right moment and don't redraw before the prompt.
+  private codaEntering = false
+  // Whether the Banker has laid out his own deck yet. He shreds the boss's cards on entry but
+  // only pulls out + unwraps his deck on the FIRST double-or-nothing (codaGamble).
+  private codaDeckOut = false
+  // The Banker's entrance is deferred a beat after the boss dies: `codaArrivalAt` is when his
+  // walk-in fires (0 = none pending), and `codaEntryScore` is the stake to roll up as he arrives.
+  private codaArrivalAt = 0
+  private codaEntryScore: { prevScore: number; gained: number } | null = null
+  // When the Banker's first-double deck fly-in lands, so it's committed to the static table
+  // (visible as the cards deal from it) rather than only after the whole deal finishes.
+  private codaDeckCommitAt = 0
+  // When the Banker's entry shred finishes — then the killing hand's cards are marked gone and
+  // collectRound cleared. Deferred from the settle so the dealt cards get chewed on his arrival
+  // instead of despawning during the boss death.
+  private codaShredEndAt = 0
+  // When the chips start fading out (the last dealer just died — no bets in the coda).
+  private codaChipsFadeAt = 0
+  // The Banker's congratulation shown at the prompt after a coda win (null = the plain prompt).
+  private codaCongrats: string | null = null
   // Every projected-number box actually drawn this frame (counts, chip amounts, analysis
   // rows). The number-drawing calls append here, and drawHoloProjection fires a ray fan at
   // each — so a ray exists iff its number is on screen, at exactly its position. Cleared at
@@ -762,6 +825,11 @@ class GameView {
     if (cp) {
       this.frameProjections.push(...drawComboProjection(ctx, layout, cp.proj, cp.age, cp.fade, timestamp))
     }
+    // The Banker coda: project the "points at risk" stake at the prompt (between hands).
+    const cs = this.codaStakeRender(timestamp)
+    if (cs) {
+      this.frameProjections.push(...drawCodaStake(ctx, layout, cs.points, cs.congrats, cs.age, cs.fade, timestamp))
+    }
 
     // The opening "TAP TO START" the nexus projects while the game waits for the first tap. Its
     // box joins frameProjections so the holo lens fans its rays onto it, like the other readouts.
@@ -805,7 +873,9 @@ class GameView {
 
   // Whether the shimmering Analyze projection should be painting right now.
   private showingAnalysis(timestamp: number): boolean {
-    return this.state.phase === 'playing' && this.state.analysis !== null && !this.anim.isAnimating(timestamp)
+    // Also during the coda (a live double-or-nothing hand) — its phase is 'coda', not 'playing'.
+    const inHand = this.state.phase === 'playing' || this.state.phase === 'coda'
+    return inHand && this.state.analysis !== null && !this.anim.isAnimating(timestamp)
   }
 
   // A dismissed reading still flickering out, with its remaining life (1 → 0).
@@ -852,7 +922,9 @@ class GameView {
   private buildScore(): ScoreReadout {
     const run = this.state.run
     return {
-      title: run.won ? 'VICTORY' : 'BANKRUPT',
+      // `won` is never set now (the run resolves through the coda): a cash-out banks the score,
+      // a coda bust zeroes it, and a pre-coda chip bust-out is a plain bankruptcy.
+      title: run.cashedOut ? 'CASHED OUT' : run.coda ? 'BUSTED' : 'BANKRUPT',
       rows: [
         { label: 'POINTS', value: String(run.score) },
         { label: 'HANDS PLAYED', value: String(run.handsPlayed) },
@@ -868,6 +940,18 @@ class GameView {
   // apply (so it reads correctly at the betting screen too).
   private buildSpec(): SpecReadout {
     const { run, round } = this.state
+    // The Banker coda runs its own fixed rule set — a by-the-book dealer (S17, 3:2, no split),
+    // with NONE of the run's shift rules (dealer heals, bet floor, desperation ceiling) or
+    // roguelite upgrades carried in. Show that cleanly rather than dealer 6's stale spec.
+    if (run.coda) {
+      const codaFlags: SpecFlag[] = [
+        { text: `${SHOE_DECKS}DECK`, kind: 'house' },
+        { text: 'H16', kind: 'house' },
+        { text: DEFAULT_ROUND_RULES.dealerSoft17 === 'stand' ? 'S17' : 'H17', kind: 'house' },
+        { text: `BJ_${DEFAULT_ROUND_RULES.blackjackPayoutNumerator}:${DEFAULT_ROUND_RULES.blackjackPayoutDenominator}`, kind: 'house' },
+      ]
+      return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags: codaFlags }
+    }
     const shiftIndex = Math.min(run.shiftIndex, TOTAL_DEALERS)
     const shift = getShift(shiftIndex)
     const rules =
@@ -964,9 +1048,10 @@ class GameView {
   private playResultSting(): void {
     const { phase, run, round } = this.state
     if (phase === 'over') {
-      // The run ended — the player cleared the roster (won) or went bankrupt. Bankruptcy
-      // isn't a hand the dealer out-SCORED, so the victory laugh is deliberately withheld.
-      sfx.play(run.won ? 'player-won' : 'player-lost')
+      // The run ended: a coda cash-out (banked the score) plays the win sting; a coda bust or a
+      // pre-coda bankruptcy plays the loss sting. (Bankruptcy isn't a hand the dealer out-scored,
+      // so no victory laugh either way.)
+      sfx.play(run.won || run.cashedOut ? 'player-won' : 'player-lost')
       return
     }
     if (phase === 'resolved' && round) {
@@ -1043,6 +1128,29 @@ class GameView {
     this.dealer.emote(now() + lead * 1000, pattern)
   }
 
+  // The Banker's amused cackle — he's entertained by the gamble no matter how it lands. Fired
+  // on his walk-in, on each double-or-nothing, and on a losing hand (never a growl: he's never
+  // rattled). `startAt` is the absolute moment it should begin (a future walk-in, or now).
+  private playBankerLaugh(startAt: number, endBy?: number): void {
+    const base = evilLaughPattern(BANKER_VOICE_SEED, BANKER_LAUGH_SHIFT)
+    // Twice as long: run the cackle through a second time (slightly overlapped) — "hahaha… hahaha".
+    const gap = base.totalMs - 90
+    let pattern: VoicePattern = {
+      ...base,
+      syllables: [...base.syllables, ...base.syllables.map((s) => ({ ...s, at: s.at + gap }))],
+      totalMs: base.totalMs * 2 - 90,
+    }
+    // The walk-in laugh is cut off at `endBy` (it should end as the deck shred begins, not carry
+    // on through it): drop any syllable that starts past the deadline and clamp the total.
+    if (endBy !== undefined) {
+      const maxMs = Math.max(200, endBy - startAt)
+      pattern = { ...pattern, syllables: pattern.syllables.filter((s) => s.at < maxMs), totalMs: Math.min(pattern.totalMs, maxMs) }
+    }
+    const lead = Math.max(0, startAt - now()) / 1000
+    voice.play(pattern, lead, BANKER_LAUGH_GAIN)
+    this.dealer.emote(startAt, pattern)
+  }
+
   // A hand just started (cards dealing): a dealer 2–6 LAUGHS if the player has shoved ALL-IN
   // (bet consumes their whole stack) while the table is still healthy (> 25% integrity) — the
   // house savouring a desperate gamble. Fires once per deal (a fresh round appearing).
@@ -1084,6 +1192,10 @@ class GameView {
   // low on tokens), the incoming dealer MOCKS them with a laugh instead. Dealer 1 is silent.
   private playWalkInGrowl(timestamp: number): void {
     const shift = this.dealer.figureShift(timestamp)
+    // The Banker isn't a menacing dealer — his amused laugh is fired from beginCoda instead.
+    if (shift > TOTAL_DEALERS) {
+      return
+    }
     const seed = voiceSeedFor(shift)
     if (seed === null) {
       return
@@ -1099,6 +1211,10 @@ class GameView {
   // CACKLING. The natural-length laugh keeps ringing a beat past the exit. Dealer 1 silent.
   private playWalkOffLaugh(timestamp: number): void {
     const shift = this.dealer.figureShift(timestamp)
+    // The Banker handles his own reactions (a cash-out gets no gloat; a bust already laughed).
+    if (shift > TOTAL_DEALERS) {
+      return
+    }
     const seed = voiceSeedFor(shift)
     if (seed === null) {
       return
@@ -1144,6 +1260,19 @@ class GameView {
   // while the table is settling, and the frozen bankroll while a payout waits.
   private drawChips(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.chips.ctx
+    // Once the last dealer dies (the coda), the chips are irrelevant — fade the whole stack out
+    // and drop the count entirely (there are no bets in the coda).
+    if (this.state.run.coda) {
+      ctx.clearRect(0, 0, layout.width, layout.height)
+      const fade = 1 - (timestamp - this.codaChipsFadeAt) / CODA_CHIPS_FADE_MS
+      if (fade > 0) {
+        ctx.save()
+        ctx.globalAlpha = fade
+        drawPlayerPile(ctx, layout, this.displayedBankroll())
+        ctx.restore()
+      }
+      return
+    }
     if (!this.betFlown) {
       // From the tap-to-start intro through the walk-in, show just the player's chip STACK (no
       // count). The count turns on when the first bet flies from the stack (see syncChips).
@@ -1240,6 +1369,9 @@ class GameView {
     const text = String(this.scoreTicker.value(now))
     if (text !== this.lastPointsText) {
       this.pointsCountEl.textContent = text
+      // Shrink the counter by digit count so the double-or-nothing coda's big totals don't
+      // crowd the top-right corner on small screens (see the [data-len] rules in the CSS).
+      this.pointsCountEl.dataset.len = String(Math.min(text.length, 12))
       this.lastPointsText = text
     }
     const scale = this.scoreTicker.scale(now)
@@ -1289,7 +1421,11 @@ class GameView {
       mx.textContent = `  ×${mult.toFixed(2)}`
       this.pointsDeltaEl.appendChild(mx)
     }
-    restartAnimation(this.pointsDeltaEl, 'is-flashing')
+    // The coda has no next-hand click to drop the delta, so it uses a SELF-FADING variant that
+    // holds ~3s then fades on its own; regular rounds hold until the next hand clears them.
+    const coda = this.state.run.coda
+    this.pointsDeltaEl.classList.remove(coda ? 'is-flashing' : 'is-flashing-coda')
+    restartAnimation(this.pointsDeltaEl, coda ? 'is-flashing-coda' : 'is-flashing')
   }
 
   // Project a hit's combo tick into the middle of the felt: the multiplier rolls `from`→`to`
@@ -1333,6 +1469,36 @@ class GameView {
     const eased = 1 - (1 - tickT) * (1 - tickT) * (1 - tickT) // smoothEnd3 (ease-out)
     const mult = p.from + (p.to - p.from) * eased
     return { proj: { mult, tone: p.tone }, age: now - p.startAt, fade }
+  }
+
+  // The Banker-coda stake projection to paint this frame: full presence at the prompt (live
+  // values), then fading out once a hand is dealt (DOUBLE) or the run ends (cash-out). Its
+  // content freezes the instant it starts fading, so the fade shows the prompt it's leaving, not
+  // the live hand behind it. Null when nothing's up. (Mirrors comboProjRender's self-clearing.)
+  private codaStakeRender(now: number): { points: number; congrats: string | null; age: number; fade: number } | null {
+    if (this.codaStakeShownAt <= 0) {
+      return null
+    }
+    if (this.state.phase === 'coda' && !this.state.round) {
+      this.codaStakeHideAt = 0
+      // Use the ROLLING counter value (the same one the top-right score rides), not the raw
+      // displayedScore() — so on a win the projected stake ticks up to the doubled total in
+      // lockstep with the HUD instead of snapping when the held reward releases.
+      return { points: this.scoreTicker.value(now), congrats: this.codaCongrats, age: now - this.codaStakeShownAt, fade: 1 }
+    }
+    // The prompt just closed — fade out, freezing the content at the moment it began hiding.
+    if (this.codaStakeHideAt <= 0) {
+      this.codaStakeHideAt = now
+      this.codaStakeFadePoints = this.scoreTicker.value(now)
+      this.codaStakeFadeCongrats = this.codaCongrats
+    }
+    const fade = 1 - (now - this.codaStakeHideAt) / CODA_STAKE_FADE_MS
+    if (fade <= 0) {
+      this.codaStakeShownAt = 0
+      this.codaStakeHideAt = 0
+      return null
+    }
+    return { points: this.codaStakeFadePoints, congrats: this.codaStakeFadeCongrats, age: now - this.codaStakeShownAt, fade }
   }
 
   // Animation loop: repaints the dynamic canvas layers every frame. It never fully
@@ -1496,6 +1662,25 @@ class GameView {
     }
     const canvas = this.stage.canvas
     const layout = computeLayout(canvas.width, canvas.height)
+    // The Banker's first-double deck fly-in just landed — commit it to the static table (so the
+    // deck is visible as the cards deal from it) before drawing this frame. Mirrors the settle's
+    // deck commit, but fires as the fly-in ends rather than after the whole deal.
+    if (this.codaDeckCommitAt > 0 && timestamp >= this.codaDeckCommitAt) {
+      this.codaDeckCommitAt = 0
+      this.deckColorShift = BANKER_SHIFT
+      this.spawnIncomingShift = null
+      this.spawnHasOldDeck = false
+      this.deckHidden = false
+      this.paintTable(canvas, layout, this.tableHasDeck())
+    }
+    // The Banker's entry shred just finished — mark the killing hand's cards gone BEFORE this
+    // frame's draw, so they don't flash for a frame between the shred ending and being cleared.
+    if (this.codaShredEndAt > 0 && timestamp >= this.codaShredEndAt) {
+      this.codaShredEndAt = 0
+      this.endShredDone = true
+      this.collectRound = null
+      this.codaEntering = false
+    }
     this.drawCards(canvas, layout, timestamp)
     this.drawChips(canvas, layout, timestamp)
     this.drawTokens(canvas, layout, timestamp)
@@ -1558,10 +1743,13 @@ class GameView {
         this.deckHidden = false
         this.paintTable(canvas, layout, this.tableHasDeck())
       }
-      // Keep the ending round's cards on the felt while a deferred arrival is pending —
-      // the dealer's dead and the upgrade selector is up, and those cards are what the
-      // new dealer will shred when it finally walks in (playArrival).
-      if (!this.pendingCeremony) {
+      // Keep the ending round's cards on the felt while a deferred arrival is pending — the
+      // dealer's dead and the upgrade selector is up, and those cards are what the new dealer
+      // shreds when it walks in (playArrival). Same for the Banker coda entry (codaEntering): he
+      // shreds them on arrival (playCodaArrival → codaShredEndAt), NOT here — the settle can fire
+      // during the boss death, and clearing them then made the dealt cards despawn before the
+      // shred instead of being chewed up.
+      if (!this.pendingCeremony && !this.codaEntering) {
         this.collectRound = null
       }
       // Release the frozen bankroll only when a next-hand CLEAR just finished (the
@@ -1594,6 +1782,27 @@ class GameView {
       // the loop — the `return` below skips this frame's own reschedule.
       this.raf = 0
       this.run(() => this.session.deal())
+      return
+    }
+
+    // The Banker's deferred entrance: a beat after the boss is gone, he strides in and shreds.
+    if (this.codaArrivalAt > 0 && timestamp >= this.codaArrivalAt && this.started) {
+      this.codaArrivalAt = 0
+      this.playCodaArrival()
+    }
+    // The Banker coda auto-advances: once a resolved hand's reveal beat passes (or the entry
+    // ceremony finishes), codaResolveNext dismisses the killing hand / doubles a win + re-prompts
+    // / re-deals a push / ends the run on a loss.
+    if (this.codaAdvanceAt > 0 && timestamp >= this.codaAdvanceAt && !sequenceAnimating && this.started) {
+      this.codaAdvanceAt = 0
+      this.raf = 0
+      this.runCoda(() => this.session.codaResolveNext())
+      return
+    }
+    // A pushed double-or-nothing hand re-deals with no re-prompt: once the table clears, gamble again.
+    if (this.state.phase === 'coda' && this.state.codaRedeal && !sequenceAnimating && this.started) {
+      this.raf = 0
+      this.runCoda(() => this.session.codaGamble())
       return
     }
 
@@ -1630,6 +1839,8 @@ class GameView {
 
   private makeButtons(): ButtonDef[] {
     const playing = (s: SessionState) => s.phase === 'playing'
+    // A live coda hand (a double-or-nothing hand dealt and still being played).
+    const codaPlaying = (s: SessionState) => s.phase === 'coda' && !!s.round && s.round.status === 'player-turn'
     // Powerups stay put — always visible, just enabled/disabled — so the column
     // never collapses and reflows between hands. Their "only during play"
     // condition lives in `enabled` (via playing()), not `visible`. The contextual
@@ -1756,6 +1967,33 @@ class GameView {
         visible: yes,
         enabled: (s) => playing(s) && affords(POWERUPS.mulligan.cost, s) && !!s.round && canMulligan(s.round),
       },
+      // --- The Banker coda (double-or-nothing) — all routed through runCoda, not run() ---
+      { key: 'coda-double', label: 'Double or nothing', group: 'action', coda: true, act: () => this.session.codaGamble(), visible: (s) => s.phase === 'coda' && !s.round, enabled: yes },
+      { key: 'coda-cash', label: 'Cash out', group: 'action', coda: true, act: () => this.session.codaCashOut(), visible: (s) => s.phase === 'coda' && !s.round, enabled: yes },
+      { key: 'coda-hit', label: 'Hit', group: 'action', coda: true, act: () => this.session.codaHit(), visible: codaPlaying, enabled: yes },
+      { key: 'coda-stand', label: 'Stand', group: 'action', coda: true, act: () => this.session.codaStand(), visible: codaPlaying, enabled: yes },
+      {
+        key: 'coda-analyze',
+        label: 'Analyze',
+        group: 'coda-power',
+        coda: true,
+        cost: CODA_ANALYZE_COST,
+        act: () => this.session.codaAnalyze(),
+        visible: codaPlaying,
+        enabled: (s) => codaPlaying(s) && s.analysis === null && s.run.tokens >= CODA_ANALYZE_COST,
+        active: (s) => s.phase === 'coda' && s.analysis !== null,
+      },
+      {
+        key: 'coda-mulligan',
+        label: 'Mulligan',
+        group: 'coda-power',
+        coda: true,
+        cost: CODA_MULLIGAN_COST,
+        inflated: true, // 200 base, scaled by the run's token inflation (unlike flat Analyze)
+        act: () => this.session.codaMulligan(),
+        visible: codaPlaying,
+        enabled: (s) => codaPlaying(s) && !!s.round && canMulligan(s.round) && s.run.tokens >= powerupCost(CODA_MULLIGAN_COST, s.run),
+      },
     ]
     // The powerup column reads top-to-bottom in ascending token cost. Array.sort is
     // stable, so the action buttons (no cost → 0) keep their defined order and their
@@ -1771,6 +2009,7 @@ class GameView {
     this.hintEl = element('div', 'hud-powerhint')
     const powers = element('div', 'hud-powerups')
     const actions = element('div', 'hud-actions')
+    const codaPowers = element('div', 'hud-coda-powers')
     this.powersEl = powers
     this.actionsEl = actions
     powers.appendChild(this.hintEl) // hint sits atop the powerup stack
@@ -1809,13 +2048,19 @@ class GameView {
         // A powerup click fires the ability cue (and, as the first user gesture,
         // resumes the audio context). Move buttons make no sound — it's masked by
         // the card-draw sfx anyway.
-        if (def.group === 'power') {
+        if (def.group === 'power' || def.group === 'coda-power') {
           sfx.play('ability')
         }
-        this.run(def.act)
+        // Coda buttons drive the stripped coda handler; everything else the main one.
+        if (def.coda) {
+          this.runCoda(def.act)
+        } else {
+          this.run(def.act)
+        }
       })
       this.buttons[def.key] = button
-      ;(def.group === 'power' ? powers : actions).appendChild(button)
+      const column = def.group === 'power' ? powers : def.group === 'coda-power' ? codaPowers : actions
+      column.appendChild(button)
     }
 
     // The info button sits in the bottom-left corner (fixed via CSS); pressing it toggles
@@ -1824,7 +2069,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage.overlay.append(tokens, points, this.infoBtnEl, this.messageEl, powers, actions, this.buildUpgradePanel())
+    this.stage.overlay.append(tokens, points, this.infoBtnEl, this.messageEl, powers, actions, codaPowers, this.buildUpgradePanel())
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -2031,7 +2276,7 @@ class GameView {
       // clicked Next hand — so clear it now. Also drop any reward that hadn't flashed yet
       // (a fast click before its tokens landed): release the held score to the total so the
       // counter isn't stuck, without a late flash bleeding into the next hand.
-      this.pointsDeltaEl.classList.remove('is-flashing')
+      this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
       this.heldScore = null
       this.pendingScoreDelta = 0
       this.pendingMult = 1
@@ -2061,7 +2306,7 @@ class GameView {
         this.pendingMult = 1
         this.scoreReleaseAt = 0
         this.comboProj = null // drop any lingering combo projection
-        this.pointsDeltaEl.classList.remove('is-flashing')
+        this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
         this.scoreTicker.set(this.displayedScore())
       }
 
@@ -2192,8 +2437,9 @@ class GameView {
       // above). The exception is the final blow ('over'), which ends the run — its
       // shred → laser death is run by beginEndGame below, not deferred to a Next hand.
       const enteringOver = this.state.phase === 'over' && prevPhase !== 'over'
+      const enteringCoda = this.state.phase === 'coda' && prevPhase !== 'coda'
       const damaged = integrity < prevIntegrity || shiftIndex > prevShift
-      if (damaged && !enteringOver) {
+      if (damaged && !enteringOver && !enteringCoda) {
         this.pendingAttack = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
         // The nexus now holds a reward + strike to deliver, but the RED laser charge is
         // NOT started here — the utility light first shoots the reward tokens (pulsing
@@ -2257,7 +2503,10 @@ class GameView {
       // Game over: once the ending hand's cards settle, the dealer sucks them up + shreds
       // them, then is destroyed (a win: laser death) or walks off (a loss), and the nexus
       // projects the score screen. Fires for a bust-out loss too (no damage this hand).
-      if (enteringOver) {
+      if (enteringCoda) {
+        // The 6th dealer fell → the Banker walks in and the double-or-nothing coda begins.
+        this.beginCoda(prevScore, prevIntegrity, prevShift, integrity, t)
+      } else if (enteringOver) {
         this.beginEndGame(prevScore, prevIntegrity, prevShift, integrity, shiftIndex, t)
       }
     }
@@ -2291,7 +2540,9 @@ class GameView {
       this.chips.placeBets(round, t)
       this.betFlown = true // the bet flew from the stack → turn the bankroll count on for good
     }
-    const resolvedNow = this.state.phase === 'resolved' || this.state.phase === 'over'
+    // The coda-entry hand (the 6th kill) resolves into the 'coda' phase, not 'resolved'/'over' —
+    // count it as resolved too so the winning chips still collect before the Banker arrives.
+    const resolvedNow = this.state.phase === 'resolved' || this.state.phase === 'over' || this.state.phase === 'coda'
     const wasResolved = prevPhase === 'resolved' || prevPhase === 'over'
     if (resolvedNow && !wasResolved) {
       this.chips.resolve(round, this.anim.animEnd)
@@ -2467,50 +2718,260 @@ class GameView {
     if (!round) {
       return
     }
-    this.collectRound = round // the cards drawShred sucks into the mouth
+    // The dealer never shreds the hand it won — on a game-over LOSS the cards RETURN TO THE DECK
+    // (a gather, like between hands, but with NO riffle — there's no next hand) and the dealer
+    // strides off. The deck stays put on its layer; the cards just fly back into it.
+    this.collectRound = round
     this.endShredDone = false
-    this.spawnShredOnly = true
-    this.spawnIncomingShift = null
-    // Shred the resting deck too (like a kill ceremony): move it off the static table onto
-    // the cards layer (deckHidden + repaint) so drawOldDeckShred can suck it into the mouth.
-    this.spawnHasOldDeck = true
-    this.deckHidden = true
-    const canvas = this.stage.canvas
-    this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
 
     // Settle the table chips FIRST: a loss flies the bet to the house (beside the dealer), a
     // win collects the winnings to the bankroll. Everything else waits for them — so on a
-    // loss the bet reaches the dealer before it shreds + walks off. Start once the cards have
-    // landed AND any resolve animation (the winnings flying in on a win) has finished. The
+    // loss the bet reaches the dealer before the cards return to the deck. Start once the cards
+    // have landed AND any resolve animation (the winnings flying in on a win) has finished. The
     // bankroll count stays frozen at its resolve value (heldChips) — there's no next hand.
     const chipStart = Math.max(this.anim.animEnd, this.chips.animEnd)
     this.chips.clear(round, chipStart)
 
-    const cardCount = round.dealer.length + round.hands.reduce((sum, hand) => sum + hand.cards.length, 0)
-    const shredStart = this.chips.animEnd + END_SHRED_GAP
-    // shredOldDeck=true (chew the deck), shredOnly=true (no fresh deck flies in).
-    const shredEnd = this.spawn.begin(shredStart, cardCount, true, false, true)
+    const gatherStart = this.chips.animEnd + END_SHRED_GAP
+    this.anim.collect(round, gatherStart, false)
+    const gatherEnd = this.anim.animEnd
     if (this.state.run.won) {
-      // The final boss is destroyed the moment its own shredder finishes with the cards:
-      // the laser fires and the figure breaks apart (final → no walk-in). The +40 bounty is
-      // NOT flown (emitBounty=false) — it's withheld from the count (scheduleTokens), so the
-      // run-ending count stays frozen and the token counter can't spoil the win.
-      this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, shredEnd, false)
-      this.fireLaser(t, shredEnd, true)
+      // Dead path: run.won is never set now (the Banker coda replaced the boss-defeat ending).
+      // Kept so the death/laser wiring — and this method's integrity/shift params — stay used.
+      this.playAttack(prevIntegrity, prevShift, integrity, shiftIndex, gatherEnd, false)
+      this.fireLaser(t, gatherEnd, true)
     } else {
-      // The house won: the dealer turns and strides off to the right once the cards are gone.
-      this.dealer.walkOff(shredEnd)
+      // The house won: the dealer turns and strides off to the right once the cards are back.
+      this.dealer.walkOff(gatherEnd)
     }
-    // Freeze the score counter at its pre-kill value until the score screen shows (shredEnd):
-    // the win's chip score + kill bounty are already in run.score, and letting the top-right
-    // counter roll up during the dealer's draw-out would spoil the win. releaseAt = shredEnd
-    // rolls it up (and flashes the +delta) exactly as the score screen appears.
+    // Freeze the score counter until the score screen shows (gatherEnd) — letting the top-right
+    // counter roll up during the gather/walk-off would spoil the run's final beat.
     const gained = this.state.run.score - prevScore
     if (gained > 0) {
-      this.holdScoreReward(prevScore, gained, comboMultiplier(this.state.run.combo), shredEnd)
+      this.holdScoreReward(prevScore, gained, comboMultiplier(this.state.run.combo), gatherEnd)
     }
-    // Once the cards are sucked up, project the score screen + reveal the New-run button.
-    this.scoreRevealAt = shredEnd
+    // Once the cards are back in the deck, project the score screen + reveal the New-run button.
+    this.scoreRevealAt = gatherEnd
+    this.scoreRevealed = false
+    // Clear any lingering "+N" delta from an earlier win so it can't flash stale over the
+    // game-over screen (the loss adds no points, so nothing new replaces it).
+    this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
+    this.pointsDeltaEl.textContent = ''
+  }
+
+  // The 6th dealer just fell (a winning hand). The boss breaks apart and the BANKER walks in as
+  // its "replacement" — a normal non-final kill ceremony (final would suppress the walk-in) — its
+  // mouth shredding the boss's resting cards as it arrives, with a fresh Banker-coloured deck for
+  // the double-or-nothing hands. The killing hand is kept resting for the shred, then dismissed
+  // to the prompt (codaResolveNext) once the ceremony finishes.
+  private beginCoda(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
+    const round = this.state.round
+    if (!round) {
+      return
+    }
+    this.collectRound = round // the killing hand's cards, for the Banker to shred on arrival
+    this.endShredDone = false
+    this.codaEntering = true
+    this.codaDeckOut = false
+    this.codaCongrats = null // the first prompt has no "well played" yet
+    this.codaChipsFadeAt = t // the chips start fading out now (the last dealer is dead)
+    // Score to roll up when the Banker arrives (his walk-in is deferred by CODA_WALKIN_DELAY).
+    this.codaEntryScore = { prevScore, gained: this.state.run.score - prevScore }
+    // Freeze the counter at the pre-coda total (so it doesn't roll up during the boss death),
+    // and clear any lingering "+N" delta from the last hand — the score reveals as the Banker
+    // settles (playCodaArrival re-holds with the real release), with no per-hand delta text.
+    this.holdScoreReward(prevScore, 0, 1, Number.MAX_SAFE_INTEGER)
+    this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
+
+    // Collect the winning hand's chips (the 6th kill is a win) before the boss dies.
+    const chipStart = Math.max(this.anim.animEnd, this.chips.animEnd)
+    this.chips.clear(round, chipStart)
+
+    // The boss breaks apart — DEATH ONLY, no walk-in (walkIn=false). The Banker arrives a beat
+    // later (playCodaArrival, scheduled here) so there's a clear pause before he appears.
+    const attackStart = this.chips.animEnd + LASER_GAP
+    this.dealer.sync(prevIntegrity, prevShift, integrity, BANKER_SHIFT, attackStart, false, false)
+    this.fireLaser(t, attackStart, true)
+    this.codaArrivalAt = attackStart + KILL_DEATH_MS + CODA_WALKIN_DELAY
+  }
+
+  // The Banker's deferred entrance, fired CODA_WALKIN_DELAY after the boss is gone (see the frame
+  // loop). He strides in cackling; his mouth shreds the boss's resting cards + deck as he arrives
+  // (no fresh deck yet — that waits for the first double), and the counter rolls up to the stake.
+  // Once the shred finishes the killing hand is dismissed to the prompt.
+  private playCodaArrival(): void {
+    const t = now()
+    this.dealer.setLevel(maxIntegrityFor(BANKER_SHIFT), BANKER_SHIFT)
+    this.dealer.setShift(BANKER_SHIFT)
+    this.dealer.spawn(t)
+
+    this.spawnShredOnly = true
+    this.spawnIncomingShift = null
+    this.spawnHasOldDeck = true
+    this.deckHidden = true
+    const canvas = this.stage.canvas
+    this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
+    const round = this.collectRound
+    const cardCount = round ? round.dealer.length + round.hands.reduce((sum, hand) => sum + hand.cards.length, 0) : 0
+    const shredEnd = this.spawn.begin(t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, cardCount, true, false, true)
+    this.codaShredEndAt = shredEnd
+    // The walk-in cackle plays over his arrival + the CARD shred, ending as the deck shred begins
+    // (the shredding stays continuous — cards straight into the deck, no pause).
+    this.playBankerLaugh(t, this.spawn.oldDeckShredStart) // flip endShredDone + clear the shredded cards when it lands
+
+    const info = this.codaEntryScore
+    if (info) {
+      // Roll the counter up to the stake as the Banker settles — no "+N" delta (the coda is
+      // about the total at risk, not a per-hand gain).
+      this.holdScoreReward(info.prevScore, 0, 1, shredEnd)
+    }
+    this.codaEntryScore = null
+    this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda') // fade any lingering delta from the last hand
+    // Once the shred finishes, dismiss the killing hand → the coda prompt (DOUBLE / CASH OUT).
+    this.codaAdvanceAt = shredEnd + CODA_ENTRY_HOLD
+  }
+
+  // The coda's own transition handler (mirrors run(), stripped to the double-or-nothing loop:
+  // no chips, tokens, laser, or combo). Routes each coda action to its animation and, when the
+  // run ends, hands off to beginCodaEnd. codaResolveNext (the frame-loop auto-advance) flows here.
+  private runCoda(mutate: () => void): void {
+    this.dismissSpec()
+    const prevRound = this.state.round
+    const prevScore = this.state.run.score
+    const prevAnalysis = this.state.analysis
+    mutate()
+    this.state = this.session.snapshot()
+    const t = now()
+
+    // Analyze reading flicker (mirror run()).
+    if (this.state.analysis && !prevAnalysis) {
+      this.analysisStart = t
+      this.analysisFadeOut = null
+    } else if (!this.state.analysis && prevAnalysis) {
+      this.analysisFadeOut = prevAnalysis
+      this.analysisFadeStart = t
+    }
+
+    const round = this.state.round
+    if (this.state.phase === 'over') {
+      // A coda bust or cash-out ended the run → the Banker's exit + the score screen. On a bust he
+      // laughs as he strides OFF with everything (fired from beginCodaEnd, timed to the walk-off —
+      // not while he shreds); a cash-out gets no gloat.
+      this.beginCodaEnd(prevRound)
+    } else if (!prevRound && round) {
+      // codaGamble: a fresh double-or-nothing hand. The Banker cackles as he sets it up.
+      this.collectRound = null
+      this.endShredDone = false // the coda hand's cards draw normally again
+      this.playBankerLaugh(t)
+      // On the FIRST double he pulls out his own deck (wrapped) and unwraps it, THEN deals; on
+      // later doubles the deck's already out, so he just deals. (shredOldDeck=false — nothing
+      // resting to chew; the boss's deck was shredded on entry.)
+      let dealAt = t
+      if (!this.codaDeckOut) {
+        this.codaDeckOut = true
+        dealAt = this.beginSpawn(BANKER_SHIFT, t, false)
+        this.codaDeckCommitAt = dealAt // commit the deck to the static table as the fly-in lands (frame loop)
+      }
+      this.codaAnimSync('betting', dealAt)
+      if (round.status === 'resolved') {
+        // A natural blackjack right off the deal — hold the cards on the felt an extra beat
+        // before the auto-collection so the player can take in what happened.
+        this.codaAdvanceAt = this.anim.animEnd + CODA_RESULT_HOLD + CODA_NATURAL_HOLD
+      }
+    } else if (prevRound && round) {
+      // A coda hand action: a Mulligan (discard the opening two + redraw — guaranteed, no coin)
+      // or a hit/stand.
+      const mulliganed = round.mulliganed && !prevRound.mulliganed
+      if (mulliganed) {
+        // Discard the opening two, then deal a fresh pair once they've been swept up.
+        const discardEnd = this.mulligan.begin(prevRound.hands[0].cards, t)
+        this.anim.redealHand(0, round.hands[0].cards.length, discardEnd)
+        if (round.status === 'resolved') {
+          this.codaAnimSync('playing', this.anim.animEnd) // a fresh natural resolves at once
+          // A mulligan redraw that lands a natural — same extra hold as a dealt natural.
+          this.codaAdvanceAt = this.anim.animEnd + CODA_RESULT_HOLD + CODA_NATURAL_HOLD
+        }
+      } else {
+        this.codaAnimSync('playing', t)
+        if (round.status === 'resolved') {
+          this.codaAdvanceAt = this.anim.animEnd + CODA_RESULT_HOLD
+        }
+      }
+    } else if (prevRound && !round) {
+      // codaResolveNext cleared the resolved hand. A coda win/push hand (bet 0) is still on the
+      // felt — gather it away (with a riffle); the killing hand (a real bet) was already shredded.
+      if (prevRound.hands[0].bet === 0) {
+        this.collectRound = prevRound
+        // Move the deck onto the cards layer so the gather + riffle actually slides/splits it
+        // (like the main game's next-hand gather) — otherwise the shuffle sfx plays but nothing
+        // moves. The settle hands the deck back to the static layer when it finishes.
+        this.deckOnCards = true
+        const canvas = this.stage.canvas
+        this.paintTable(canvas, computeLayout(canvas.width, canvas.height), false)
+        this.anim.collect(prevRound, t)
+      }
+      // A push auto-re-deals with no re-prompt — DON'T re-show the stake projection (it flashed
+      // "Double or nothing?" for a beat before the redeal). Only a win / the entry re-prompts.
+      if (!this.state.codaRedeal) {
+        this.codaStakeShownAt = t
+      }
+      const gained = this.state.run.score - prevScore
+      if (gained > 0) {
+        // A coda WIN just doubled the stake — the Banker congratulates the player, and the
+        // projected number ticks up to the new doubled total.
+        this.holdScoreReward(prevScore, gained, 1, this.anim.animEnd)
+        this.codaCongrats = CONGRATS[Math.floor(Math.random() * CONGRATS.length)]
+      }
+    }
+
+    this.syncOverlay(t)
+    this.lastAnimating =
+      this.anim.isAnimating(t) || this.chips.isAnimating(t) || this.spawn.isAnimating(t)
+    this.ensureLoop()
+  }
+
+  // Deal-animator sync for a coda hand. The coda phase is never 'playing', so synthesize the
+  // phase from the round status (a live hand → 'playing' keeps the dealer hole down; a resolved
+  // hand → 'resolved' flips the hole + plays the dealer out).
+  private codaAnimSync(prevAnimPhase: SessionState['phase'], t: number): void {
+    const round = this.state.round
+    const animPhase: SessionState['phase'] = round && round.status === 'resolved' ? 'resolved' : 'playing'
+    this.anim.sync(prevAnimPhase, { ...this.state, phase: animPhase }, t)
+  }
+
+  // The coda's game-over sequence. A coda bust leaves the losing hand on the table — the Banker
+  // shreds it (no laser: he isn't destroyed) and strides off; a cash-out has no hand, so he just
+  // collects and leaves. Either way the nexus then projects the score screen (score already
+  // banked / zeroed by the Session).
+  private beginCodaEnd(prevRound: Round | null): void {
+    const t = now()
+    if (prevRound) {
+      // Coda bust: the Banker never shreds the hand he won — the cards RETURN TO THE DECK (a
+      // gather, like between hands, but with NO riffle — there's no next hand) and he strides
+      // off; the score screen projects as the gather ends (the game-over loss beat). The deck
+      // stays put (per-frame, glowing); the cards fly back into it (start clamped to `now` so it
+      // can't run off a stale anim clock).
+      this.collectRound = prevRound
+      this.endShredDone = false
+      const gatherStart = Math.max(this.anim.animEnd, t) + END_SHRED_GAP
+      this.anim.collect(prevRound, gatherStart, false)
+      const gatherEnd = this.anim.animEnd
+      this.dealer.walkOff(gatherEnd)
+      this.playBankerLaugh(gatherEnd) // he cackles as he strides off, not while gathering
+      // Reveal the score AS the gather ends, while the Banker strides off (the gathered cards
+      // have vanished into the deck, so they can't flicker back).
+      this.scoreRevealAt = gatherEnd
+      // The bust zeroes the score — clear any lingering "+N" delta from the last coda WIN so a
+      // stale gain doesn't flash over the game-over screen.
+      this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
+      this.pointsDeltaEl.textContent = ''
+    } else {
+      // Cash out: no hand on the table — the Banker collects and strides off (from `now`, not a
+      // stale clock, so the walk-off is actually seen), then the score screen projects once he's gone.
+      const walkStart = t + END_SHRED_GAP
+      this.dealer.walkOff(walkStart)
+      this.scoreRevealAt = walkStart + KILL_ARRIVE_MS
+    }
     this.scoreRevealed = false
   }
 
@@ -2542,7 +3003,9 @@ class GameView {
 
     for (const def of this.defs) {
       const button = this.buttons[def.key]
-      const visible = def.visible(s)
+      // Main powerups are hidden through the WHOLE coda — including its game-over (cash-out /
+      // bust), where phase is 'over' but run.coda is still true — so they don't flash back on.
+      const visible = def.visible(s) && !(def.group === 'power' && s.run.coda)
       button.classList.toggle('is-hidden', !visible)
       // Armed powerups glow; using the shield clears the armed flag, which drops
       // the class here on the next sync and returns the button to normal.
@@ -2561,7 +3024,10 @@ class GameView {
       // Powerup cost pills show the live (inflated) price the spend path will charge.
       const pill = this.costPills[def.key]
       if (pill && def.cost !== undefined) {
-        pill.textContent = String(powerupCost(def.cost, s.run))
+        // Flat-priced coda abilities (Analyze) show their base cost; everything else — main
+        // powerups AND inflation-adjusted coda abilities (Mulligan) — shows the live inflated price.
+        const flat = def.group === 'coda-power' && !def.inflated
+        pill.textContent = String(flat ? def.cost : powerupCost(def.cost, s.run))
       }
     }
   }
