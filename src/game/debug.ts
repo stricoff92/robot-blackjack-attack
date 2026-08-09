@@ -16,6 +16,7 @@
 //   ?chipUpgrade=2     — start with the Payout (chip) path unlocked through this tier (0-3)
 //   ?tokenUpgrades=1   — start with the Tokens path unlocked through this tier (0-3)
 //   ?dealerBlackjack   — the dealer draws a natural 21 every hand (test refund/void/hijack/push)
+//   ?playerBlackjack   — the player is dealt a natural 21 every hand (test the blackjack payout)
 //
 // See docs/dev-params.md for the full reference (values, effects, examples). Handy
 // for exercising split without waiting for a pair, buying a pricey powerup off the
@@ -47,6 +48,8 @@ export interface DebugFlags {
   tokenUpgrades: number | null
   /** Force the dealer's opening two cards to be a natural 21 on every deal. */
   dealerBlackjack: boolean
+  /** Force the player's opening two cards to be a natural 21 on every deal. */
+  playerBlackjack: boolean
 }
 
 const OFF: DebugFlags = {
@@ -60,6 +63,7 @@ const OFF: DebugFlags = {
   chipUpgrade: null,
   tokenUpgrades: null,
   dealerBlackjack: false,
+  playerBlackjack: false,
 }
 
 export function readDebugFlags(): DebugFlags {
@@ -81,6 +85,7 @@ export function readDebugFlags(): DebugFlags {
     chipUpgrade: parseUpgradeTier(params.get('chipUpgrade')),
     tokenUpgrades: parseUpgradeTier(params.get('tokenUpgrades')),
     dealerBlackjack: params.has('dealerBlackjack'),
+    playerBlackjack: params.has('playerBlackjack'),
   }
 }
 

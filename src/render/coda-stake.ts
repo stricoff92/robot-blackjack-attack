@@ -30,6 +30,7 @@ export function drawCodaStake(
   layout: Layout,
   points: number,
   congrats: string | null,
+  personalBest: number,
   age: number,
   fade: number,
   now: number,
@@ -65,6 +66,14 @@ export function drawCodaStake(
         { text: 'Double or nothing?', style: CYAN, size: px, glow: 1 },
         { text: stake, style: PURPLE, size: numberPx, glow: NUMBER_GLOW },
       ]
+
+  // The player's personal best — the "score to beat" — sits below the stake as a smaller cyan
+  // line so they can weigh the gamble against their record. Skipped for first-timers (best 0), and
+  // (like the stake) locale-grouped. CrazyGames leaderboards are submit-only, so this is our own
+  // tracked best, not a global read (see src/game/leaderboard.ts).
+  if (personalBest > 0) {
+    lines.push({ text: `Your best ${personalBest.toLocaleString()}`, style: CYAN, size: px * 0.85, glow: 1 })
+  }
 
   const strikeT = clamp01(age / CODA_STAKE_STRIKE_MS)
   const presence = strikeT * fade

@@ -9,9 +9,10 @@
 // Render-only, mirroring spec-sheet.ts: the game builds the ScoreReadout (pure strings,
 // import-free of the run types) and this paints it.
 
-import { dealerCountAnchor, drawHoloText, playerCountAnchor, type HoloTextStyle } from './cards'
-import type { HoloRayTarget } from './nexus'
-import type { Layout } from './scene'
+import { dealerCountAnchor, drawHoloText, holoFlicker, playerCountAnchor, type HoloTextStyle } from './cards'
+import { nexusHoloLight, type HoloRayTarget } from './nexus'
+import { feltTopEdgeY, type Layout } from './scene'
+import { measureTitleWidest, titleFont, TITLE_LINES, TITLE_RED } from './title-font'
 
 // How long the projection takes to flicker fully in (matches SPEC_STRIKE_MS's feel).
 const SCORE_STRIKE_MS = 520
@@ -125,6 +126,93 @@ export function drawScoreSheet(
 
   const top = bandMid - totalH / 2
   return [{ left, right, top, bottom: top + totalH }]
+}
+
+// The game title (ROBOT / BLACKJACK / ATTACK) projected ABOVE the score board on the game-over
+// screen — the same Sixtyfour pixel-font wordmark the opening TAP-TO-START screen shows. It sits
+// in the empty upper felt between the felt's top rail and the summary band, so it never crowds the
+// board (sufficient space), sized modestly (it's a header, not the opening hero art). Drawn LEFT
+// of felt-centre so the nexus ray fan (cast from the lens on the RIGHT) swings toward horizontal
+// and clears the lens — the fan bugs out if a box sits too wide or too far right. Returns its
+// ray-target box (sized to 1/1.5 of the fan reach so drawHoloRays' 25% pad lands the fan just
+// past the letters, not off to the side). `age` is ms since the score screen appeared.
+export function drawScoreTitle(ctx: CanvasRenderingContext2D, l: Layout, age: number, now = 0): HoloRayTarget[] {
+  const cx = l.width / 2
+  const scale = Math.min(l.width, l.height)
+  const compact = l.width < 560
+
+  // Size — a header, smaller than the opening hero wordmark; shrunk to a modest width share so
+  // the widest word (BLACKJACK) fits well left of the nexus. Measured in the face it draws in.
+  let px = clamp(scale * 0.04, compact ? 16 : 20, 44)
+  ctx.font = titleFont(px)
+  let widest = measureTitleWidest(ctx)
+  const maxW = l.width * (compact ? 0.62 : 0.5)
+  if (widest > maxW) {
+    px = Math.max(14, (px * maxW) / widest)
+    ctx.font = titleFont(px)
+    widest = measureTitleWidest(ctx)
+  }
+
+  // Vertical home: the empty gap between the felt's top edge and the summary band. Measure the
+  // rail near where the block actually sits (left of centre, where the curved edge dips lower) so
+  // no letter overhangs it, then fit + centre the block there so it clears the rail and the board.
+  const dc = dealerCountAnchor(l)
+  const bandTop = dc.y + dc.size * 0.7
+  const estCenterX = cx - scale * 0.12 // the left-of-centre target the block lands near (pre-clamp)
+  const feltTop = Math.max(feltTopEdgeY(l, estCenterX - widest / 2), feltTopEdgeY(l, estCenterX + widest / 2))
+  const gapTop = feltTop + px * 0.4
+  const gapBottom = bandTop - px * 0.4
+  const gap = gapBottom - gapTop
+  if (gap <= px * 0.9) {
+    return [] // no meaningful room (very short screen) — skip the header rather than overlap
+  }
+  let lineH = px * 1.02
+  let blockH = TITLE_LINES.length * lineH
+  if (blockH > gap) {
+    px *= gap / blockH
+    ctx.font = titleFont(px)
+    widest = measureTitleWidest(ctx)
+    lineH = px * 1.02
+    blockH = TITLE_LINES.length * lineH
+  }
+
+  // Left-of-centre placement + fan clearance (mirrors tap-to-start): push the block left of
+  // felt-centre, then clamp so its fan still clears the nexus lens on narrow screens.
+  const fanReach = widest / 2 + px * 0.2
+  const rayHalfW = fanReach / 1.5
+  const nexusX = nexusHoloLight(l, now).x
+  const maxCx = nexusX - px * 0.7 - fanReach
+  const centerX = Math.max(fanReach + px * 0.15, Math.min(cx - scale * 0.12, maxCx))
+  const left = centerX - widest / 2
+
+  const top = (gapTop + gapBottom) / 2 - blockH / 2
+  const firstCenter = top + px * 0.5
+
+  const presence = clamp01(age / SCORE_STRIKE_MS)
+  ctx.save()
+  ctx.globalAlpha = presence * holoFlicker(now)
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.font = titleFont(px)
+  for (let i = 0; i < TITLE_LINES.length; i++) {
+    const y = firstCenter + i * lineH
+    // Red shadow pass: black fill casting a blurred, slightly offset red glow.
+    ctx.fillStyle = '#000000'
+    ctx.shadowColor = TITLE_RED
+    ctx.shadowBlur = px * 0.34
+    ctx.shadowOffsetX = px * 0.05
+    ctx.shadowOffsetY = px * 0.08
+    ctx.fillText(TITLE_LINES[i], left, y)
+    // Crisp black pass on top so the letters stay solidly black over their own red halo.
+    ctx.shadowColor = 'transparent'
+    ctx.shadowBlur = 0
+    ctx.shadowOffsetX = 0
+    ctx.shadowOffsetY = 0
+    ctx.fillText(TITLE_LINES[i], left, y)
+  }
+  ctx.restore()
+
+  return [{ left: centerX - rayHalfW, right: centerX + rayHalfW, top, bottom: top + blockH }]
 }
 
 // One summary line: a dim label pinned to the left of the column, the amber value to the

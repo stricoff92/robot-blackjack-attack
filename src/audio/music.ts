@@ -17,8 +17,18 @@ import canneryUrl from '../assets/Kevin MacLeod-The Cannery.ogg'
 import serpentineUrl from '../assets/Kevin MacLeod-Serpentine-Trek.ogg'
 import maestroUrl from '../assets/Kevin MacLeod-One-eyed-Maestro.ogg'
 import machinationsUrl from '../assets/Kevin-MacLeod-Machinations.ogg'
+import getawayUrl from '../assets/Kevin MacLeod-Mistake the Getaway.ogg'
+import bustUrl from '../assets/Kevin MacLeod Trio for Piano Violin and Viola.ogg'
+import cashoutUrl from '../assets/Kevin MacLeod-Enigma.ogg'
 
-export type TrackName = 'cannery' | 'serpentine' | 'maestro' | 'machinations'
+export type TrackName =
+  | 'cannery'
+  | 'serpentine'
+  | 'maestro'
+  | 'machinations'
+  | 'getaway'
+  | 'bust'
+  | 'cashout'
 
 interface TrackDef {
   url: string
@@ -36,9 +46,30 @@ const TRACKS: Record<TrackName, TrackDef> = {
   serpentine: { url: serpentineUrl, baseVolume: 1 },
   maestro: { url: maestroUrl, baseVolume: 1 },
   machinations: { url: machinationsUrl, baseVolume: 1 },
+  getaway: { url: getawayUrl, baseVolume: 1 },
+  bust: { url: bustUrl, baseVolume: 1 },
+  cashout: { url: cashoutUrl, baseVolume: 1 },
 }
 
 const ALL_TRACKS = Object.keys(TRACKS) as TrackName[]
+// Coda-only tracks, NEVER in the normal rotation — each plays only from its dedicated trigger:
+//   • CODA_TRACK ("Mistake the Getaway") — the double-or-nothing theme (codaHand).
+//   • BUST_TRACK (piano/violin/viola trio) — the sting for LOSING the coda (codaBust).
+//   • CASHOUT_TRACK ("Enigma") — the sting for CASHING OUT of the coda (codaCashOut).
+const CODA_TRACK: TrackName = 'getaway'
+const BUST_TRACK: TrackName = 'bust'
+const CASHOUT_TRACK: TrackName = 'cashout'
+// End stings: play exactly ONCE and then the soundtrack goes silent until a new run.
+const END_TRACKS: TrackName[] = [BUST_TRACK, CASHOUT_TRACK]
+const ROTATION_TRACKS = ALL_TRACKS.filter(
+  (name) => name !== CODA_TRACK && name !== BUST_TRACK && name !== CASHOUT_TRACK,
+)
+// Coda transitions are FAST — a slow fade would mush the sharp attacks. Whatever's playing
+// ducks out over CODA_FADE_OUT_MS; the coda THEME itself hard-starts (fadeIn 0) so its opening
+// bang lands at full volume every deal, while the end stings fade in over CODA_FADE_IN_MS.
+// (prefetchCoda decodes the buffers ahead of time, so there's no download gap behind the fade.)
+const CODA_FADE_OUT_MS = 140
+const CODA_FADE_IN_MS = 60
 // "The Cannery" always plays first.
 const OPENING_TRACK: TrackName = 'cannery'
 
@@ -59,6 +90,14 @@ class MusicService {
   private queued: TrackName | null = null
   private started = false
   private volume = 1
+
+  // --- Banker-coda (double-or-nothing) theme ---
+  // True while the run is inside an active coda hand: "Mistake the Getaway" is the theme, and
+  // if it runs to its natural end within one drawn-out hand it hands off to a rotation track.
+  private codaActive = false
+  // True from a coda END sting (bust or cash out) until the next run: the sting plays once
+  // and then the soundtrack goes SILENT (no auto-advance). resumeAfterEnd() clears it.
+  private endSilence = false
 
   // Begin the soundtrack: "The Cannery" first, then random non-repeating tracks
   // forever. Idempotent — after the first call it just makes sure the context is
@@ -118,10 +157,102 @@ class MusicService {
     void this.playTrack(next, fadeMs)
   }
 
+  // A double-or-nothing round has begun — call once per coda hand (each codaGamble). (Re)starts
+  // the coda theme ("Mistake the Getaway") from the beginning, EVERY hand, so its opening bang
+  // lands on each deal. This is the ONLY place the coda track is ever started — it never joins
+  // the normal rotation.
+  codaHand(): void {
+    const ctx = this.context()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    this.started = true
+    this.codaActive = true
+    // Restart the theme from the BEGINNING on every deal — its opening BANG should land each
+    // hand, so a prior round's playback never runs on. Whatever's up (a prior getaway, or the
+    // coda-entry silence) ducks out fast while the theme HARD-starts at full volume (fadeIn 0)
+    // so the bang isn't softened. prefetchCoda has the buffer decoded, so no download gap.
+    const outgoing = this.current
+    this.current = null
+    this.queued = null
+    if (outgoing) {
+      this.fadeOutAndStop(outgoing, CODA_FADE_OUT_MS)
+    }
+    void this.playTrack(CODA_TRACK, 0)
+  }
+
+  // Warm the coda buffers ahead of time (call at coda entry) so the quick fades of
+  // codaHand()/codaBust()/codaCashOut() have decoded buffers ready and expose no download gap.
+  // Download only — none starts playback (that stays exclusive to their triggers).
+  prefetchCoda(): void {
+    void this.getBuffer(CODA_TRACK).catch(() => {})
+    void this.getBuffer(BUST_TRACK).catch(() => {})
+    void this.getBuffer(CASHOUT_TRACK).catch(() => {})
+  }
+
+  // Dealer 6 has been defeated (the winning hand is revealed): fade the fight music out to
+  // SILENCE and hold there. Nothing plays through the Banker's walk-in / the prompt — the
+  // soundtrack only resumes when the player chooses double-or-nothing (codaHand → the coda
+  // theme) or cash out (codaCashOut → the cash-out sting).
+  enterCodaSilence(fadeMs = 1500): void {
+    this.codaActive = false
+    this.endSilence = false
+    const outgoing = this.current
+    this.current = null
+    this.queued = null
+    if (outgoing) {
+      this.fadeOutAndStop(outgoing, fadeMs)
+    }
+  }
+
+  // The player BUSTED out of the coda (lost the double-or-nothing, score zeroed): play the
+  // bust sting once, then silence until a new run.
+  codaBust(): void {
+    this.playEndSting(BUST_TRACK)
+  }
+
+  // The player CASHED OUT of the coda (banked the score, run ended): play the cash-out sting
+  // once, then silence until a new run.
+  codaCashOut(): void {
+    this.playEndSting(CASHOUT_TRACK)
+  }
+
+  // Snap whatever's playing out and play a one-shot END sting; when it finishes advance() sees
+  // an END_TRACK and goes SILENT (endSilence held) until resumeAfterEnd() on the next run.
+  private playEndSting(track: TrackName): void {
+    const ctx = this.context()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    this.started = true
+    this.codaActive = false
+    this.endSilence = true
+    const outgoing = this.current
+    this.current = null
+    if (outgoing) {
+      this.fadeOutAndStop(outgoing, CODA_FADE_OUT_MS)
+    }
+    this.queued = null
+    void this.playTrack(track, outgoing ? CODA_FADE_IN_MS : 0)
+  }
+
+  // A fresh run started after a coda end sting: fade the sting out (or break its trailing
+  // silence) and bring a normal dealer track back in. No-op unless we're in the post-end
+  // silence, so an ordinary game-over → new run keeps whatever's already playing.
+  resumeAfterEnd(): void {
+    if (!this.endSilence) {
+      return
+    }
+    this.endSilence = false
+    this.advanceTrack()
+  }
+
   // Stop the soundtrack. start() can begin it again from "The Cannery".
   stop(): void {
     this.started = false
     this.queued = null
+    this.codaActive = false
+    this.endSilence = false
     this.stopCurrent()
   }
 
@@ -173,14 +304,31 @@ class MusicService {
     if (!this.started) {
       return
     }
+    // An END sting (bust / cash out) plays exactly ONCE — when it ends the soundtrack falls
+    // silent (no auto-advance) until a new run calls resumeAfterEnd().
+    if (END_TRACKS.includes(justEnded)) {
+      this.stopCurrent()
+      return
+    }
+    // The coda theme ran to its natural end INSIDE a single drawn-out hand (the theme restarts
+    // on every deal, so it only ends naturally when one hand/prompt outlasts it, ~64.5s) — hand
+    // off to a different rotation track rather than restarting its bang on a hand the player is
+    // still sitting on. The next deal restarts the theme via codaHand().
+    if (justEnded === CODA_TRACK && this.codaActive) {
+      const next = this.queued ?? this.pickNext(CODA_TRACK)
+      this.queued = null
+      void this.playTrack(next)
+      return
+    }
     const next = this.queued ?? this.pickNext(justEnded)
     this.queued = null
     void this.playTrack(next)
   }
 
-  // A random track other than the one just played (no immediate repeats).
+  // A random rotation track other than the one just played (no immediate repeats). The
+  // coda theme is never in the pool, so this can never surface it outside the coda.
   private pickNext(justPlayed: TrackName): TrackName {
-    const options = ALL_TRACKS.filter((name) => name !== justPlayed)
+    const options = ROTATION_TRACKS.filter((name) => name !== justPlayed)
     return options[Math.floor(Math.random() * options.length)]
   }
 

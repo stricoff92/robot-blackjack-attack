@@ -42,7 +42,8 @@ import {
   type RunState,
 } from './run'
 import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
-import { submitScore } from './leaderboard'
+import { recordRun } from './leaderboard'
+import { clearRun, saveRun } from './persistence'
 
 export const SHOE_DECKS = 6
 
@@ -68,6 +69,8 @@ export interface SessionOptions {
   startUpgrades?: RunUpgrades | null
   /** Dev switch: force the dealer's opening two cards to be a natural 21 every deal. */
   forceDealerNatural?: boolean
+  /** Dev switch: force the player's opening two cards to be a natural 21 every deal. */
+  forcePlayerNatural?: boolean
 }
 
 export interface SessionState {
@@ -84,6 +87,9 @@ export interface SessionState {
   lastHitRisk: number | null
   /** Coda only: a pushed double-or-nothing hand asks the UI to auto-re-deal (no re-prompt). */
   codaRedeal: boolean
+  /** Set at game-over when the run's final score beat the stored personal best (drives the
+   *  score screen's "NEW BEST" flair). False during play and on any non-record ending. */
+  newPersonalBest: boolean
 }
 
 // Decorrelates the Analyze simulator's RNG from the deal RNG, so running odds
@@ -120,6 +126,9 @@ export class Session {
   // Coda only: a pushed double-or-nothing hand flags the UI to auto-re-deal. Resets on each
   // coda deal (and on restart).
   private codaRedeal = false
+  // Set at game-over (enterOver) when the final score set a new personal best. Read by the score
+  // screen; reset on restart.
+  private newPersonalBest = false
   // Set when a kill just advanced the dealer (and the run isn't won): the next
   // hand is gated on a choose-upgrade pick.
   private upgradePending = false
@@ -131,6 +140,7 @@ export class Session {
   private readonly startDealer: number | null
   private readonly startUpgrades: RunUpgrades | null
   private readonly forceDealerNatural: boolean
+  private readonly forcePlayerNatural: boolean
 
   constructor(seed: number, options: SessionOptions = {}) {
     this.nextRandom = createRng(seed)
@@ -144,6 +154,7 @@ export class Session {
     this.startDealer = options.startDealer ?? null
     this.startUpgrades = options.startUpgrades ?? null
     this.forceDealerNatural = options.forceDealerNatural ?? false
+    this.forcePlayerNatural = options.forcePlayerNatural ?? false
     this.run = this.freshRun(seed)
   }
 
@@ -189,6 +200,7 @@ export class Session {
       abilitiesLocked: abilitiesLocked(this.run),
       lastHitRisk: this.lastHitRisk,
       codaRedeal: this.codaRedeal,
+      newPersonalBest: this.newPersonalBest,
     }
   }
 
@@ -200,6 +212,11 @@ export class Session {
     const shoe = this.shuffleShoe()
     if (this.forcePairs) {
       forcePlayerPair(shoe, this.forcePairRank)
+    }
+    // Player natural runs after forcePairs (so it wins if both are set) and before the dealer
+    // natural (which then re-seats the dealer's cards from deeper in the shoe).
+    if (this.forcePlayerNatural) {
+      forcePlayerNaturalCards(shoe)
     }
     if (this.forceDealerNatural) {
       forceDealerNaturalCards(shoe)
@@ -234,10 +251,15 @@ export class Session {
   //     natural either (shoe[0]+shoe[1]). This is NOT a debuff: it dodges a UI/UX corner case
   //     in the opening deal (an instant blackjack resolving before the player has acted). After
   //     that first hand the player keeps any natural (with its 3:2 payout) — an early-game buff.
+  //   • Coda dealer natural — when `guardDealerNatural` is set (the Banker's double-or-nothing
+  //     hands), any shoe dealing the DEALER a natural 21 (shoe[2]+shoe[3]) is rejected. The coda
+  //     stakes the whole score with no powerups/sabotage, so an instant Banker blackjack would
+  //     zero the run with zero player agency — we never let it happen. The player may still open
+  //     on a natural (an instant coda win).
   // Reshuffling only advances the deal RNG, so the run stays fully deterministic for its seed,
   // and can't loop forever (the shoe always has compliant openings). Runs before the dev
   // switches so forceDealerNatural still wins.
-  private shuffleShoe(): Card[] {
+  private shuffleShoe(guardDealerNatural = false): Card[] {
     const upcardReshuffleChance = dealerUpcardReshuffleChance(this.run.shiftIndex)
     const guardPlayerNatural = this.run.shiftIndex === 1 && this.run.handsThisDealer === 0
     // Whether to reject this shoe for its dealer up-card. Only 10/11-value up-cards are ever
@@ -251,7 +273,11 @@ export class Session {
       return this.nextRandom() < upcardReshuffleChance
     }
     let shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
-    while (rejectUpcard(shoe) || (guardPlayerNatural && isBlackjack([shoe[0], shoe[1]]))) {
+    while (
+      rejectUpcard(shoe) ||
+      (guardPlayerNatural && isBlackjack([shoe[0], shoe[1]])) ||
+      (guardDealerNatural && isBlackjack([shoe[2], shoe[3]]))
+    ) {
       shoe = shuffle(createShoe(SHOE_DECKS), this.nextRandom)
     }
     return shoe
@@ -390,7 +416,9 @@ export class Session {
     }
     this.analysis = null
     this.codaRedeal = false
-    this.round = startRound(this.shuffleShoe(), 0, CODA_RULES)
+    // guardDealerNatural: the Banker must never open on a natural 21 (it would zero the whole
+    // score instantly, with no player move and no coda sabotage to catch it).
+    this.round = startRound(this.shuffleShoe(true), 0, CODA_RULES)
   }
 
   codaHit(): void {
@@ -498,6 +526,24 @@ export class Session {
     }
     this.run = applyUpgrade(this.run, path)
     this.phase = 'betting'
+    // The upgrade mutated the run (new roguelite tier) — re-checkpoint so a resume keeps it.
+    saveRun(this.run)
+  }
+
+  // Resume a saved in-progress run (the title "Continue"). Adopts the restored RunState and
+  // reopens at the betting screen; the RNGs keep the fresh seed from construction (a resumed run
+  // gets an unpredictable next shoe — no save-scumming the deal). The saved run is never over or
+  // in the coda (persistence.loadRun rejects those), so betting is always the right phase.
+  adoptRun(run: RunState): void {
+    this.run = run
+    this.round = null
+    this.peeked = false
+    this.analysis = null
+    this.lastHitRisk = null
+    this.codaRedeal = false
+    this.newPersonalBest = false
+    this.upgradePending = false
+    this.phase = 'betting'
   }
 
   restart(): void {
@@ -511,6 +557,7 @@ export class Session {
     this.analysis = null
     this.lastHitRisk = null
     this.codaRedeal = false
+    this.newPersonalBest = false
     this.upgradePending = false
     this.phase = 'betting'
   }
@@ -542,22 +589,28 @@ export class Session {
     if (this.run.over) {
       this.enterOver() // a chip bust-out — funnel through the single submit seam
     } else if (this.run.coda) {
-      this.phase = 'coda' // the 6th dealer fell → the Banker coda begins
+      this.phase = 'coda' // the 6th dealer fell → the Banker coda begins (not persisted)
     } else {
       this.phase = 'resolved'
+      // Checkpoint the finished hand so a mid-run quit resumes here (the in-progress next hand
+      // isn't saved, so quitting mid-hand rewinds to this stable between-hands state).
+      saveRun(this.run)
     }
   }
 
-  // The single game-end choke point: mark the run over, surface the score screen, and submit
-  // the final score to the leaderboard exactly once. Every ending funnels here — a chip
-  // bust-out (settle), a coda bust, and a coda cash-out — so the SDK hook lives in one place.
-  // The score is submitted as-is: 0 on a coda bust (you gamble the whole score, record too).
+  // The single game-end choke point: mark the run over, surface the score screen, and record the
+  // final score exactly once. Every ending funnels here — a chip bust-out (settle), a coda bust,
+  // and a coda cash-out — so the leaderboard/personal-best hook lives in one place. recordRun
+  // submits the score to CrazyGames AND folds it into the local personal best, reporting back
+  // whether it set a new record. The score is recorded as-is: 0 on a coda bust (you gamble the
+  // whole score, record included), which can never become a new best.
   private enterOver(): void {
     if (!this.run.over) {
       this.run = { ...this.run, over: true }
     }
     this.phase = 'over'
-    submitScore(this.run.score)
+    this.newPersonalBest = recordRun(this.run.score).isNewBest
+    clearRun() // nuke the in-progress save — a finished run must never resume
   }
 
   // A powerup's live cost — its base price inflated by the run's token inflation.
@@ -617,6 +670,32 @@ function forcePlayerPair(shoe: Card[], rank: Rank | null): void {
   for (let i = 2; i < shoe.length; i++) {
     if (shoe[i].rank === shoe[0].rank) {
       swap(shoe, 1, i)
+      return
+    }
+  }
+}
+
+// Dev aid: reorder the shoe so the player's opening two cards (shoe[0], shoe[1]) make a natural
+// 21 — one Ace and one ten-value card. Pulls them from deeper in the shoe (index 2+), leaving the
+// rest as dealt; runs before forceDealerNaturalCards (which re-seats shoe[2..3] from index 4+), so
+// the two compose. A 6-deck shoe always has both to spare.
+function forcePlayerNaturalCards(shoe: Card[]): void {
+  if (isBlackjack([shoe[0], shoe[1]])) {
+    return // already a natural
+  }
+  seatPlayerCard(shoe, 0, (card) => card.rank === 'A')
+  seatPlayerCard(shoe, 1, (card) => cardValue(card) === 10)
+}
+
+// Swap a card matching `pred` into player slot `pos` from deeper in the shoe (past the two dealt
+// player cards), unless the slot already satisfies it.
+function seatPlayerCard(shoe: Card[], pos: number, pred: (card: Card) => boolean): void {
+  if (pred(shoe[pos])) {
+    return
+  }
+  for (let i = 2; i < shoe.length; i++) {
+    if (pred(shoe[i])) {
+      swap(shoe, pos, i)
       return
     }
   }

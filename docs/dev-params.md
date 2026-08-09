@@ -33,6 +33,7 @@ server is `5173`.)
 | `chipUpgrade=<t>` | `0`–`3` | Start with the **Payout** (chip) path unlocked through tier `t`. |
 | `tokenUpgrades=<t>` | `0`–`3` | Start with the **Tokens** path unlocked through tier `t`. |
 | `dealerBlackjack` | *(flag)* | The dealer draws a natural 21 (Ace + ten-value) **every** hand. |
+| `playerBlackjack` | *(flag)* | The player is dealt a natural 21 (Ace + ten-value) **every** hand (test the blackjack payout / win). |
 
 Invalid or out-of-range values are ignored (the param falls back to off). Numeric
 params are clamped to their stated range; `dealer` also caps at the roster size.
@@ -78,4 +79,6 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 ?chipUpgrade=3&tokenUpgrades=2         # maxed Payout + Tokens through tier 2
 ?sabotageUpgrade=3&dealer=5            # maxed Sabotage, starting at dealer 5
 ?dealerBlackjack&sabotageUpgrade=1     # watch the refund animation on repeat
+?playerBlackjack&chipUpgrade=1         # see the blackjack payout every hand (2:1 with Payout T1)
+?playerBlackjack&dealerBlackjack       # both naturals → a push every hand
 ```

@@ -7,6 +7,11 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Robot Blackjack Attack</title>
+    <!-- CrazyGames SDK v3 (ads, gameplay events, leaderboard submit, iframe-safe storage). Loaded
+         from their CDN — not npm — and exposed as window.CrazyGames.SDK. It is absent off-platform
+         (and may fail to load if blocked); the game degrades gracefully, see
+         src/platform/crazygames.ts. Classic script in <head> so it runs before the deferred module. -->
+    <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
     <style>
       html,
       body {

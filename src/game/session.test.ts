@@ -1,16 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { cardValue, isBlackjack } from './hand'
-import { submitScore } from './leaderboard'
+import { recordRun } from './leaderboard'
 import { bustChanceOnHit } from './odds'
+import { clearRun, saveRun } from './persistence'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
-import { comboGain, getShift, hitTokens, powerupCost } from './run'
+import { comboGain, getShift, hitTokens, powerupCost, startRun } from './run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session } from './session'
 
-// The submit seam is a no-op stub until the SDK lands; mock it so the coda tests can observe
-// that each game-end funnels the final score through it.
-vi.mock('./leaderboard', () => ({ submitScore: vi.fn() }))
+// recordRun submits to CrazyGames + updates the personal best (real storage/SDK); mock it so the
+// coda tests can observe that each game-end funnels the final score through the single seam
+// without touching localStorage or the SDK. Returns a non-record result by default.
+vi.mock('./leaderboard', () => ({ recordRun: vi.fn(() => ({ previousBest: 0, isNewBest: false })) }))
+
+// Persistence writes to real storage (SDK.data/localStorage); mock it so tests can observe the
+// save/clear checkpoints without touching storage. loadRun returns null (no saved run) by default.
+vi.mock('./persistence', () => ({ saveRun: vi.fn(), clearRun: vi.fn(), loadRun: vi.fn(() => null) }))
 
 describe('Session', () => {
   it('opens in the betting phase with the starting bankroll', () => {
@@ -33,6 +39,45 @@ describe('Session', () => {
 
     expect(['resolved', 'over']).toContain(session.snapshot().phase)
     expect(session.snapshot().run.handsPlayed).toBe(1)
+  })
+
+  it('checkpoints the run after a resolved hand and clears it at game-over', () => {
+    const save = vi.mocked(saveRun)
+    const clear = vi.mocked(clearRun)
+    const session = new Session(12345)
+    save.mockClear()
+    clear.mockClear()
+
+    session.deal()
+    while (session.snapshot().phase === 'playing') {
+      session.stand()
+    }
+
+    const snap = session.snapshot()
+    if (snap.phase === 'resolved') {
+      // A between-hands checkpoint captured the finished hand's run.
+      expect(save).toHaveBeenCalled()
+      const lastRun = save.mock.calls[save.mock.calls.length - 1][0]
+      expect(lastRun.handsPlayed).toBe(1)
+    } else {
+      // A bankrupt bust-out funnels through enterOver, which nukes the save.
+      expect(clear).toHaveBeenCalled()
+    }
+  })
+
+  it('adoptRun resumes a saved run at the betting phase', () => {
+    const session = new Session(1)
+    const saved = { ...startRun(999), chips: 555, score: 4200, tokens: 40, shiftIndex: 3, integrity: 80, kills: [1, 2] }
+
+    session.adoptRun(saved)
+
+    const snap = session.snapshot()
+    expect(snap.phase).toBe('betting')
+    expect(snap.round).toBeNull()
+    expect(snap.run.chips).toBe(555)
+    expect(snap.run.score).toBe(4200)
+    expect(snap.run.shiftIndex).toBe(3)
+    expect(snap.run.kills).toEqual([1, 2])
   })
 
   it('credits risk-scaled tokens when a hit keeps the hand alive', () => {
@@ -244,6 +289,43 @@ describe('Session', () => {
       if (snap.phase === 'playing') {
         expect(canSplit(snap.round!)).toBe(true)
       }
+    })
+  })
+
+  describe('forcePlayerNatural (dev switch)', () => {
+    it('deals the player a natural 21 on every seed', () => {
+      for (const seed of [1, 2, 3, 12345, 99999]) {
+        const session = new Session(seed, { forcePlayerNatural: true })
+        session.deal()
+        // The natural auto-resolves at the deal, so read hand 0's opening two cards from the
+        // resolved round (blackjack outcome) or the live one.
+        const hand = session.snapshot().round!.hands[0]
+        expect(isBlackjack(hand.cards.slice(0, 2))).toBe(true)
+      }
+    })
+
+    it('resolves the opening hand as a player blackjack (dealer natural is guarded off)', () => {
+      const session = new Session(12345, { forcePlayerNatural: true })
+      session.deal()
+      const snap = session.snapshot()
+      // A player natural with no dealer natural resolves instantly as a blackjack win.
+      expect(snap.round!.hands[0].outcome).toBe('blackjack')
+    })
+
+    it('leaves the deal untouched when off', () => {
+      const rigged = new Session(2024, { forcePlayerNatural: false })
+      const plain = new Session(2024)
+      rigged.deal()
+      plain.deal()
+      expect(rigged.snapshot().round!.hands[0].cards).toEqual(plain.snapshot().round!.hands[0].cards)
+    })
+
+    it('composes with forceDealerNatural — both draw naturals (a push)', () => {
+      const session = new Session(777, { forcePlayerNatural: true, forceDealerNatural: true })
+      session.deal()
+      const snap = session.snapshot()
+      expect(isBlackjack(snap.round!.hands[0].cards.slice(0, 2))).toBe(true)
+      expect(isBlackjack(snap.round!.dealer.slice(0, 2))).toBe(true)
     })
   })
 
@@ -643,8 +725,36 @@ describe('Session Banker coda', () => {
     expect(prompt.run.score).toBe(score) // dismissing the killing hand does NOT double it
   })
 
+  it('never deals the Banker a natural 21, across many double-or-nothing hands', () => {
+    // The coda stakes the WHOLE score with no move to make and no sabotage upgrades in play,
+    // so a dealt Banker natural would zero the run instantly — guardDealerNatural must never
+    // let it happen. Unguarded, ~4.8% of deals are a two-card natural, so across this many coda
+    // hands a leak would surface dozens of times over. The PLAYER may still open on a natural.
+    let deals = 0
+    for (let seed = 1; seed < 2000 && deals < 500; seed += 1) {
+      const session = codaPrompt(seed)
+      if (!session) continue
+      // Ride double-or-nothing for this whole run (win re-prompts, push re-deals, loss ends it),
+      // checking the Banker's opening two cards on every deal.
+      for (let guard = 0; guard < 40 && session.snapshot().phase === 'coda'; guard += 1) {
+        const round = session.snapshot().round
+        if (!round) {
+          session.codaGamble()
+          const dealt = session.snapshot().round
+          if (!dealt) break
+          expect(isBlackjack(dealt.dealer.slice(0, 2))).toBe(false)
+          deals += 1
+          continue
+        }
+        if (round.status === 'player-turn') { session.codaStand(); continue }
+        session.codaResolveNext() // resolved → double a win / re-deal a push / end on a loss
+      }
+    }
+    expect(deals).toBeGreaterThan(100) // actually sampled a large batch of Banker deals
+  })
+
   it('cashes out — banks the score, ends the run, and submits it once', () => {
-    const submit = vi.mocked(submitScore)
+    const submit = vi.mocked(recordRun)
     const session = firstPrompt()
     const score = session.snapshot().run.score
     submit.mockClear() // discard any submits from busted setup seeds
@@ -661,7 +771,7 @@ describe('Session Banker coda', () => {
   })
 
   it('resolves every coda outcome — win doubles, loss zeroes + submits 0, push re-deals', () => {
-    const submit = vi.mocked(submitScore)
+    const submit = vi.mocked(recordRun)
     let sawWin = false
     let sawLoss = false
     let sawPush = false

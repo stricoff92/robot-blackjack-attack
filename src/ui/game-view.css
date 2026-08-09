@@ -762,6 +762,63 @@ button.is-hidden,
   -webkit-tap-highlight-color: transparent;
 }
 
+/* The Continue / New game title menu (only when a saved run exists). Sits in the bottom strip —
+ * between the bottom of the screen and the player's bet circle (the same ~96px reserve the action
+ * buttons use) — as a centred horizontal row; the wordmark still projects above. Same z-index as
+ * the tap catcher (above the canvas + hidden HUD). */
+.title-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26px;
+  z-index: 20;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch; /* both buttons take the taller one's height (Continue has a subtitle) */
+  justify-content: center;
+  gap: 12px;
+  padding: 0 12px;
+  -webkit-tap-highlight-color: transparent;
+}
+.title-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center; /* centre the label(s) within the shared height */
+  font: 700 16px system-ui, -apple-system, sans-serif;
+  color: #2f2013;
+  background: linear-gradient(#dab55e, #c9a24b);
+  border: none;
+  border-radius: 12px;
+  padding: 8px 22px;
+  min-width: 120px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #8a6b32, 0 4px 8px rgba(0, 0, 0, 0.4);
+  transition: transform 0.05s ease, background 0.15s ease;
+}
+.title-menu button:hover {
+  background: linear-gradient(#e6c473, #d4ad57);
+}
+.title-menu button:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+.title-menu .title-sub {
+  display: block;
+  font: 600 11px system-ui, -apple-system, sans-serif;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+/* New game is the quieter, secondary choice. */
+.title-menu .title-btn-new {
+  color: #d7d2ea;
+  background: linear-gradient(#3a3550, #2c2942);
+  box-shadow: 0 3px 0 #1c1930, 0 4px 8px rgba(0, 0, 0, 0.4);
+}
+.title-menu .title-btn-new:hover {
+  background: linear-gradient(#464060, #35314e);
+}
+
 /* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action
  * buttons, info button) is hidden — only the table + the nexus's projected "TAP TO START" show.
  * It fades in on the tap. */

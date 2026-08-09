@@ -9,33 +9,18 @@
 import { drawHoloText, holoFlicker, playerCardBox, type HoloTextStyle } from './cards'
 import { nexusHoloLight, type HoloRayTarget } from './nexus'
 import { feltTopEdgeY, type Layout } from './scene'
-import { TITLE_FONT_FAMILY, titleFontReady } from './title-font'
+import { boldSystemFont, measureTitleWidest, titleFont, TITLE_LINES, TITLE_RED } from './title-font'
 
 // How long the projection takes to flicker + scale fully in.
 const TAP_STRIKE_MS = 520
 
 const CYAN: HoloTextStyle = { glow: 'rgba(130, 240, 236, 0.95)', bloom: 'rgba(150, 246, 242, 0.55)', core: 'rgba(214, 253, 251, 0.9)' }
 
-// The game name, one word per projected line.
-const TITLE_LINES = ['ROBOT', 'BLACKJACK', 'ATTACK']
-const TITLE_RED = 'rgba(226, 26, 26, 0.95)' // the red cast behind the black letters
-
-function boldFont(px: number, weight = 800): string {
-  return `${weight} ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`
-}
-
-// The title's own face: the Sixtyfour display font once it has loaded, else the bold system
-// fallback so the layout still measures + draws while the .ttf is in flight. Normal weight — the
-// font ships a single Regular master, and synthetic bolding smears its retro glyphs.
-function titleFont(px: number): string {
-  return titleFontReady() ? `${px}px "${TITLE_FONT_FAMILY}"` : boldFont(px, 900)
-}
-
 // Draw the opening projection — the ROBOT / BLACKJACK / ATTACK title near the top of the felt
 // above a "TAP TO START" line — and RETURN their boxes (ray-targets). `age` = ms since it
 // appeared (strike-in), `fade` winds it out on the tap (1 → 0), `now` positions the shared holo
 // flicker + the breathing pulse.
-export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: number, fade: number, now: number): HoloRayTarget[] {
+export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: number, fade: number, now: number, showPrompt = true): HoloRayTarget[] {
   const cx = l.width / 2
   const scale = Math.min(l.width, l.height)
 
@@ -50,12 +35,12 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
   // the same face it will draw in (the pixel font is far wider per glyph) so the fit is honest.
   let titlePx = clamp(scale * 0.068, compact ? 26 : 34, 82)
   ctx.font = titleFont(titlePx)
-  let widest = measureWidest(ctx)
+  let widest = measureTitleWidest(ctx)
   const maxW = l.width * (compact ? 0.7 : 0.86)
   if (widest > maxW) {
     titlePx = Math.max(24, (titlePx * maxW) / widest)
     ctx.font = titleFont(titlePx)
-    widest = measureWidest(ctx)
+    widest = measureTitleWidest(ctx)
   }
   const titleLineH = titlePx * 1.02
 
@@ -128,29 +113,29 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
   }
 
   // --- Tap line: cyan holo, centred under the title block (drawHoloText applies its own
-  // flicker on top of the alpha). ---
-  ctx.textAlign = 'center'
-  ctx.globalAlpha = presence
-  ctx.font = boldFont(tapPx)
-  const tapW = ctx.measureText('TAP TO START').width
-  drawHoloText(ctx, 'TAP TO START', titleCenterX, tapY, tapPx, CYAN, now)
+  // flicker on top of the alpha). Suppressed when the Continue / New game menu is showing — the
+  // HTML buttons stand in for the prompt, but the wordmark above still projects. ---
+  let tapW = 0
+  if (showPrompt) {
+    ctx.textAlign = 'center'
+    ctx.globalAlpha = presence
+    ctx.font = boldSystemFont(tapPx)
+    tapW = ctx.measureText('TAP TO START').width
+    drawHoloText(ctx, 'TAP TO START', titleCenterX, tapY, tapPx, CYAN, now)
+  }
   ctx.restore()
 
-  // Ray-targets: title block + the tap line (centred under it), each sized to 1/1.5 of its fan
-  // reach so the 25% pad in drawHoloRays lands the lit fan just past the letters, not to the side.
-  const tapRayHalfW = (tapW / 2 + tapPx * 0.2) / 1.5
-  return [
+  // Ray-targets: the title block always, plus the tap line (centred under it) when shown, each
+  // sized to 1/1.5 of its fan reach so the 25% pad in drawHoloRays lands the lit fan just past the
+  // letters, not to the side.
+  const targets: HoloRayTarget[] = [
     { left: titleCenterX - titleRayHalfW, right: titleCenterX + titleRayHalfW, top: titleTop, bottom: titleBottom },
-    { left: titleCenterX - tapRayHalfW, right: titleCenterX + tapRayHalfW, top: tapY - tapPx * 0.85, bottom: tapY + tapPx * 0.85 },
   ]
-}
-
-function measureWidest(ctx: CanvasRenderingContext2D): number {
-  let widest = 0
-  for (const line of TITLE_LINES) {
-    widest = Math.max(widest, ctx.measureText(line).width)
+  if (showPrompt) {
+    const tapRayHalfW = (tapW / 2 + tapPx * 0.2) / 1.5
+    targets.push({ left: titleCenterX - tapRayHalfW, right: titleCenterX + tapRayHalfW, top: tapY - tapPx * 0.85, bottom: tapY + tapPx * 0.85 })
   }
-  return widest
+  return targets
 }
 
 function clamp(value: number, min: number, max: number): number {

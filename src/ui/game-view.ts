@@ -6,8 +6,10 @@ import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
-import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
+import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS, type RunState } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
+import { getPersonalBest } from '../game/leaderboard'
+import { clearRun, loadRun } from '../game/persistence'
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
@@ -20,7 +22,7 @@ import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } fro
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
-import { drawScoreSheet, type ScoreReadout } from '../render/score-sheet'
+import { drawScoreSheet, drawScoreTitle, type ScoreReadout } from '../render/score-sheet'
 import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
 import { drawCodaStake } from '../render/coda-stake'
 import { drawTapToStart } from '../render/tap-to-start'
@@ -123,10 +125,13 @@ const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
 // the beat a resolved double-or-nothing hand holds (so its result reads) before it doubles/ends.
 const CODA_ENTRY_HOLD = 500
 const CODA_RESULT_HOLD = 900
+// A push auto-re-deals with NO prompt, so its resolved hand needn't linger as long as a win
+// (re-prompt) or loss (game-over) before the board clears — half the result beat.
+const CODA_PUSH_HOLD = 450
 // Extra beat when a coda hand resolves ON THE DEAL (a natural blackjack — auto-resolved, no
-// hit/stand prompt): hold the cards on the felt this much longer before pulling them back, so
-// the player can register the instant blackjack/outcome.
-const CODA_NATURAL_HOLD = 2500
+// hit/stand prompt): hold the cards on the felt this much longer before the auto-collection so
+// the player can register the instant blackjack. (Halved from 2500 — the old hold ran too long.)
+const CODA_NATURAL_HOLD = 1250
 // Beat after the boss is fully gone before the Banker strides in (a clear pause).
 const CODA_WALKIN_DELAY = 500
 // How long the player's chip stack takes to fade out once the last dealer dies (the coda).
@@ -200,7 +205,8 @@ export function mountGameView(root: HTMLElement): void {
 
 class GameView {
   private readonly session: Session
-  private state: SessionState
+  // Assigned in the constructor via seedVisualsFromState() (before any use).
+  private state!: SessionState
   // The payout is deferred: `run.chips` updates the instant the round settles,
   // but the chips don't move until the next hand is called. While a payout is
   // pending, the bankroll shows the frozen pre-settle value (`heldChips`) and is
@@ -355,6 +361,9 @@ class GameView {
   private codaShredEndAt = 0
   // When the chips start fading out (the last dealer just died — no bets in the coda).
   private codaChipsFadeAt = 0
+  // When to fade the fight music out to silence at coda entry: the moment the dealer-6 winning
+  // hand is revealed (its cards settle). Silence then holds until the player picks a coda action.
+  private codaMusicFadeAt = 0
   // The Banker's congratulation shown at the prompt after a coda win (null = the plain prompt).
   private codaCongrats: string | null = null
   // Every projected-number box actually drawn this frame (counts, chip amounts, analysis
@@ -389,6 +398,12 @@ class GameView {
   // Edge tracker: play the win/loss sting once, the frame the resolved hand's
   // cards settle and the result is revealed. Reset when the round leaves resolved/over.
   private resultRevealed = false
+  // A natural blackjack dealt straight off the deal auto-resolves before the player ever acts,
+  // so the round is 'resolved' the instant the cards start flying in. Latched at that deal (in
+  // run()) so `dealRevealPending()` can keep the play buttons up over the reveal instead of
+  // flashing the Next-hand button early and spoiling the instant blackjack. Any later action
+  // (which is never 'betting' → 'resolved') clears it.
+  private dealNatural = false
   // A dealer-spawn ceremony's incoming deck colour, committed to `deckColorShift`
   // (and handed back to the static table) once the new wrapped deck lands + unwraps.
   private spawnIncomingShift: number | null = null
@@ -420,6 +435,14 @@ class GameView {
   // for the whole beat so a second tap can't slip through to the (still-hidden) HUD.
   private tapAt = 0
   private introCatcher: HTMLElement | null = null
+  // A saved in-progress run to offer on the title screen (else null — normal tap-to-start). Set at
+  // construction from persistence.loadRun(); consumed/cleared by beginFromTitle.
+  private resumableRun: RunState | null = null
+  // The Continue / New game title menu element (when a resumable run exists), else null.
+  private titleMenu: HTMLElement | null = null
+  // True once the title menu has been shown, so the nexus "TAP TO START" prompt stays suppressed
+  // (the wordmark still projects) — the HTML buttons are the prompt. Never reset.
+  private titleMenuMode = false
   // False until the FIRST bet flies from the chip stack to the bet spot (the first deal): the
   // bankroll count stays off (just the decorative pile) until then, then turns on for good.
   private betFlown = false
@@ -480,22 +503,19 @@ class GameView {
       startDealer: debug.startDealer,
       startUpgrades,
       forceDealerNatural: debug.dealerBlackjack,
+      forcePlayerNatural: debug.playerBlackjack,
     })
-    this.state = this.session.snapshot()
-    // Show the opening balances immediately (no roll up from zero on load).
-    this.tokenTicker.set(this.displayedTokens(now()))
-    this.bankrollTicker.set(this.displayedBankroll())
-    this.scoreTicker.set(this.displayedScore())
-    // Seed the dealer to the opening integrity so a dealer that starts partway damaged
-    // (the dealerHealth dev override) shows the right eye flicker + damage sparks from the
-    // first frame — the first deal doesn't sync it (no damage yet).
-    this.dealer.setLevel(this.state.run.integrity, this.state.run.shiftIndex)
-    // Seed the dealer's colour identity + the deck colour to the opening dealer (which
-    // may be a later one via the `dealer` dev override), so the bowtie and card backs
-    // wear that dealer's colour from the first paint.
-    this.deckColorShift = this.state.run.shiftIndex
-    this.dealer.setShift(this.state.run.shiftIndex)
-    setCardBack(dealerColors(this.deckColorShift, now()).back)
+    // Offer to resume a saved in-progress run — unless a dev override seeds a specific run (then
+    // always start fresh). buildIntroScreen shows CONTINUE / NEW GAME when this is set.
+    const hasRunOverride =
+      startUpgrades !== null ||
+      debug.startDealer !== null ||
+      debug.startChips !== null ||
+      debug.startTokens !== null ||
+      debug.dealerHealth !== null
+    this.resumableRun = hasRunOverride ? null : loadRun()
+    // Seed the opening balances + dealer/deck identity from the run so the first paint is correct.
+    this.seedVisualsFromState()
     // Arm the opening ceremony BEFORE createStage's first (synchronous) paint, so the
     // very first frame already shows the dealer walking in + the deck hidden — never a
     // settled figure that then pops off-screen to walk back.
@@ -515,23 +535,51 @@ class GameView {
     this.ensureLoop() // drive the opening ceremony, then auto-deal the first hand
   }
 
-  // The tap-to-play gate. Until the first tap, ONLY the table + the nexus's projected "TAP TO
-  // START" show — the dealer stays parked off-screen (the intro-hold gate in frame()) and the
-  // HUD overlay (counters + buttons) is hidden. A TRANSPARENT full-screen catcher captures the
-  // tap; that gesture unlocks the audio contexts + starts music (context.ts/main.ts window
-  // listeners), then the dealer walks in (with sound), the HUD fades in, and the first hand
-  // deals. Not a menu.
+  // Seed the opening balances + the dealer/deck colour identity from the current run state, so the
+  // scene paints correctly from the first frame. Used at construction and again when CONTINUE
+  // adopts a saved run (which may sit at a later dealer, partway health, etc.).
+  private seedVisualsFromState(): void {
+    this.state = this.session.snapshot()
+    // Show the balances immediately (no roll up from zero on load).
+    this.tokenTicker.set(this.displayedTokens(now()))
+    this.bankrollTicker.set(this.displayedBankroll())
+    this.scoreTicker.set(this.displayedScore())
+    // Seed the dealer to the current integrity so a partway-damaged dealer (resume, or the
+    // dealerHealth dev override) shows the right eye flicker + damage sparks from the first frame.
+    this.dealer.setLevel(this.state.run.integrity, this.state.run.shiftIndex)
+    // Seed the dealer's colour identity + the deck colour to the current dealer, so the bowtie and
+    // card backs wear that dealer's colour from the first paint.
+    this.deckColorShift = this.state.run.shiftIndex
+    this.dealer.setShift(this.state.run.shiftIndex)
+    setCardBack(dealerColors(this.deckColorShift, now()).back)
+  }
+
+  // The opening gate. Until the game starts, ONLY the table + the nexus's projected wordmark show —
+  // the dealer stays parked off-screen (the intro-hold gate in frame()) and the HUD overlay
+  // (counters + buttons) is hidden. With a saved run this is a CONTINUE / NEW GAME menu; otherwise
+  // a transparent full-screen tap catcher. Either gesture unlocks the audio contexts + starts music
+  // (context.ts/main.ts window listeners), then the dealer walks in, the HUD fades in, and the
+  // first hand deals.
   private buildIntroScreen(): void {
-    const catcher = element('div', 'intro-catch')
-    this.introCatcher = catcher
-    this.stage.container.appendChild(catcher)
     this.stage.overlay.classList.add('hud-hidden') // hide counters + buttons during the intro
-    // The button groups stay hidden a beat LONGER than the rest of the HUD: on the tap the
-    // counters fade in, but the powerups / action / info buttons hold back through the dealer
-    // walk-in + first deal, then fade in once that hand is fully dealt (revealOpeningButtons).
+    // The button groups stay hidden a beat LONGER than the rest of the HUD: on start the counters
+    // fade in, but the powerups / action / info buttons hold back through the dealer walk-in + first
+    // deal, then fade in once that hand is fully dealt (revealOpeningButtons).
     this.powersEl.classList.add('opening-hidden')
     this.actionsEl.classList.add('opening-hidden')
     this.infoBtnEl.classList.add('opening-hidden')
+    if (this.resumableRun) {
+      this.buildTitleMenu(this.resumableRun)
+    } else {
+      this.buildTapCatcher()
+    }
+  }
+
+  // No saved run: a transparent full-screen catcher records the first tap. Not a menu.
+  private buildTapCatcher(): void {
+    const catcher = element('div', 'intro-catch')
+    this.introCatcher = catcher
+    this.stage.container.appendChild(catcher)
     const tap = (): void => {
       if (this.tapAt > 0) {
         return // already tapping (mid fade-out)
@@ -543,6 +591,43 @@ class GameView {
     }
     catcher.addEventListener('pointerdown', tap)
     window.addEventListener('keydown', tap)
+  }
+
+  // A saved run exists: offer CONTINUE (resume it) or NEW GAME (wipe it, start fresh). The wordmark
+  // still projects above; these HTML buttons stand in for the "TAP TO START" prompt.
+  private buildTitleMenu(run: RunState): void {
+    this.titleMenuMode = true // suppress the nexus "TAP TO START" line (keep the wordmark)
+    const menu = element('div', 'title-menu')
+    this.titleMenu = menu
+    const cont = element('button', 'title-btn title-btn-continue') as HTMLButtonElement
+    cont.type = 'button'
+    cont.innerHTML = `Continue<span class="title-sub">Dealer ${run.shiftIndex} · ${run.score.toLocaleString()} pts</span>`
+    cont.addEventListener('click', () => this.beginFromTitle('continue'))
+    const fresh = element('button', 'title-btn title-btn-new') as HTMLButtonElement
+    fresh.type = 'button'
+    fresh.textContent = 'New game'
+    fresh.addEventListener('click', () => this.beginFromTitle('new'))
+    menu.append(cont, fresh)
+    this.stage.container.appendChild(menu)
+  }
+
+  // Leave the title screen: CONTINUE adopts the saved run (re-seeding the visuals for its dealer /
+  // balances), NEW GAME wipes the save and keeps the fresh session already built. Either way, set
+  // tapAt so the frame loop runs the normal start transition (fade, walk-in, HUD reveal, first deal).
+  private beginFromTitle(mode: 'continue' | 'new'): void {
+    if (this.tapAt > 0) {
+      return // already starting (guard against a double click)
+    }
+    if (mode === 'continue' && this.resumableRun) {
+      this.session.adoptRun(this.resumableRun)
+      this.seedVisualsFromState()
+    } else {
+      clearRun() // wipe the save; the fresh session built at construction stands
+    }
+    this.resumableRun = null
+    this.titleMenu?.remove()
+    this.titleMenu = null
+    this.tapAt = now()
   }
 
   // The "TAP TO START" projection this frame — its strike-in age + a fade (1 while waiting,
@@ -566,6 +651,16 @@ class GameView {
   // that first deal lands, `openingCountsShown` latches and this returns false forever after.
   private firstHandCountsHidden(now: number): boolean {
     return !this.openingCountsShown && this.anim.isAnimating(now)
+  }
+
+  // True only while a natural dealt straight off the deal is still playing its reveal animation:
+  // the hand resolved at the deal (`dealNatural`) but the cards + hole-flip are still in flight.
+  // During this window the action row keeps showing the disabled play buttons (see the button
+  // defs) rather than the Next-hand button, so the instant blackjack isn't given away before the
+  // reveal. Goes false the frame the reveal settles (the deal animation stops) — matching the
+  // beat the Win/Blackjack label + sting fire, so the row swaps to Next hand exactly then.
+  private dealRevealPending(): boolean {
+    return this.dealNatural && this.anim.isAnimating(now())
   }
 
   // Fade the button groups (powerups, action bar, info button) in — done once, the frame the
@@ -812,10 +907,12 @@ class GameView {
       this.frameProjections.push(...drawSpecSheet(ctx, layout, sr.spec, sr.age, sr.fade, timestamp))
     }
 
-    // The game-over score screen the nexus projects once the cards are sucked up. Its box
-    // joins frameProjections so the holo lens fans its rays onto it, like the spec sheet.
+    // The game-over score screen the nexus projects once the cards are sucked up: the game title
+    // above the summary board, both boxes joining frameProjections so the holo lens fans its rays
+    // onto each, like the spec sheet.
     const scr = this.scoreRender(timestamp)
     if (scr) {
+      this.frameProjections.push(...drawScoreTitle(ctx, layout, scr.age, timestamp))
       this.frameProjections.push(...drawScoreSheet(ctx, layout, scr.readout, scr.age, 1, timestamp))
     }
 
@@ -828,14 +925,18 @@ class GameView {
     // The Banker coda: project the "points at risk" stake at the prompt (between hands).
     const cs = this.codaStakeRender(timestamp)
     if (cs) {
-      this.frameProjections.push(...drawCodaStake(ctx, layout, cs.points, cs.congrats, cs.age, cs.fade, timestamp))
+      // getPersonalBest() is in-memory cached after its first read, so the per-frame call here is
+      // cheap; it's the prior best (recordRun only updates at run-end), i.e. the score to beat.
+      this.frameProjections.push(...drawCodaStake(ctx, layout, cs.points, cs.congrats, getPersonalBest(), cs.age, cs.fade, timestamp))
     }
 
     // The opening "TAP TO START" the nexus projects while the game waits for the first tap. Its
     // box joins frameProjections so the holo lens fans its rays onto it, like the other readouts.
     const tap = this.tapToStartRender(timestamp)
     if (tap) {
-      this.frameProjections.push(...drawTapToStart(ctx, layout, tap.age, tap.fade, timestamp))
+      // Suppress the "TAP TO START" line when the Continue / New game menu is up (the HTML buttons
+      // are the prompt); the wordmark still projects.
+      this.frameProjections.push(...drawTapToStart(ctx, layout, tap.age, tap.fade, timestamp, !this.titleMenuMode))
     }
   }
 
@@ -921,12 +1022,17 @@ class GameView {
   // (pushes count as neither), and tokens spent on powerups.
   private buildScore(): ScoreReadout {
     const run = this.state.run
+    // recordRun (at enterOver) has already folded this run's score into the personal best, so on a
+    // new record getPersonalBest() === run.score — show "NEW BEST ★" rather than echo the number;
+    // otherwise show the standing best (the target this run missed). A coda bust (0) never records.
+    const isNewBest = this.state.newPersonalBest
     return {
       // `won` is never set now (the run resolves through the coda): a cash-out banks the score,
       // a coda bust zeroes it, and a pre-coda chip bust-out is a plain bankruptcy.
       title: run.cashedOut ? 'CASHED OUT' : run.coda ? 'BUSTED' : 'BANKRUPT',
       rows: [
         { label: 'POINTS', value: String(run.score) },
+        { label: 'BEST', value: isNewBest ? 'NEW BEST ★' : String(getPersonalBest()) },
         { label: 'HANDS PLAYED', value: String(run.handsPlayed) },
         { label: 'WIN / LOSS', value: `${run.handsWon} / ${run.handsLost}` },
         { label: 'TOKENS SPENT', value: String(run.tokensSpent) },
@@ -1616,8 +1722,12 @@ class GameView {
       if (Math.abs(startAt - this.lastWalkInStart) > VOICE_START_EPS) {
         this.lastWalkInStart = startAt
         this.playWalkInGrowl(timestamp)
-        // A new dealer (2+) is starting — turn the soundtrack over (fade out, fade a fresh one in).
-        if (this.dealer.figureShift(timestamp) > 1) {
+        // A new dealer (2..6) is starting — turn the soundtrack over (fade out, fade a fresh
+        // one in). NOT the Banker: his coda picks its song by the player's choice (double-or-
+        // nothing snaps in the coda theme; cash out leaves the current track), so his walk-in
+        // must leave the music untouched.
+        const walkInShift = this.dealer.figureShift(timestamp)
+        if (walkInShift > 1 && walkInShift !== BANKER_SHIFT) {
           music.advanceTrack()
         }
       }
@@ -1656,6 +1766,11 @@ class GameView {
     if (revealed && !this.resultRevealed) {
       this.resultRevealed = true
       this.playResultSting()
+      // The reveal just landed (deal animation stopped): re-sync so a deal-time natural's row
+      // swaps from the borrowed play buttons to Next hand right now. A winning natural keeps the
+      // reward tokens flying past this point (the settle edge won't fire until they land), so
+      // without this the play buttons would linger disabled over the revealed blackjack.
+      this.syncOverlay(timestamp)
     }
     if (!resolved) {
       this.resultRevealed = false
@@ -1680,6 +1795,13 @@ class GameView {
       this.endShredDone = true
       this.collectRound = null
       this.codaEntering = false
+    }
+    // The dealer-6 winning hand has just been revealed (its cards settled) — fade the fight
+    // music out to silence. It stays silent through the Banker's entrance + the prompt until
+    // the player picks double-or-nothing (codaHand) or cash out (codaCashOut).
+    if (this.codaMusicFadeAt > 0 && timestamp >= this.codaMusicFadeAt) {
+      this.codaMusicFadeAt = 0
+      music.enterCodaSilence()
     }
     this.drawCards(canvas, layout, timestamp)
     this.drawChips(canvas, layout, timestamp)
@@ -1839,6 +1961,11 @@ class GameView {
 
   private makeButtons(): ButtonDef[] {
     const playing = (s: SessionState) => s.phase === 'playing'
+    // The action row shown while cards are being dealt: the live play phase, OR a deal-time
+    // natural whose reveal is still animating (dealRevealPending) — the latter borrows the play
+    // row (disabled) so an instant blackjack's deal-in looks exactly like a normal one until the
+    // reveal lands. The buttons are disabled either way while animating (syncOverlay).
+    const dealingRow = (s: SessionState) => playing(s) || this.dealRevealPending()
     // A live coda hand (a double-or-nothing hand dealt and still being played).
     const codaPlaying = (s: SessionState) => s.phase === 'coda' && !!s.round && s.round.status === 'player-turn'
     // Powerups stay put — always visible, just enabled/disabled — so the column
@@ -1846,14 +1973,14 @@ class GameView {
     // condition lives in `enabled` (via playing()), not `visible`. The contextual
     // ACTION buttons (Hit/Stand/Next/…) still appear per phase.
     const defs: ButtonDef[] = [
-      { key: 'hit', label: 'Hit', group: 'action', act: () => this.session.hit(), visible: playing, enabled: yes },
-      { key: 'stand', label: 'Stand', group: 'action', act: () => this.session.stand(), visible: playing, enabled: yes },
+      { key: 'hit', label: 'Hit', group: 'action', act: () => this.session.hit(), visible: dealingRow, enabled: yes },
+      { key: 'stand', label: 'Stand', group: 'action', act: () => this.session.stand(), visible: dealingRow, enabled: yes },
       {
         key: 'double',
         label: 'Double',
         group: 'action',
         act: () => this.session.double(),
-        visible: playing,
+        visible: dealingRow,
         enabled: (s) => !!s.round && canDouble(s.round) && affordsExtra(s),
         shortFunds: (s) => !!s.round && canDouble(s.round) && !affordsExtra(s),
       },
@@ -1862,14 +1989,16 @@ class GameView {
         label: 'Split',
         group: 'action',
         act: () => this.session.split(),
-        visible: playing,
+        visible: dealingRow,
         enabled: (s) => !!s.round && canSplit(s.round) && affordsExtra(s),
         shortFunds: (s) => !!s.round && canSplit(s.round) && !affordsExtra(s),
       },
       // Also shown (disabled) through the game-over draw-out/shred, so the bottom row looks
       // exactly like any resolving hand — an EMPTY row (no Next hand) would spoil that this
       // was the final hand. It swaps to New run once the score screen shows (scoreRevealed).
-      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session.nextHand(), visible: (s) => s.phase === 'resolved' || (this.state.phase === 'over' && !this.scoreRevealed), enabled: (s) => s.phase === 'resolved' },
+      // Held back while a deal-time natural is still revealing (dealRevealPending): the play row
+      // shows instead, so the button doesn't pop in early and spoil the instant blackjack.
+      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session.nextHand(), visible: (s) => (s.phase === 'resolved' && !this.dealRevealPending()) || (this.state.phase === 'over' && !this.scoreRevealed), enabled: (s) => s.phase === 'resolved' },
       // Shown only once the game-over sequence has projected the score screen (the cards
       // are sucked up, the dealer destroyed / gone) — not the instant the run ends.
       { key: 'restart', label: 'New run', group: 'action', act: () => this.session.restart(), visible: () => this.state.phase === 'over' && this.scoreRevealed, enabled: yes },
@@ -2230,6 +2359,12 @@ class GameView {
     const prevAnalysis = this.state.analysis
     mutate()
     this.state = this.session.snapshot()
+    // Latch a deal-time natural: a hand that went straight from 'betting' to 'resolved' with no
+    // player turn (a natural blackjack — the player's OR the dealer's). Its reveal is still to
+    // animate, and dealRevealPending() uses this to keep the disabled play buttons up over the
+    // flip instead of the Next-hand button, so a normal deal and an instant blackjack look
+    // identical until the reveal settles. Every other action resets it (never 'betting' here).
+    this.dealNatural = prevPhase === 'betting' && this.state.phase === 'resolved'
     // Action-driven angry emotes (freeze used, a lucky risky hit): fired here off the
     // before/after diff, while the dealer stands mid-hand. Resolution-driven ones live in
     // playResultSting instead.
@@ -2299,6 +2434,11 @@ class GameView {
       // balance down (a full reset isn't a "spend").
       if (newRun) {
         this.tokenTicker.set(this.displayedTokens(t))
+        // If the last run ended on a coda end sting (bust or cash out) the soundtrack is on that
+        // sting / its trailing silence — fade it out and bring a normal dealer track back in
+        // (no-op after a normal game-over, which keeps its current track). Dealer 1's walk-in
+        // doesn't advance the music, so this is what restores it.
+        music.resumeAfterEnd()
         // The fresh run zeroes the score: clear any held reward + flash and snap the
         // counter to 0 rather than rolling the whole total down.
         this.heldScore = null
@@ -2773,6 +2913,12 @@ class GameView {
     this.endShredDone = false
     this.codaEntering = true
     this.codaDeckOut = false
+    // Warm the coda tracks now so a later coda action (double-or-nothing / cash out) can snap in
+    // on a quick fade with no download gap.
+    music.prefetchCoda()
+    // Fade the fight music out to SILENCE the moment the winning hand is revealed (its cards
+    // settle), then hold silent through the Banker's entrance until the player picks an action.
+    this.codaMusicFadeAt = Math.max(this.anim.animEnd, t)
     this.codaCongrats = null // the first prompt has no "well played" yet
     this.codaChipsFadeAt = t // the chips start fading out now (the last dealer is dead)
     // Score to roll up when the Banker arrives (his walk-in is deferred by CODA_WALKIN_DELAY).
@@ -2839,6 +2985,9 @@ class GameView {
     const prevRound = this.state.round
     const prevScore = this.state.run.score
     const prevAnalysis = this.state.analysis
+    // A pushed hand auto-re-deals with codaRedeal already set; an explicit "Double or nothing"
+    // from a prompt has it clear. Used below to (re)start the theme only on the explicit pick.
+    const wasRedeal = this.state.codaRedeal
     mutate()
     this.state = this.session.snapshot()
     const t = now()
@@ -2863,6 +3012,12 @@ class GameView {
       this.collectRound = null
       this.endShredDone = false // the coda hand's cards draw normally again
       this.playBankerLaugh(t)
+      // (Re)start the double-or-nothing theme ("Mistake the Getaway") from its opening bang —
+      // but ONLY when the player explicitly picks double-or-nothing. A pushed hand re-deals
+      // automatically (wasRedeal), so we leave the music playing rather than restarting it.
+      if (!wasRedeal) {
+        music.codaHand()
+      }
       // On the FIRST double he pulls out his own deck (wrapped) and unwraps it, THEN deals; on
       // later doubles the deck's already out, so he just deals. (shredOldDeck=false — nothing
       // resting to chew; the boss's deck was shredded on entry.)
@@ -2894,7 +3049,11 @@ class GameView {
       } else {
         this.codaAnimSync('playing', t)
         if (round.status === 'resolved') {
-          this.codaAdvanceAt = this.anim.animEnd + CODA_RESULT_HOLD
+          // A push clears + auto-re-deals with no prompt, so it holds only the shorter beat; a
+          // win (re-prompt) or loss (game-over) keeps the full result beat so the outcome reads.
+          const outcome = round.hands[0].outcome
+          const pushed = outcome === 'push' || outcome === 'voided'
+          this.codaAdvanceAt = this.anim.animEnd + (pushed ? CODA_PUSH_HOLD : CODA_RESULT_HOLD)
         }
       }
     } else if (prevRound && !round) {
@@ -2946,6 +3105,9 @@ class GameView {
   private beginCodaEnd(prevRound: Round | null): void {
     const t = now()
     if (prevRound) {
+      // Music — coda BUST: snap the coda theme out and play the bust sting once, then silence
+      // (it won't bleed into the score screen; a new run brings normal music back).
+      music.codaBust()
       // Coda bust: the Banker never shreds the hand he won — the cards RETURN TO THE DECK (a
       // gather, like between hands, but with NO riffle — there's no next hand) and he strides
       // off; the score screen projects as the gather ends (the game-over loss beat). The deck
@@ -2966,6 +3128,9 @@ class GameView {
       this.pointsDeltaEl.classList.remove('is-flashing', 'is-flashing-coda')
       this.pointsDeltaEl.textContent = ''
     } else {
+      // Music — cash OUT: snap the coda theme out and play the cash-out sting ("Enigma") once,
+      // then silence (won't bleed into the score screen; a new run brings normal music back).
+      music.codaCashOut()
       // Cash out: no hand on the table — the Banker collects and strides off (from `now`, not a
       // stale clock, so the walk-off is actually seen), then the score screen projects once he's gone.
       const walkStart = t + END_SHRED_GAP
