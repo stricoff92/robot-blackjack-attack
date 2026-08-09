@@ -39,68 +39,68 @@ interface CardTiming {
 }
 
 export class DealAnimation implements CardAnim {
-  private readonly cards = new Map<string, CardTiming>()
-  private readonly collectStart = new Map<string, number>()
+  private readonly cards_ = new Map<string, CardTiming>()
+  private readonly collectStart_ = new Map<string, number>()
   // Card keys whose shoe-draw is already accounted for (a draw sfx has fired,
   // or it's a glide that shouldn't make one). Lets drawnCards() report each
   // fresh flight exactly once. Cleared on reset; a re-placed key re-fires.
-  private readonly firedFlights = new Set<string>()
+  private readonly firedFlights_ = new Set<string>()
   // End-of-hand deck sequence: slide out to centre → shuffle → slide back.
-  private slideOutStart: number | null = null
-  private shuffleStart: number | null = null
-  private shuffleStop: number | null = null
-  private slideBackStart: number | null = null
-  private end = 0 // timestamp when all scheduled motion finishes
-  private now = 0
+  private slideOutStart_: number | null = null
+  private shuffleStart_: number | null = null
+  private shuffleStop_: number | null = null
+  private slideBackStart_: number | null = null
+  private end_ = 0 // timestamp when all scheduled motion finishes
+  private now_ = 0
 
   get animEnd(): number {
-    return this.end
+    return this.end_
   }
 
   isAnimating(now: number): boolean {
-    return now < this.end
+    return now < this.end_
   }
 
   setNow(now: number): void {
-    this.now = now
+    this.now_ = now
   }
 
   // Schedule motion for whatever changed between the previous and new state.
   sync(prevPhase: Phase, state: SessionState, now: number): void {
     const round = state.round
     if (!round) {
-      this.reset(now)
+      this.reset_(now)
       return
     }
 
     // A deal (the only action out of the betting phase) starts the table over.
     const opening = prevPhase === 'betting'
     if (opening) {
-      this.reset(now)
+      this.reset_(now)
     }
 
     const reveal = state.phase !== 'playing' || state.peeked
-    let cursor = Math.max(now, this.end)
+    let cursor = Math.max(now, this.end_)
 
     // New cards: the opening deal alternates player/dealer; mid-round it's just
     // your fresh card(s) (hit / double / split).
-    const fresh = opening ? this.freshInterleaved(round) : this.freshPlayerCards(round)
+    const fresh = opening ? this.freshInterleaved_(round) : this.freshPlayerCards_(round)
     for (const key of fresh) {
       const faceDown = opening && key === dealerKey(1) // hole card stays down
-      cursor = this.place(key, cursor, !faceDown) + ACTION_GAP
+      cursor = this.place_(key, cursor, !faceDown) + ACTION_GAP
     }
 
     // Flip the hole card if this state reveals it (stand / peek / instant BJ)...
-    const hole = this.cards.get(dealerKey(1))
+    const hole = this.cards_.get(dealerKey(1))
     if (reveal && hole && hole.flipStart === null) {
       hole.flipStart = cursor
-      this.end = Math.max(this.end, cursor + FLIP_MS)
+      this.end_ = Math.max(this.end_, cursor + FLIP_MS)
       cursor += FLIP_MS + ACTION_GAP
     }
 
     // ...then the dealer's draws, one fully-resolved card at a time.
-    for (const key of this.freshDealerCards(round)) {
-      cursor = this.place(key, cursor, true) + ACTION_GAP
+    for (const key of this.freshDealerCards_(round)) {
+      cursor = this.place_(key, cursor, true) + ACTION_GAP
     }
   }
 
@@ -108,26 +108,26 @@ export class DealAnimation implements CardAnim {
   // the deck out in front of the dealer, riffle it, and slide it back to rest. A game-over
   // gather passes shuffle=false — the cards return to the deck with no riffle (no next hand).
   collect(round: Round, now: number, shuffle = true): void {
-    this.collectStart.clear()
+    this.collectStart_.clear()
     let cursor = now
-    for (const key of this.allKeys(round)) {
-      this.collectStart.set(key, cursor)
-      this.end = Math.max(this.end, cursor + COLLECT_MS)
+    for (const key of this.allKeys_(round)) {
+      this.collectStart_.set(key, cursor)
+      this.end_ = Math.max(this.end_, cursor + COLLECT_MS)
       cursor += COLLECT_STAGGER
     }
     if (!shuffle) {
       // No riffle: the deck stays at its rest spot (no slide-out / shuffle / slide-back).
-      this.slideOutStart = null
-      this.shuffleStart = null
-      this.shuffleStop = null
-      this.slideBackStart = null
+      this.slideOutStart_ = null
+      this.shuffleStart_ = null
+      this.shuffleStop_ = null
+      this.slideBackStart_ = null
       return
     }
-    this.slideOutStart = this.end + SHUFFLE_GAP
-    this.shuffleStart = this.slideOutStart + SLIDE_MS
-    this.shuffleStop = this.shuffleStart + SHUFFLE_MS
-    this.slideBackStart = this.shuffleStop
-    this.end = this.slideBackStart + SLIDE_MS
+    this.slideOutStart_ = this.end_ + SHUFFLE_GAP
+    this.shuffleStart_ = this.slideOutStart_ + SLIDE_MS
+    this.shuffleStop_ = this.shuffleStart_ + SHUFFLE_MS
+    this.slideBackStart_ = this.shuffleStop_
+    this.end_ = this.slideBackStart_ + SLIDE_MS
   }
 
   // Split: the two originally-dealt cards glide (staying face-up) from the
@@ -139,15 +139,15 @@ export class DealAnimation implements CardAnim {
     for (const key of [playerKey(0, 0), playerKey(1, 0)]) {
       // Flight runs now → now + FLIGHT_MS; flipStart in the past pins flip at 1 so
       // the card stays face-up through the glide (no re-flip).
-      this.cards.set(key, { flightStart: now, flipStart: now - FLIP_MS })
+      this.cards_.set(key, { flightStart: now, flipStart: now - FLIP_MS })
       // A glide of an already-dealt card, not a shoe draw — suppress its draw sfx.
-      this.firedFlights.add(key)
-      this.end = Math.max(this.end, now + FLIGHT_MS)
+      this.firedFlights_.add(key)
+      this.end_ = Math.max(this.end_, now + FLIGHT_MS)
     }
     let cursor = now + FLIGHT_MS + ACTION_GAP
     for (const key of [playerKey(0, 1), playerKey(1, 1)]) {
-      this.cards.delete(key) // was the old hand-0 second card / brand new — deal fresh
-      cursor = this.place(key, cursor, true) + ACTION_GAP
+      this.cards_.delete(key) // was the old hand-0 second card / brand new — deal fresh
+      cursor = this.place_(key, cursor, true) + ACTION_GAP
     }
   }
 
@@ -158,27 +158,27 @@ export class DealAnimation implements CardAnim {
     let cursor = startAt
     for (let ci = 0; ci < cardCount; ci += 1) {
       const key = playerKey(handIndex, ci)
-      this.cards.delete(key)
-      cursor = this.place(key, cursor, true) + ACTION_GAP
+      this.cards_.delete(key)
+      cursor = this.place_(key, cursor, true) + ACTION_GAP
     }
   }
 
   // 0..1 position of the deck: 0 = resting spot, 1 = shuffle spot (centre).
   deckShift(): number {
-    if (this.slideOutStart === null || this.shuffleStart === null || this.slideBackStart === null) {
+    if (this.slideOutStart_ === null || this.shuffleStart_ === null || this.slideBackStart_ === null) {
       return 0
     }
-    if (this.now < this.slideOutStart) {
+    if (this.now_ < this.slideOutStart_) {
       return 0
     }
-    if (this.now < this.shuffleStart) {
-      return smoothStep((this.now - this.slideOutStart) / SLIDE_MS)
+    if (this.now_ < this.shuffleStart_) {
+      return smoothStep((this.now_ - this.slideOutStart_) / SLIDE_MS)
     }
-    if (this.now < this.slideBackStart) {
+    if (this.now_ < this.slideBackStart_) {
       return 1
     }
-    if (this.now < this.slideBackStart + SLIDE_MS) {
-      return 1 - smoothStep((this.now - this.slideBackStart) / SLIDE_MS)
+    if (this.now_ < this.slideBackStart_ + SLIDE_MS) {
+      return 1 - smoothStep((this.now_ - this.slideBackStart_) / SLIDE_MS)
     }
     return 0
   }
@@ -186,19 +186,19 @@ export class DealAnimation implements CardAnim {
   // --- CardAnim ---
 
   state(key: string): CardState | null {
-    const timing = this.cards.get(key)
-    if (!timing || this.now < timing.flightStart) {
+    const timing = this.cards_.get(key)
+    if (!timing || this.now_ < timing.flightStart) {
       return null // not scheduled, or hasn't started flying yet
     }
-    const flight = clamp01((this.now - timing.flightStart) / FLIGHT_MS)
+    const flight = clamp01((this.now_ - timing.flightStart) / FLIGHT_MS)
     let flip = 0
-    if (timing.flipStart !== null && this.now >= timing.flipStart) {
-      flip = clamp01((this.now - timing.flipStart) / FLIP_MS)
+    if (timing.flipStart !== null && this.now_ >= timing.flipStart) {
+      flip = clamp01((this.now_ - timing.flipStart) / FLIP_MS)
     }
     let collect = 0
-    const started = this.collectStart.get(key)
-    if (started !== undefined && this.now >= started) {
-      collect = clamp01((this.now - started) / COLLECT_MS)
+    const started = this.collectStart_.get(key)
+    if (started !== undefined && this.now_ >= started) {
+      collect = clamp01((this.now_ - started) / COLLECT_MS)
     }
     return { flight, flip, collect }
   }
@@ -208,9 +208,9 @@ export class DealAnimation implements CardAnim {
   // originals) are pre-marked, so only genuine shoe draws are reported.
   drawnCards(now: number): string[] {
     const started: string[] = []
-    for (const [key, timing] of this.cards) {
-      if (!this.firedFlights.has(key) && now >= timing.flightStart) {
-        this.firedFlights.add(key)
+    for (const [key, timing] of this.cards_) {
+      if (!this.firedFlights_.has(key) && now >= timing.flightStart) {
+        this.firedFlights_.add(key)
         started.push(key)
       }
     }
@@ -219,59 +219,59 @@ export class DealAnimation implements CardAnim {
 
   // 0..1 progress of the deck riffle, or null when not shuffling.
   shuffle(): number | null {
-    if (this.shuffleStart === null || this.shuffleStop === null) {
+    if (this.shuffleStart_ === null || this.shuffleStop_ === null) {
       return null
     }
-    if (this.now < this.shuffleStart || this.now >= this.shuffleStop) {
+    if (this.now_ < this.shuffleStart_ || this.now_ >= this.shuffleStop_) {
       return null
     }
-    return (this.now - this.shuffleStart) / (this.shuffleStop - this.shuffleStart)
+    return (this.now_ - this.shuffleStart_) / (this.shuffleStop_ - this.shuffleStart_)
   }
 
   // --- internals ---
 
-  private reset(now: number): void {
-    this.cards.clear()
-    this.collectStart.clear()
-    this.firedFlights.clear()
-    this.slideOutStart = null
-    this.shuffleStart = null
-    this.shuffleStop = null
-    this.slideBackStart = null
-    this.end = now
+  private reset_(now: number): void {
+    this.cards_.clear()
+    this.collectStart_.clear()
+    this.firedFlights_.clear()
+    this.slideOutStart_ = null
+    this.shuffleStart_ = null
+    this.shuffleStop_ = null
+    this.slideBackStart_ = null
+    this.end_ = now
   }
 
   // Record a card's timing; returns the moment it finishes (for sequencing).
-  private place(key: string, flightStart: number, autoFlip: boolean): number {
+  private place_(key: string, flightStart: number, autoFlip: boolean): number {
     const flipStart = autoFlip ? flightStart + FLIGHT_MS + LAND_DELAY : null
-    this.cards.set(key, { flightStart, flipStart })
+    this.cards_.set(key, { flightStart, flipStart })
     // A freshly placed card is a new shoe draw — clear any prior fire so its
     // flight re-triggers the draw sfx (re-deals: split, mulligan).
-    this.firedFlights.delete(key)
+    this.firedFlights_.delete(key)
     const finish = flipStart !== null ? flipStart + FLIP_MS : flightStart + FLIGHT_MS
-    this.end = Math.max(this.end, finish)
+    this.end_ = Math.max(this.end_, finish)
     return finish
   }
 
-  private allKeys(round: Round): string[] {
+  private allKeys_(round: Round): string[] {
     const keys: string[] = []
     round.dealer.forEach((_, i) => keys.push(dealerKey(i)))
     round.hands.forEach((hand, hi) => hand.cards.forEach((_, ci) => keys.push(playerKey(hi, ci))))
     return keys
   }
 
-  private freshInterleaved(round: Round): string[] {
+  private freshInterleaved_(round: Round): string[] {
     const entries: Array<{ key: string; index: number; lane: number }> = []
     round.dealer.forEach((_, i) => {
       const key = dealerKey(i)
-      if (!this.cards.has(key)) {
+      if (!this.cards_.has(key)) {
         entries.push({ key, index: i, lane: 1 })
       }
     })
     round.hands.forEach((hand, hi) => {
       hand.cards.forEach((_, ci) => {
         const key = playerKey(hi, ci)
-        if (!this.cards.has(key)) {
+        if (!this.cards_.has(key)) {
           entries.push({ key, index: ci, lane: 0 })
         }
       })
@@ -280,12 +280,12 @@ export class DealAnimation implements CardAnim {
     return entries.map((e) => e.key)
   }
 
-  private freshPlayerCards(round: Round): string[] {
+  private freshPlayerCards_(round: Round): string[] {
     const keys: string[] = []
     round.hands.forEach((hand, hi) => {
       hand.cards.forEach((_, ci) => {
         const key = playerKey(hi, ci)
-        if (!this.cards.has(key)) {
+        if (!this.cards_.has(key)) {
           keys.push(key)
         }
       })
@@ -293,11 +293,11 @@ export class DealAnimation implements CardAnim {
     return keys
   }
 
-  private freshDealerCards(round: Round): string[] {
+  private freshDealerCards_(round: Round): string[] {
     const keys: string[] = []
     round.dealer.forEach((_, i) => {
       const key = dealerKey(i)
-      if (!this.cards.has(key)) {
+      if (!this.cards_.has(key)) {
         keys.push(key)
       }
     })

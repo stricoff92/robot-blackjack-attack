@@ -97,7 +97,7 @@ describe('startRun', () => {
   it('opens with the documented starting resources', () => {
     const run = startRun(1)
 
-    expect(run.chips).toBe(300)
+    expect(run.chips).toBe(400)
     expect(run.tokens).toBe(100)
     expect(run.integrity).toBe(100)
     expect(run.shiftIndex).toBe(1)
@@ -234,11 +234,11 @@ describe('nextBet', () => {
       run = applyRound(run, beatTwentyWin(10))
     }
 
-    // Dealer 1 dies in 2 beat-20 wins → chips 440. On Dealer 2 the ladder min is 40,
-    // but the 10% wealth floor on 440 chips (44) now leads it.
+    // Dealer 1 dies in 2 beat-20 wins → chips 540. On Dealer 2 the ladder min is 40,
+    // but the 10% wealth floor on 540 chips (54) now leads it.
     expect(run.shiftIndex).toBe(2)
-    expect(run.chips).toBe(440)
-    expect(nextBet(run)).toBe(44)
+    expect(run.chips).toBe(540)
+    expect(nextBet(run)).toBe(54)
   })
 })
 
@@ -292,7 +292,7 @@ describe('kill reward', () => {
 
     // Each +10 win, plus 3 x the Dealer 2 minimum (40) seeded on the kill.
     expect(run.shiftIndex).toBe(2)
-    expect(run.chips).toBe(300 + hands * 10 + 3 * 40)
+    expect(run.chips).toBe(400 + hands * 10 + 3 * 40)
   })
 })
 
@@ -442,13 +442,13 @@ describe('free-double score boost', () => {
   it('pays a 1.5x score boost when a token-free double wins', () => {
     const run = applyRound(startRun(1), doubleWin(10)) // net 20 chips x mult 1.0 x combo 1.0 x 1.5
     expect(run.score).toBe(30)
-    expect(run.chips).toBe(320)
+    expect(run.chips).toBe(420)
   })
 
   it('does not boost a win from the paid Late double', () => {
     const run = applyRound(startRun(1), lateDoubleWin(10)) // same net 20 chips, no boost
     expect(run.score).toBe(20)
-    expect(run.chips).toBe(320)
+    expect(run.chips).toBe(420)
   })
 })
 

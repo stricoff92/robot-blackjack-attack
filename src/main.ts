@@ -1,7 +1,7 @@
 import { sfx } from './audio/sfx'
 import { music } from './audio/music'
 import { voice } from './audio/voice'
-import { initCrazyGames } from './platform/crazygames'
+import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, onMuteChange } from './platform/crazygames'
 import { mountGameView } from './ui/game-view'
 
 const root = document.querySelector<HTMLDivElement>('#app')
@@ -44,6 +44,22 @@ await Promise.race([
   }),
 ])
 
+// Signal the loading window to CrazyGames (must be after init). Our assets are small and mostly
+// lazy, so this brackets the synchronous mount; the first gameplayStart (the first deal) closes the
+// initial-download size-budget window.
+loadingStart()
+
+// Honor the platform mute setting (CrazyGames settings.muteAudio) across all three audio services,
+// and react to live changes — it overrides any in-game level.
+const applyMute = (muted: boolean): void => {
+  music.setMuted(muted)
+  sfx.setMuted(muted)
+  voice.setMuted(muted)
+}
+applyMute(getMuteSetting())
+onMuteChange(applyMute)
+
 // Canvas-first UI (hybrid): the scene + cards render on the canvas layer, the
 // action buttons and HUD live in the stage overlay.
 mountGameView(root)
+loadingStop()

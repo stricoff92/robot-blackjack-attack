@@ -2,6 +2,7 @@
 
 dist/
 dest/
+rba-*.zip
 
 .vscode/
 

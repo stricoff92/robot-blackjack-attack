@@ -29,11 +29,28 @@ interface CrazyUserModule {
   submitScore(payload: { encryptedScore: string }): Promise<unknown>
 }
 
+interface CrazyGameSettings {
+  readonly muteAudio: boolean
+  readonly disableChat: boolean
+}
+
+interface CrazyGameModule {
+  gameplayStart(): void
+  gameplayStop(): void
+  loadingStart(): void
+  loadingStop(): void
+  reportGameCompletedPercentage(percentage: number): void
+  readonly settings: CrazyGameSettings
+  addSettingsChangeListener(listener: () => void): void
+  removeSettingsChangeListener(listener: () => void): void
+}
+
 interface CrazySDK {
   init(): Promise<void>
   readonly environment: CrazyEnvironment
   data: CrazyDataStore
   user: CrazyUserModule
+  game: CrazyGameModule
 }
 
 declare global {
@@ -81,6 +98,75 @@ export async function initCrazyGames(): Promise<void> {
     devLog(`[crazygames] SDK ready (environment=${s.environment})`)
   } catch (e) {
     devLog(`[crazygames] SDK init failed: ${String(e)}`)
+  }
+}
+
+// --- Gameplay + loading lifecycle (SDK.game). Required for a Full Launch. gameplayStart/Stop
+// bracket ACTIVE play — they gate ad eligibility, but an ad only ever fires when we explicitly
+// request one, never as a side effect of these, so a gameplayStop between hands can't pop an ad
+// mid-hand. loadingStart/Stop wrap the initial load. All no-op off-platform / when disabled. ---
+
+export function gameplayStart(): void {
+  callGame((game) => game.gameplayStart(), 'gameplayStart')
+}
+
+export function gameplayStop(): void {
+  callGame((game) => game.gameplayStop(), 'gameplayStop')
+}
+
+export function loadingStart(): void {
+  callGame((game) => game.loadingStart(), 'loadingStart')
+}
+
+export function loadingStop(): void {
+  callGame((game) => game.loadingStop(), 'loadingStop')
+}
+
+// Report overall progression (0–100) so CrazyGames can surface completion milestones. We emit it as
+// dealers fall — each of the 6 kills is a milestone, arriving at the Banker (the 6th) is 100%.
+// Clamped/rounded defensively.
+export function reportGameCompletedPercentage(percentage: number): void {
+  const pct = Math.max(0, Math.min(100, Math.round(percentage)))
+  callGame((game) => game.reportGameCompletedPercentage(pct), 'reportGameCompletedPercentage')
+}
+
+function callGame(fn: (game: CrazyGameModule) => void, label: string): void {
+  const s = sdk()
+  if (!s || getEnvironment() === 'disabled') {
+    return
+  }
+  try {
+    fn(s.game)
+  } catch (e) {
+    devLog(`[crazygames] ${label} failed: ${String(e)}`)
+  }
+}
+
+// --- Platform audio mute (SDK.game.settings.muteAudio). Required: the platform's mute must
+// override in-game audio (it takes priority over any in-game toggle). ---
+
+export function getMuteSetting(): boolean {
+  const s = sdk()
+  if (!s || getEnvironment() === 'disabled') {
+    return false
+  }
+  try {
+    return s.game.settings.muteAudio === true
+  } catch {
+    return false
+  }
+}
+
+// Register a listener for platform settings changes; it's invoked with the current mute state.
+export function onMuteChange(listener: (muted: boolean) => void): void {
+  const s = sdk()
+  if (!s || getEnvironment() === 'disabled') {
+    return
+  }
+  try {
+    s.game.addSettingsChangeListener(() => listener(getMuteSetting()))
+  } catch (e) {
+    devLog(`[crazygames] addSettingsChangeListener failed: ${String(e)}`)
   }
 }
 

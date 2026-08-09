@@ -34,7 +34,7 @@ export interface DebugFlags {
   forcePairRank: Rank | null
   /** Start the run with this many tokens; null = the normal starting balance (0). */
   startTokens: number | null
-  /** Start the run with this many chips; null = the normal starting balance (300). */
+  /** Start the run with this many chips; null = the normal starting balance (400). */
   startChips: number | null
   /** Start the first dealer at this % health (1-100); null = full. */
   dealerHealth: number | null

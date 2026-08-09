@@ -340,32 +340,43 @@ function growlCurve(): Float32Array<ArrayBuffer> {
 }
 
 class VoiceService {
-  private ctx: AudioContext | null = null
-  private noise: AudioBuffer | null = null
+  private ctx_: AudioContext | null = null
+  private noise_: AudioBuffer | null = null
+  // Platform mute (CrazyGames settings.muteAudio). Voice output is all one-shots, so gating play()
+  // is enough — nothing continuous to silence.
+  private muted_ = false
+
+  // Platform mute toggle: swallow emotes while muted.
+  setMuted(muted: boolean): void {
+    this.muted_ = muted
+  }
 
   // Create the AudioContext now (idempotent) so the shared gesture listeners in
   // context.ts unlock it alongside sfx/music. Without this the context is born on the
   // FIRST laugh — already past the user's gesture — so it stays suspended and silent.
   // Call once at startup (main.ts), the same place sfx.load() warms the sfx context.
   prime(): void {
-    this.context()
+    this.context_()
   }
 
   // Fire an emote from its pattern, dispatching on kind. `delaySeconds` schedules it
   // slightly after the trigger (so a laugh lands just behind the loss sting). Fully
   // synthesised — works the instant the context exists.
   play(pattern: VoicePattern, delaySeconds = 0, gainScale = 1): void {
+    if (this.muted_) {
+      return
+    }
     if (pattern.kind === 'angry') {
-      this.playGrowl(pattern, delaySeconds)
+      this.playGrowl_(pattern, delaySeconds)
     } else {
-      this.playLaugh(pattern, delaySeconds, gainScale)
+      this.playLaugh_(pattern, delaySeconds, gainScale)
     }
   }
 
   // The evil laugh: bright "HA HA HA" bursts (glottal saws → /a/ formants → syllable
   // envelope, with a breath transient + slap-back echo).
-  private playLaugh(pattern: VoicePattern, delaySeconds = 0, gainScale = 1): void {
-    const ctx = this.context()
+  private playLaugh_(pattern: VoicePattern, delaySeconds = 0, gainScale = 1): void {
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
@@ -468,7 +479,7 @@ class VoiceService {
     // Breath transient: a short band-limited noise burst at each syllable onset — the
     // "h" of "ha". One looping noise source through a bandpass, gated by noiseGain.
     const noiseSrc = ctx.createBufferSource()
-    noiseSrc.buffer = this.noiseBuffer(ctx)
+    noiseSrc.buffer = this.noiseBuffer_(ctx)
     noiseSrc.loop = true
     const noiseBp = ctx.createBiquadFilter()
     noiseBp.type = 'bandpass'
@@ -542,8 +553,8 @@ class VoiceService {
   // A voiced sawtooth core through throaty formants + soft-clip grit gives it the pitched snarl;
   // a little band-passed noise adds breath; a subtle vibrato adds life. No periodic amplitude
   // modulation (that read as an engine). Shares the master + limiter with the laugh.
-  private playGrowl(pattern: VoicePattern, delaySeconds = 0): void {
-    const ctx = this.context()
+  private playGrowl_(pattern: VoicePattern, delaySeconds = 0): void {
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
@@ -622,7 +633,7 @@ class VoiceService {
 
     // A little band-passed noise for breath/rasp (subordinate — the voiced core leads).
     const rasp = ctx.createBufferSource()
-    rasp.buffer = this.noiseBuffer(ctx)
+    rasp.buffer = this.noiseBuffer_(ctx)
     rasp.loop = true
     const raspBp = ctx.createBiquadFilter()
     raspBp.type = 'bandpass'
@@ -635,7 +646,7 @@ class VoiceService {
     // ROUGHNESS: an IRREGULAR pitch flutter from low-passed noise (aperiodic FM = a vocal-fry
     // rattle, NOT a periodic engine) plus a subtle vibrato — both on every oscillator's detune.
     const jitter = ctx.createBufferSource()
-    jitter.buffer = this.noiseBuffer(ctx)
+    jitter.buffer = this.noiseBuffer_(ctx)
     jitter.loop = true
     const jitterLp = ctx.createBiquadFilter()
     jitterLp.type = 'lowpass'
@@ -677,7 +688,7 @@ class VoiceService {
     subOsc.frequency.setValueCurveAtTime(subCurve, t0, dur)
 
     // Telephone key-tones chirped over the growl (each self-cleans; the bus is freed below).
-    const dtmfBus = this.scheduleDtmf(ctx, out, pattern.seed, t0, dur)
+    const dtmfBus = this.scheduleDtmf_(ctx, out, pattern.seed, t0, dur)
 
     const stopAt = end + 0.05
     const sources: AudioScheduledSourceNode[] = [rasp, jitter, vib, ...voicedOscs]
@@ -699,7 +710,7 @@ class VoiceService {
   // into `dest`. Deterministic per dealer (seed) so each dealer "dials" its own string. Each
   // digit is two sine tones (low+high) under a quick blip envelope; the tones self-disconnect,
   // and the returned bus gain is freed by the caller's teardown.
-  private scheduleDtmf(ctx: AudioContext, dest: AudioNode, seed: number, t0: number, durSec: number): GainNode {
+  private scheduleDtmf_(ctx: AudioContext, dest: AudioNode, seed: number, t0: number, durSec: number): GainNode {
     const rand = mulberry32((seed ^ 0x0d791f) >>> 0)
     const bus = ctx.createGain()
     bus.gain.value = DTMF_GAIN
@@ -740,25 +751,25 @@ class VoiceService {
   }
 
   // One second of white noise, generated once and looped as the breath source.
-  private noiseBuffer(ctx: AudioContext): AudioBuffer {
-    if (!this.noise) {
+  private noiseBuffer_(ctx: AudioContext): AudioBuffer {
+    if (!this.noise_) {
       const length = Math.floor(ctx.sampleRate)
       const buffer = ctx.createBuffer(1, length, ctx.sampleRate)
       const data = buffer.getChannelData(0)
       for (let i = 0; i < length; i += 1) {
         data[i] = Math.random() * 2 - 1
       }
-      this.noise = buffer
+      this.noise_ = buffer
     }
-    return this.noise
+    return this.noise_
   }
 
   // Own AudioContext via the shared factory (iOS/Android unlock plumbing), like sfx.
-  private context(): AudioContext {
-    if (!this.ctx) {
-      this.ctx = createAudioContext()
+  private context_(): AudioContext {
+    if (!this.ctx_) {
+      this.ctx_ = createAudioContext()
     }
-    return this.ctx
+    return this.ctx_
   }
 }
 

@@ -12,28 +12,28 @@ const FLY_MS = 420 // slot → dealer (eased in-out, fades into the muck near th
 const STAGGER = 70 // between the two cards leaving
 
 export class MulliganAnimation {
-  private cards: Card[] = []
-  private start = 0
-  private end = 0
+  private cards_: Card[] = []
+  private start_ = 0
+  private end_ = 0
 
   // Start discarding the tossed cards; returns when the last one finishes merging
   // into the deck, so the fresh cards can be scheduled to fly in right after.
   begin(cards: Card[], now: number): number {
-    this.cards = cards.slice()
-    this.start = now
-    this.end = now + FLIP_MS + FLY_MS + STAGGER * Math.max(0, cards.length - 1)
-    return this.end
+    this.cards_ = cards.slice()
+    this.start_ = now
+    this.end_ = now + FLIP_MS + FLY_MS + STAGGER * Math.max(0, cards.length - 1)
+    return this.end_
   }
 
   isAnimating(now: number): boolean {
-    return this.cards.length > 0 && now < this.end
+    return this.cards_.length > 0 && now < this.end_
   }
 
   // Per-card flip + fly progress at `now`. A card waits in its slot until its
   // staggered start, flips face-down, then flies to the deck.
   frames(now: number): DiscardFrame[] {
-    return this.cards.map((card, i) => {
-      const local = now - (this.start + i * STAGGER)
+    return this.cards_.map((card, i) => {
+      const local = now - (this.start_ + i * STAGGER)
       if (local <= 0) {
         return { card, flip: 1, fly: 0 }
       }

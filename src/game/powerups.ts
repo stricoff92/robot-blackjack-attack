@@ -19,7 +19,7 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
   peek: {
     id: 'peek',
     name: 'Peek Dealer',
-    cost: 100,
+    cost: 90,
     description: "Reveal the dealer's hole card.",
   },
   'late-double': {
@@ -37,19 +37,19 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
   'second-chance': {
     id: 'second-chance',
     name: 'Bust Block',
-    cost: 80,
+    cost: 70,
     description: 'One expendable shield against busting.',
   },
   freeze: {
     id: 'freeze',
     name: 'Freeze Dealer',
-    cost: 70,
+    cost: 60,
     description: 'Force the dealer to stand on its current total.',
   },
   mulligan: {
     id: 'mulligan',
     name: 'Mulligan',
-    cost: 90,
+    cost: 80,
     description: 'Discard your opening hand and redeal once.',
   },
   analyze: {

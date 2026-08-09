@@ -10,6 +10,8 @@
 // else localStorage. See ../platform/crazygames. The save is CLEARED at game-over (session
 // enterOver) — a finished run must never resume.
 import { loadValue, removeValue, saveValue } from '../platform/crazygames'
+import { decodeSaveKeys, encodeSaveKeys } from './keymap'
+import { pack, unpack } from './obfuscate'
 import { RULES_VERSION, type RunState } from './run'
 
 const RUN_KEY = 'rba.run'
@@ -20,7 +22,11 @@ interface SavedRun {
 }
 
 export function saveRun(run: RunState): void {
-  saveValue(RUN_KEY, JSON.stringify({ version: RULES_VERSION, run } satisfies SavedRun))
+  // encodeSaveKeys() renames the fields to short codes (so a decoded save doesn't read as a
+  // labelled map of what to edit), then pack() base64-wraps + checksums the payload so a casual
+  // save-editor is deterred and edits are detected on load — not because localStorage can be truly
+  // secured. See ./keymap and ./obfuscate.
+  saveValue(RUN_KEY, pack(encodeSaveKeys({ version: RULES_VERSION, run } satisfies SavedRun)))
 }
 
 // The resumable run, or null when there's nothing to resume: no save, a parse error, a stale
@@ -31,18 +37,18 @@ export function loadRun(): RunState | null {
   if (!raw) {
     return null
   }
-  try {
-    const parsed = JSON.parse(raw) as Partial<SavedRun>
-    if (!parsed || parsed.version !== RULES_VERSION || !isValidRun(parsed.run)) {
-      return null
-    }
-    if (parsed.run.over || parsed.run.coda) {
-      return null
-    }
-    return parsed.run
-  } catch {
+  // unpack() returns null if the envelope is missing/corrupt or the checksum fails (tampered);
+  // decodeSaveKeys() then restores the real field names (a no-op on null, and on a legacy save
+  // whose keys were never coded). The checksum has already validated the payload, so decode only
+  // ever runs on data we produced.
+  const parsed = decodeSaveKeys(unpack(raw)) as Partial<SavedRun> | null
+  if (!parsed || parsed.version !== RULES_VERSION || !isValidRun(parsed.run)) {
     return null
   }
+  if (parsed.run.over || parsed.run.coda) {
+    return null
+  }
+  return parsed.run
 }
 
 export function clearRun(): void {

@@ -61,7 +61,7 @@ import {
 //      exponentially more (feeding the double-or-nothing Banker coda). The per-shift
 //      scoreMultiplier field is removed — bet size + this now carry the score curve.
 export const RULES_VERSION = 25
-export const STARTING_CHIPS = 300
+export const STARTING_CHIPS = 400
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
 export const STARTING_TOKENS = 100
@@ -195,7 +195,7 @@ export interface RunState {
   upgrades: RunUpgrades
 }
 
-// The min-bet floor doubles per dealer (20 → 640, v13) to thin the 300-chip bankroll
+// The min-bet floor doubles per dealer (20 → 640, v13) to thin the 400-chip bankroll
 // and raise variance — cold streaks bust the player out more often, hardest early
 // where runs actually end. maxBet grows slower than the min, so the ladder's bet range
 // compresses on the later dealers. The wealth floor climbs too (0 → 25%). Dealer HP

@@ -77,41 +77,41 @@ const TREMOR_AMP = 0.11 // shudder magnitude in headR-fraction units — CONSTAN
 type Mode = 'none' | 'hit' | 'kill' | 'spawn' | 'walkoff'
 
 export class DealerAnimation implements DealerView, StrikeView {
-  private mode: Mode = 'none'
-  private final = false // the last dealer — dies but never walks back in
+  private mode_: Mode = 'none'
+  private final_ = false // the last dealer — dies but never walks back in
   // Whether the current kill plays its replacement's walk-in as part of the same
   // sequence. False when the walk-in is deferred (a kill that grants an upgrade pick:
   // the dealer dies now, the selector shows, then a later spawn() walks the new one in).
-  private killWalkIn = true
-  private strikeStart = 0 // beam lift-off (t0)
-  private hitStart = 0 // impact = t0 + STRIKE_TRAVEL_MS
-  private killStart = 0 // t0 for a kill
-  private spawnStart = 0 // t0 for a standalone walk-in (page load / new run)
-  private walkoffStart = 0 // t0 for the game-over walk-off (a loss: the dealer leaves)
-  private seqEnd = 0 // when the active strike/hit/kill sequence is fully done
-  private level = 1 // health fraction AFTER the pending strike lands (drives flicker/sparks/tremor)
+  private killWalkIn_ = true
+  private strikeStart_ = 0 // beam lift-off (t0)
+  private hitStart_ = 0 // impact = t0 + STRIKE_TRAVEL_MS
+  private killStart_ = 0 // t0 for a kill
+  private spawnStart_ = 0 // t0 for a standalone walk-in (page load / new run)
+  private walkoffStart_ = 0 // t0 for the game-over walk-off (a loss: the dealer leaves)
+  private seqEnd_ = 0 // when the active strike/hit/kill sequence is fully done
+  private level_ = 1 // health fraction AFTER the pending strike lands (drives flicker/sparks/tremor)
   // The FX show `prevLevel` until `levelAt`, then `level`: a deferred laser's health drop must
   // NOT blank the sparks/tremor/flicker at the button click — they hold the old level right up
   // until the beam strikes (`levelAt` = impact). See sync() / currentLevel().
-  private prevLevel = 1
-  private levelAt = 0
+  private prevLevel_ = 1
+  private levelAt_ = 0
   // Colour identity: which dealer the settled figure is, plus the dealer it was
   // BEFORE the current kill (the one dying) — so figureShift() can flip the bowtie
   // colour to the replacement exactly when it walks in.
-  private shift = 1
-  private killFromShift = 1
+  private shift_ = 1
+  private killFromShift_ = 1
   // Walk-in footstep tracking (edge-detected, mirrors the token launch/land sfx):
   // the absolute start of the walk-in we're currently reporting steps for, and how
   // many of its WALK_STEPS footfalls have been reported. Reset when a new walk-in
   // begins (a different start).
-  private walkStart = -1
-  private stepsFired = 0
+  private walkStart_ = -1
+  private stepsFired_ = 0
   // The active voice emote (an evil laugh on a house win): the absolute start stamp
   // and the laugh pattern that shapes both the audio and this mouth readout. Purely
   // cosmetic — it never gates deals or blocks buttons (the render loop never parks, so
   // the mouth animates without being in isAnimating). Overwritten by the next emote.
-  private emoteStart = 0
-  private emotePattern: VoicePattern | null = null
+  private emoteStart_ = 0
+  private emotePattern_: VoicePattern | null = null
 
   // Register the integrity change this action produced. A rising shift index is a
   // kill (old dealer destroyed); a fall in integrity with the same shift is a
@@ -127,39 +127,39 @@ export class DealerAnimation implements DealerView, StrikeView {
   ): void {
     // Hold whatever level is showing now until the strike lands (levelAt), so a deferred
     // laser doesn't blank the sparks/tremor/flicker the instant it's scheduled at the click.
-    this.prevLevel = this.level
-    this.level = clamp01(Math.max(0, nextIntegrity) / maxIntegrityFor(nextShift))
+    this.prevLevel_ = this.level_
+    this.level_ = clamp01(Math.max(0, nextIntegrity) / maxIntegrityFor(nextShift))
 
     if (nextShift > prevShift) {
-      this.mode = 'kill'
-      this.final = final
-      this.killWalkIn = walkIn
-      this.strikeStart = startAfter
-      this.hitStart = startAfter + STRIKE_TRAVEL_MS
-      this.killStart = startAfter
-      this.levelAt = this.hitStart // FX keep the old low level right up until the beam strikes
+      this.mode_ = 'kill'
+      this.final_ = final
+      this.killWalkIn_ = walkIn
+      this.strikeStart_ = startAfter
+      this.hitStart_ = startAfter + STRIKE_TRAVEL_MS
+      this.killStart_ = startAfter
+      this.levelAt_ = this.hitStart_ // FX keep the old low level right up until the beam strikes
       // A death-only kill ends when the figure is gone; a bundled kill runs on through
       // the empty beat + the replacement's walk-in.
-      this.seqEnd = startAfter + (walkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
+      this.seqEnd_ = startAfter + (walkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
       // The dying figure keeps the outgoing colour; the arriving one takes the new.
-      this.killFromShift = prevShift
-      this.shift = nextShift
+      this.killFromShift_ = prevShift
+      this.shift_ = nextShift
       return
     }
     if (nextIntegrity < prevIntegrity) {
-      this.mode = 'hit'
-      this.strikeStart = startAfter
-      this.hitStart = startAfter + STRIKE_TRAVEL_MS
-      this.levelAt = this.hitStart // the added damage shows when the beam lands, not at the click
+      this.mode_ = 'hit'
+      this.strikeStart_ = startAfter
+      this.hitStart_ = startAfter + STRIKE_TRAVEL_MS
+      this.levelAt_ = this.hitStart_ // the added damage shows when the beam lands, not at the click
       // Keep the loop alive until the slower of the hit effects and the brow
       // roll-back finishes (the deal gate stays on HIT_TOTAL_MS — see above).
-      this.seqEnd = startAfter + Math.max(HIT_TOTAL_MS, STRIKE_TRAVEL_MS + BROW_FEAR_TOTAL_MS)
+      this.seqEnd_ = startAfter + Math.max(HIT_TOTAL_MS, STRIKE_TRAVEL_MS + BROW_FEAR_TOTAL_MS)
       return
     }
     // No damage this action (deal, loss, push): leave the figure idle.
-    this.mode = 'none'
-    this.seqEnd = 0
-    this.levelAt = 0 // no strike scheduled; prevLevel == level anyway
+    this.mode_ = 'none'
+    this.seqEnd_ = 0
+    this.levelAt_ = 0 // no strike scheduled; prevLevel == level anyway
   }
 
   // Snap the settled health fraction to a given integrity without playing a hit —
@@ -167,17 +167,17 @@ export class DealerAnimation implements DealerView, StrikeView {
   // override) flickers (or not) correctly from the first frame. `shift` scales it to
   // that dealer's max.
   setLevel(integrity: number, shift: number): void {
-    this.level = clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
+    this.level_ = clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
     // An instant set (load / new run / heal / arrival): no strike to wait for.
-    this.prevLevel = this.level
-    this.levelAt = 0
+    this.prevLevel_ = this.level_
+    this.levelAt_ = 0
   }
 
   // Snap the figure's colour identity to a given dealer without any death/walk-in —
   // used on load and on a New run (which may start at a dev-chosen dealer).
   setShift(shiftIndex: number): void {
-    this.shift = shiftIndex
-    this.killFromShift = shiftIndex
+    this.shift_ = shiftIndex
+    this.killFromShift_ = shiftIndex
   }
 
   // A standalone walk-in with no preceding death — the dealer slides in from the
@@ -185,20 +185,20 @@ export class DealerAnimation implements DealerView, StrikeView {
   // page load and on a New run, where there's no old dealer being destroyed. Set
   // the colour identity (setShift) BEFORE calling this.
   spawn(startAfter: number): void {
-    this.mode = 'spawn'
-    this.final = false
-    this.spawnStart = startAfter
-    this.seqEnd = startAfter + KILL_ARRIVE_MS
+    this.mode_ = 'spawn'
+    this.final_ = false
+    this.spawnStart_ = startAfter
+    this.seqEnd_ = startAfter + KILL_ARRIVE_MS
   }
 
   // The dealer strides OFF to the right and leaves the screen — the game-over exit when
   // the house wins (the mirror of the walk-in, over the same window). It stands in place
   // until `startAfter`, then walks off. Set the colour identity (setShift) beforehand.
   walkOff(startAfter: number): void {
-    this.mode = 'walkoff'
-    this.final = false
-    this.walkoffStart = startAfter
-    this.seqEnd = startAfter + KILL_ARRIVE_MS
+    this.mode_ = 'walkoff'
+    this.final_ = false
+    this.walkoffStart_ = startAfter
+    this.seqEnd_ = startAfter + KILL_ARRIVE_MS
   }
 
   // Begin a voice emote (laugh or angry growl) at `startAfter`, shaped by `pattern` — the
@@ -207,17 +207,17 @@ export class DealerAnimation implements DealerView, StrikeView {
   // emoting at game over); overwriting simply restarts. Silent dealers never call this
   // (game-view skips them via voiceSeedFor).
   emote(startAfter: number, pattern: VoicePattern): void {
-    this.emoteStart = startAfter
-    this.emotePattern = pattern
+    this.emoteStart_ = startAfter
+    this.emotePattern_ = pattern
   }
 
   // Walk-off progress (0..1) as the dealer leaves to the right, or null when it's still
   // standing (before `walkoffStart`) or already gone.
   leaving(now: number): number | null {
-    if (this.mode !== 'walkoff') {
+    if (this.mode_ !== 'walkoff') {
       return null
     }
-    const p = (now - this.walkoffStart) / KILL_ARRIVE_MS
+    const p = (now - this.walkoffStart_) / KILL_ARRIVE_MS
     if (p < 0 || p >= 1) {
       return null
     }
@@ -235,21 +235,21 @@ export class DealerAnimation implements DealerView, StrikeView {
   // (0 outside a walk-in). Resets when a fresh walk-in begins. Mirrors the token
   // launch/land edge-tracking — call it exactly once per frame.
   footsteps(now: number): number {
-    const start = this.walkClock()
+    const start = this.walkClock_()
     if (start === null) {
       return 0
     }
-    if (start !== this.walkStart) {
-      this.walkStart = start
-      this.stepsFired = 0
+    if (start !== this.walkStart_) {
+      this.walkStart_ = start
+      this.stepsFired_ = 0
     }
     // The WALK_STEPS visible strides on the felt (each on a |sin| bob dip, render/dealer.ts), plus
     // ONE extra footfall at the OFF-SCREEN edge of the walk — a first thud as a walk-in enters from
     // the edge, or a last thud as a walk-off clears it off-screen.
-    const fractions = this.footstepFractions()
+    const fractions = this.footstepFractions_()
     let fired = 0
-    while (this.stepsFired < fractions.length && now >= start + fractions[this.stepsFired] * KILL_ARRIVE_MS) {
-      this.stepsFired += 1
+    while (this.stepsFired_ < fractions.length && now >= start + fractions[this.stepsFired_] * KILL_ARRIVE_MS) {
+      this.stepsFired_ += 1
       fired += 1
     }
     return fired
@@ -258,7 +258,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // Footfall timings (fractions of KILL_ARRIVE_MS): the WALK_STEPS on-felt strides, plus one at the
   // OFF-SCREEN edge — prepended for a walk-in (entering from the edge), appended for a walk-off
   // (stepping off past it). Kept in time order so they fire sequentially.
-  private footstepFractions(): number[] {
+  private footstepFractions_(): number[] {
     const steps: number[] = []
     for (let i = 0; i < WALK_STEPS; i += 1) {
       steps.push((i + 0.5) / WALK_STEPS)
@@ -266,7 +266,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     // A walk-OFF keeps striding off past the edge: one more footfall a FULL beat after the last
     // on-felt stride (so the rhythm stays even), landing once it's fully off-screen. A walk-in's
     // first stride already lands as it enters from the edge, so it needs no extra one.
-    if (this.mode === 'walkoff') {
+    if (this.mode_ === 'walkoff') {
       steps.push((WALK_STEPS + 0.5) / WALK_STEPS)
     }
     return steps
@@ -275,21 +275,21 @@ export class DealerAnimation implements DealerView, StrikeView {
   // True while any strike/hit/kill sequence is playing OR the eyes are flickering
   // from low health — keeps the GameView loop alive so the flicker keeps ticking.
   isAnimating(now: number): boolean {
-    if (this.mode !== 'none' && now < this.seqEnd) {
+    if (this.mode_ !== 'none' && now < this.seqEnd_) {
       return true
     }
-    return this.damageIntensity(now) > 0
+    return this.damageIntensity_(now) > 0
   }
 
   // True across the whole kill, so buttons stay disabled for the entire death →
   // walk-in → recharge pause (a plain hit never blocks). A death-only kill blocks
   // just through the death — the deferred walk-in re-blocks later on its own.
   isBlocking(now: number): boolean {
-    if (this.mode !== 'kill') {
+    if (this.mode_ !== 'kill') {
       return false
     }
-    const blockEnd = this.killStart + (this.killWalkIn ? KILL_TOTAL_MS : KILL_DEATH_MS)
-    return now >= this.killStart && now < blockEnd
+    const blockEnd = this.killStart_ + (this.killWalkIn_ ? KILL_TOTAL_MS : KILL_DEATH_MS)
+    return now >= this.killStart_ && now < blockEnd
   }
 
   // The damage bursts (sparks + smoke) erupting off the figure this frame: empty at or
@@ -299,7 +299,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // standing at its home spot (not dying/arriving/leaving), so bursts never show detached
   // during a transition — here we only report what the health level calls for.
   damageBursts(now: number): DamageBurstState[] {
-    const power = this.damageFxIntensity(now)
+    const power = this.damageFxIntensity_(now)
     if (power <= 0) {
       return []
     }
@@ -316,20 +316,20 @@ export class DealerAnimation implements DealerView, StrikeView {
   // --- DealerView --------------------------------------------------------------
 
   alive(now: number): boolean {
-    if (this.mode === 'spawn') {
+    if (this.mode_ === 'spawn') {
       // A deferred walk-in is parked/gone until it actually begins (its start may be
       // scheduled a beat ahead — e.g. while the upgrade selector is still up).
-      return now >= this.spawnStart
+      return now >= this.spawnStart_
     }
-    if (this.mode === 'walkoff') {
+    if (this.mode_ === 'walkoff') {
       // Standing (before the walk-off) or striding off; gone once it clears the edge.
-      return now < this.walkoffStart + KILL_ARRIVE_MS
+      return now < this.walkoffStart_ + KILL_ARRIVE_MS
     }
-    if (this.mode !== 'kill') {
+    if (this.mode_ !== 'kill') {
       return true
     }
-    const goneStart = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS
-    if (this.final || !this.killWalkIn) {
+    const goneStart = this.killStart_ + KILL_DEATH_LEAD_MS + KILL_DYING_MS
+    if (this.final_ || !this.killWalkIn_) {
       return now < goneStart // dies and stays gone (no walk-in in this sequence)
     }
     const goneEnd = goneStart + KILL_GONE_MS
@@ -337,10 +337,10 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   hit(now: number): { flash: number; shakeX: number; shakeY: number } {
-    if (this.mode === 'none') {
+    if (this.mode_ === 'none') {
       return NO_HIT
     }
-    const start = this.hitStart
+    const start = this.hitStart_
     if (now < start || now >= start + HIT_MS) {
       return NO_HIT
     }
@@ -364,7 +364,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     if (this.dying(now) !== null || this.arriving(now) !== null || this.leaving(now) !== null) {
       return NO_TREMOR
     }
-    const power = this.tremorIntensity(now)
+    const power = this.tremorIntensity_(now)
     if (power <= 0) {
       return NO_TREMOR
     }
@@ -396,8 +396,8 @@ export class DealerAnimation implements DealerView, StrikeView {
 
   // Tremor intensity, 0..1: 0 at/above 50% health, ramping linearly to 1 as it empties. Sets
   // how far the shudder interval is compressed toward its ~1/sec floor (NOT the magnitude).
-  private tremorIntensity(now: number): number {
-    const level = this.currentLevel(now)
+  private tremorIntensity_(now: number): number {
+    const level = this.currentLevel_(now)
     if (level >= TREMOR_THRESHOLD) {
       return 0
     }
@@ -408,10 +408,10 @@ export class DealerAnimation implements DealerView, StrikeView {
   // at impact, holds through the shake, then rolls back over BROW_FEAR_FALL_MS. On a
   // kill it's cut short when the figure breaks apart (dying() takes over the draw).
   browFear(now: number): number {
-    if (this.mode === 'none') {
+    if (this.mode_ === 'none') {
       return 0
     }
-    const t = now - this.hitStart
+    const t = now - this.hitStart_
     if (t < 0 || t >= BROW_FEAR_TOTAL_MS) {
       return 0
     }
@@ -430,26 +430,26 @@ export class DealerAnimation implements DealerView, StrikeView {
   // moment it starts walking in (the empty gone-beat draws nothing, so it doesn't
   // matter there). A final kill has no replacement, so it stays the dying dealer.
   figureShift(now: number): number {
-    if (this.mode === 'kill' && !this.final && this.killWalkIn) {
-      const arriveStart = this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
-      return now >= arriveStart ? this.shift : this.killFromShift
+    if (this.mode_ === 'kill' && !this.final_ && this.killWalkIn_) {
+      const arriveStart = this.killStart_ + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
+      return now >= arriveStart ? this.shift_ : this.killFromShift_
     }
-    if (this.mode === 'kill') {
+    if (this.mode_ === 'kill') {
       // Final kill / death-only: the dying dealer keeps its colour (no walk-in here).
-      return this.killFromShift
+      return this.killFromShift_
     }
-    return this.shift
+    return this.shift_
   }
 
   // The mouth readout for this frame, or null when the dealer isn't emoting. Reads the
   // shared laugh envelope so the panel's glow + wave amplitude track the syllables, and
   // hands the renderer the pattern's per-dealer wave look.
   voice(now: number): VoiceEmote | null {
-    const pattern = this.emotePattern
+    const pattern = this.emotePattern_
     if (!pattern) {
       return null
     }
-    const env = voiceEnvelope(pattern, now - this.emoteStart)
+    const env = voiceEnvelope(pattern, now - this.emoteStart_)
     if (!env) {
       return null
     }
@@ -464,10 +464,10 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   dying(now: number): number | null {
-    if (this.mode !== 'kill') {
+    if (this.mode_ !== 'kill') {
       return null
     }
-    const start = this.killStart + KILL_DEATH_LEAD_MS
+    const start = this.killStart_ + KILL_DEATH_LEAD_MS
     if (now < start || now >= start + KILL_DYING_MS) {
       return null
     }
@@ -475,7 +475,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   arriving(now: number): number | null {
-    const start = this.walkInStart()
+    const start = this.walkInStart_()
     if (start === null || now < start || now >= start + KILL_ARRIVE_MS) {
       return null
     }
@@ -486,55 +486,55 @@ export class DealerAnimation implements DealerView, StrikeView {
   // a kill's replacement arrival — or null when no walk-in is in play (final / death-
   // only kills have none). Shared by arriving() and the footstep tracker so the bob
   // and its step sfx key off one clock.
-  private walkInStart(): number | null {
-    if (this.mode === 'spawn') {
-      return this.spawnStart
+  private walkInStart_(): number | null {
+    if (this.mode_ === 'spawn') {
+      return this.spawnStart_
     }
-    if (this.mode === 'kill' && !this.final && this.killWalkIn) {
-      return this.killStart + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
+    if (this.mode_ === 'kill' && !this.final_ && this.killWalkIn_) {
+      return this.killStart_ + KILL_DEATH_LEAD_MS + KILL_DYING_MS + KILL_GONE_MS
     }
     return null
   }
 
   // The absolute start of the current WALK (in OR off) for footstep timing — both stride
   // WALK_STEPS times over KILL_ARRIVE_MS. null when neither is in play.
-  private walkClock(): number | null {
-    return this.mode === 'walkoff' ? this.walkoffStart : this.walkInStart()
+  private walkClock_(): number | null {
+    return this.mode_ === 'walkoff' ? this.walkoffStart_ : this.walkInStart_()
   }
 
   // Bright red LED brightness (0..1) for the eye cores on the figure: 1 when
   // healthy, stuttering toward 0 as a low-health dealer's eyes flicker. Shares its
   // flicker signal with eyeGlow so the core and its halo blink in step.
   eyeCore(now: number): number {
-    return this.flicker(now)
+    return this.flicker_(now)
   }
 
   eyeGlow(now: number): number {
-    if (this.mode === 'walkoff') {
+    if (this.mode_ === 'walkoff') {
       // The glow sits at the FIXED eye position (drawn on the mask, which doesn't
       // follow the figure's translate), so dim it out over the first 30% of the walk-off
       // — before the figure has strode far — rather than leaving a glow behind at centre.
-      const lp = clamp01((now - this.walkoffStart) / KILL_ARRIVE_MS)
+      const lp = clamp01((now - this.walkoffStart_) / KILL_ARRIVE_MS)
       const ramp = lp < 0.3 ? 1 - lp / 0.3 : 0
-      return BASE_GLOW * ramp * this.flicker(now)
+      return BASE_GLOW * ramp * this.flicker_(now)
     }
-    if (this.mode === 'spawn') {
+    if (this.mode_ === 'spawn') {
       // Ignite as the figure nears home — the same re-ignite curve a kill's
       // replacement uses (only the last 40% of the slide, by when it's ~settled).
-      const ap = clamp01((now - this.spawnStart) / KILL_ARRIVE_MS)
+      const ap = clamp01((now - this.spawnStart_) / KILL_ARRIVE_MS)
       const ramp = ap < 0.6 ? 0 : (ap - 0.6) / 0.4
-      return BASE_GLOW * ramp * this.flicker(now)
+      return BASE_GLOW * ramp * this.flicker_(now)
     }
-    if (this.mode === 'kill') {
-      const dyingStart = this.killStart + KILL_DEATH_LEAD_MS
+    if (this.mode_ === 'kill') {
+      const dyingStart = this.killStart_ + KILL_DEATH_LEAD_MS
       if (now < dyingStart) {
-        return BASE_GLOW + this.hitFlare(now)
+        return BASE_GLOW + this.hitFlare_(now)
       }
       const dyingEnd = dyingStart + KILL_DYING_MS
       if (now < dyingEnd) {
         return BASE_GLOW * (1 - (now - dyingStart) / KILL_DYING_MS) // dim out as it dies
       }
-      if (this.final || !this.killWalkIn) {
+      if (this.final_ || !this.killWalkIn_) {
         return 0 // no walk-in in this kill sequence — stays dark
       }
       const arriveStart = dyingEnd + KILL_GONE_MS
@@ -549,69 +549,69 @@ export class DealerAnimation implements DealerView, StrikeView {
       // (its slide uses smoothEnd3), so the glow on the fixed mask lines up.
       return ap < 0.6 ? 0 : BASE_GLOW * ((ap - 0.6) / 0.4)
     }
-    if (this.mode === 'hit') {
-      return (BASE_GLOW + this.hitFlare(now)) * this.flicker(now)
+    if (this.mode_ === 'hit') {
+      return (BASE_GLOW + this.hitFlare_(now)) * this.flicker_(now)
     }
-    return BASE_GLOW * this.flicker(now)
+    return BASE_GLOW * this.flicker_(now)
   }
 
   // --- StrikeView --------------------------------------------------------------
 
   beam(now: number): { travel: number; alpha: number } | null {
-    if (!this.striking()) {
+    if (!this.striking_()) {
       return null
     }
-    const travelEnd = this.strikeStart + STRIKE_TRAVEL_MS
+    const travelEnd = this.strikeStart_ + STRIKE_TRAVEL_MS
     const fadeEnd = travelEnd + STRIKE_FADE_MS
-    if (now < this.strikeStart || now >= fadeEnd) {
+    if (now < this.strikeStart_ || now >= fadeEnd) {
       return null
     }
     if (now < travelEnd) {
-      return { travel: (now - this.strikeStart) / STRIKE_TRAVEL_MS, alpha: 1 }
+      return { travel: (now - this.strikeStart_) / STRIKE_TRAVEL_MS, alpha: 1 }
     }
     return { travel: 1, alpha: 1 - smoothStart2((now - travelEnd) / STRIKE_FADE_MS) }
   }
 
   muzzle(now: number): number | null {
-    if (!this.striking()) {
+    if (!this.striking_()) {
       return null
     }
     const dur = STRIKE_TRAVEL_MS + 120
-    if (now < this.strikeStart || now >= this.strikeStart + dur) {
+    if (now < this.strikeStart_ || now >= this.strikeStart_ + dur) {
       return null
     }
-    return arch2((now - this.strikeStart) / dur)
+    return arch2((now - this.strikeStart_) / dur)
   }
 
   impactSpark(now: number): number | null {
-    if (!this.striking()) {
+    if (!this.striking_()) {
       return null
     }
-    if (now < this.hitStart || now >= this.hitStart + IMPACT_SPARK_MS) {
+    if (now < this.hitStart_ || now >= this.hitStart_ + IMPACT_SPARK_MS) {
       return null
     }
-    return (now - this.hitStart) / IMPACT_SPARK_MS
+    return (now - this.hitStart_) / IMPACT_SPARK_MS
   }
 
   // Whether a laser strike is actually in play — only a hit or a kill fires one. A
   // 'spawn' walk-in (page load / new run) must NOT, or its stale strikeStart (0)
   // would draw a phantom beam while performance.now() is still small on load.
-  private striking(): boolean {
-    return this.mode === 'hit' || this.mode === 'kill'
+  private striking_(): boolean {
+    return this.mode_ === 'hit' || this.mode_ === 'kill'
   }
 
   // The health fraction the damage FX should reflect right now: the previously-shown level
   // until a scheduled strike lands (`levelAt`), then the new level. This is what keeps a
   // deferred laser's drop from blanking the effects at the click — they hold until impact.
-  private currentLevel(now: number): number {
-    return now >= this.levelAt ? this.level : this.prevLevel
+  private currentLevel_(now: number): number {
+    return now >= this.levelAt_ ? this.level_ : this.prevLevel_
   }
 
   // How badly the dealer's eyes are failing (0 = healthy, 1 = near death), from the health
   // fraction currently in effect: 0 at/above the damage threshold, ramping to 1 as it
   // approaches empty. Drives both the flicker and whether the loop keeps ticking.
-  private damageIntensity(now: number): number {
-    const level = this.currentLevel(now)
+  private damageIntensity_(now: number): number {
+    const level = this.currentLevel_(now)
     if (level <= 0 || level >= DAMAGE_THRESHOLD) {
       return 0
     }
@@ -621,8 +621,8 @@ export class DealerAnimation implements DealerView, StrikeView {
   // Damage-FX intensity, 0..1: 0 at/above FX_THRESHOLD, ramping to 1 as health empties.
   // Sets the spark/smoke burst frequency + density. Unlike damageIntensity() (the eye
   // flicker) it does NOT zero out at level 0 — a near-dead standing dealer sparks hardest.
-  private damageFxIntensity(now: number): number {
-    const level = this.currentLevel(now)
+  private damageFxIntensity_(now: number): number {
+    const level = this.currentLevel_(now)
     if (level >= FX_THRESHOLD) {
       return 0
     }
@@ -634,8 +634,8 @@ export class DealerAnimation implements DealerView, StrikeView {
   // faster, dips into the "off" state more often, and cuts fully dark instead of a
   // shallow dim. The signal is summed incommensurate sines (time-driven, so it
   // flickers smoothly rather than jittering per frame).
-  private flicker(now: number): number {
-    const k = this.damageIntensity(now)
+  private flicker_(now: number): number {
+    const k = this.damageIntensity_(now)
     if (k <= 0) {
       return 1
     }
@@ -653,8 +653,8 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   // A brief upward bump on the eye glow at impact (fades over the hit reaction).
-  private hitFlare(now: number): number {
-    const start = this.hitStart
+  private hitFlare_(now: number): number {
+    const start = this.hitStart_
     if (now < start || now >= start + HIT_MS) {
       return 0
     }

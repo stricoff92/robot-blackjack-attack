@@ -18,16 +18,16 @@ const MS_PER_UNIT = 16
 const SWELL = 0.2
 
 export class CountTicker {
-  private from: number
-  private target: number
-  private start = 0
-  private end = 0
+  private from_: number
+  private target_: number
+  private start_ = 0
+  private end_ = 0
 
   // When true, decreases roll (tick + swell) the same as increases instead of
   // snapping — used by the token counter, whose spends should count down.
-  constructor(initial = 0, private readonly rollDown = false) {
-    this.from = initial
-    this.target = initial
+  constructor(initial = 0, private readonly rollDown_ = false) {
+    this.from_ = initial
+    this.target_ = initial
   }
 
   // The roll length (ms) for a given jump — exposed so a caller can time other
@@ -40,10 +40,10 @@ export class CountTicker {
   // Jump straight to `value`, no roll — for the initial sync and resets (a New
   // run zeroing the count shouldn't dramatically count down).
   set(value: number): void {
-    this.from = value
-    this.target = value
-    this.start = 0
-    this.end = 0
+    this.from_ = value
+    this.target_ = value
+    this.start_ = 0
+    this.end_ = 0
   }
 
   // Aim at `value`, rolling from whatever shows right now. By default a decrease
@@ -52,51 +52,51 @@ export class CountTicker {
   // A no-op when already headed there. Pass `durationMs` to override the auto length
   // — e.g. to match the roll to a sfx cascade so the number lands with the last tone.
   retarget(value: number, now: number, durationMs?: number): void {
-    if (value === this.target) {
+    if (value === this.target_) {
       return
     }
-    if (value < this.target && !this.rollDown) {
+    if (value < this.target_ && !this.rollDown_) {
       this.set(value)
       return
     }
-    this.from = this.value(now)
-    this.target = value
-    this.start = now
-    this.end = now + (durationMs ?? CountTicker.rollDurationMs(value - this.from))
+    this.from_ = this.value(now)
+    this.target_ = value
+    this.start_ = now
+    this.end_ = now + (durationMs ?? CountTicker.rollDurationMs(value - this.from_))
   }
 
   isAnimating(now: number): boolean {
-    return now < this.end
+    return now < this.end_
   }
 
   // Milliseconds until the current roll settles (0 at rest) — lets a caller run a
   // sound for exactly as long as the number is visibly ticking.
   remainingMs(now: number): number {
-    return Math.max(0, this.end - now)
+    return Math.max(0, this.end_ - now)
   }
 
   // The integer to show this frame.
   value(now: number): number {
-    return Math.round(this.from + (this.target - this.from) * this.progress(now))
+    return Math.round(this.from_ + (this.target_ - this.from_) * this.progress_(now))
   }
 
   // 1 at rest, swelling to 1 + SWELL mid-roll and easing back — a pop that tracks
   // the roll, so a bigger reward swells for a touch longer.
   scale(now: number): number {
-    if (now >= this.end || now < this.start) {
+    if (now >= this.end_ || now < this.start_) {
       return 1
     }
-    return 1 + SWELL * arch2(this.progress(now))
+    return 1 + SWELL * arch2(this.progress_(now))
   }
 
-  private progress(now: number): number {
-    if (now >= this.end) {
+  private progress_(now: number): number {
+    if (now >= this.end_) {
       return 1
     }
-    if (now <= this.start || this.end <= this.start) {
+    if (now <= this.start_ || this.end_ <= this.start_) {
       return 0
     }
-    return smoothStep((now - this.start) / (this.end - this.start))
+    return smoothStep((now - this.start_) / (this.end_ - this.start_))
   }
 }
 

@@ -45,11 +45,11 @@ interface Flight {
 }
 
 export class TokenAnimation implements TokenView {
-  private flights: Flight[] = []
-  private end = 0
+  private flights_: Flight[] = []
+  private end_ = 0
 
   isAnimating(now: number): boolean {
-    return now < this.end
+    return now < this.end_
   }
 
   // Schedule `amount` tokens flying from `from`, lifting off at `startAfter`.
@@ -57,9 +57,9 @@ export class TokenAnimation implements TokenView {
     if (amount <= 0) {
       return
     }
-    this.prune(startAfter)
+    this.prune_(startAfter)
     const end = startAfter + FLY_MS
-    this.flights.push({
+    this.flights_.push({
       from: { x: from.x, y: from.y },
       amount,
       icons: burstIcons(amount),
@@ -69,7 +69,7 @@ export class TokenAnimation implements TokenView {
       launchReported: false,
       landReported: false,
     })
-    this.end = Math.max(this.end, end)
+    this.end_ = Math.max(this.end_, end)
   }
 
   // How many token SPRITES have lifted off from the nexus since the last call —
@@ -78,7 +78,7 @@ export class TokenAnimation implements TokenView {
   // burst exactly once, the frame `now` first reaches its lift-off.
   launched(now: number): number {
     let sprites = 0
-    for (const flight of this.flights) {
+    for (const flight of this.flights_) {
       if (!flight.launchReported && now >= flight.start) {
         flight.launchReported = true
         sprites += flight.icons
@@ -93,7 +93,7 @@ export class TokenAnimation implements TokenView {
   // (prune) until reported so a click can't drop it unheard.
   landed(now: number): number[] {
     const arrived: number[] = []
-    for (const flight of this.flights) {
+    for (const flight of this.flights_) {
       if (!flight.landReported && now >= flight.end) {
         flight.landReported = true
         arrived.push(flight.icons)
@@ -106,7 +106,7 @@ export class TokenAnimation implements TokenView {
   // displayed count must withhold until each burst arrives.
   pending(now: number): number {
     let sum = 0
-    for (const flight of this.flights) {
+    for (const flight of this.flights_) {
       if (now < flight.end) {
         sum += flight.amount
       }
@@ -117,7 +117,7 @@ export class TokenAnimation implements TokenView {
   // The bursts currently visible (lifted off, not yet landed), for the renderer.
   bursts(now: number): readonly TokenBurst[] {
     const out: TokenBurst[] = []
-    for (const flight of this.flights) {
+    for (const flight of this.flights_) {
       if (now < flight.start || now >= flight.end) {
         continue
       }
@@ -133,9 +133,9 @@ export class TokenAnimation implements TokenView {
 
   // Drop flights that have already landed AND had their arrival reported, so the
   // list can't grow without bound but no landing sfx is pruned before it fires.
-  private prune(now: number): void {
-    if (this.flights.length > 0) {
-      this.flights = this.flights.filter((flight) => now < flight.end || !flight.landReported)
+  private prune_(now: number): void {
+    if (this.flights_.length > 0) {
+      this.flights_ = this.flights_.filter((flight) => now < flight.end || !flight.landReported)
     }
   }
 }

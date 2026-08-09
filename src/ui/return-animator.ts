@@ -9,25 +9,25 @@ const FLIP_MS = 150 // face-up → face-down
 const FLY_MS = 380 // slot → deck (eased, fades into the shoe near the end)
 
 export class ReturnAnimation {
-  private start = 0
-  private end = 0
-  private active = false
+  private start_ = 0
+  private end_ = 0
+  private active_ = false
 
   // Begin the toss; returns when the card has merged into the deck.
   begin(now: number): number {
-    this.start = now
-    this.end = now + FLIP_MS + FLY_MS
-    this.active = true
-    return this.end
+    this.start_ = now
+    this.end_ = now + FLIP_MS + FLY_MS
+    this.active_ = true
+    return this.end_
   }
 
   isAnimating(now: number): boolean {
-    return this.active && now < this.end
+    return this.active_ && now < this.end_
   }
 
   // {flip: 1→0, fly: 0→1} at `now`: flip face-down first, then fly to the deck.
   frame(now: number): { flip: number; fly: number } {
-    const local = now - this.start
+    const local = now - this.start_
     if (local <= 0) {
       return { flip: 1, fly: 0 }
     }

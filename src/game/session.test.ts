@@ -23,7 +23,7 @@ describe('Session', () => {
     const snapshot = new Session(12345).snapshot()
 
     expect(snapshot.phase).toBe('betting')
-    expect(snapshot.run.chips).toBe(300)
+    expect(snapshot.run.chips).toBe(400)
     expect(snapshot.run.tokens).toBe(100) // STARTING_TOKENS buffer for the early powerups
   })
 

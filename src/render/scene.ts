@@ -52,8 +52,8 @@ function railThickness(w: number, h: number): number {
 }
 
 export class Scene {
-  private felt: FeltCanvas | null = null
-  private feltKey = ''
+  private felt_: FeltCanvas | null = null
+  private feltKey_ = ''
 
   // Back layer: just the room. The dealer figure is drawn separately on the
   // 'dealer' layer (render/dealer.ts) so it can animate.
@@ -65,11 +65,11 @@ export class Scene {
   // shows through above the rail.
   drawTable(ctx: CanvasRenderingContext2D, layout: Layout): void {
     const dpr = deviceDpr()
-    this.drawFelt(ctx, layout, dpr)
+    this.drawFelt_(ctx, layout, dpr)
     drawRail(ctx, layout)
   }
 
-  private drawFelt(ctx: CanvasRenderingContext2D, layout: Layout, dpr: number): void {
+  private drawFelt_(ctx: CanvasRenderingContext2D, layout: Layout, dpr: number): void {
     // The felt fills the screen from the arch's highest point down to the
     // bottom, full width; the clip trims it to the curved top edge.
     const top = layout.apexY
@@ -84,15 +84,15 @@ export class Scene {
     // dark void, most visibly right after a dealer kill). isFeltBlank() cheaply
     // detects that loss so we regenerate; the texture is only blitted a couple of
     // times per hand, so the occasional rebuild is negligible.
-    if (!this.felt || this.feltKey !== key || isFeltBlank(this.felt)) {
-      this.felt = createFeltTexture(width, height, dpr)
-      this.feltKey = key
+    if (!this.felt_ || this.feltKey_ !== key || isFeltBlank(this.felt_)) {
+      this.felt_ = createFeltTexture(width, height, dpr)
+      this.feltKey_ = key
     }
 
     ctx.save()
     traceFeltRegion(ctx, layout)
     ctx.clip()
-    ctx.drawImage(this.felt, 0, top, width, height)
+    ctx.drawImage(this.felt_, 0, top, width, height)
     ctx.restore()
   }
 }

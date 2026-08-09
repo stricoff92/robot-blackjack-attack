@@ -17,28 +17,28 @@ const EJECT_FLIP_MS = 150 // flip face-down before it's swept away
 const EJECT_FLY_MS = 360 // slot → dealer muck (fades out near the end)
 
 export class BustBlockAnimation {
-  private start = 0
-  private end = 0
-  private active = false
+  private start_ = 0
+  private end_ = 0
+  private active_ = false
 
   // Begin the reveal at `now`; returns when the busting card has left for the
   // muck — the moment a replacement + the dealer's play can be scheduled to
   // follow. `now` may be a short beat ahead of the action (e.g. behind a Peek
   // Deck card flipping back down first).
   begin(now: number): number {
-    this.start = now
-    this.end = now + FLY_MS + FLIP_MS + HOLD_MS + EJECT_FLIP_MS + EJECT_FLY_MS
-    this.active = true
-    return this.end
+    this.start_ = now
+    this.end_ = now + FLY_MS + FLIP_MS + HOLD_MS + EJECT_FLIP_MS + EJECT_FLY_MS
+    this.active_ = true
+    return this.end_
   }
 
   isAnimating(now: number): boolean {
-    return this.active && now >= this.start && now < this.end
+    return this.active_ && now >= this.start_ && now < this.end_
   }
 
   // The card's flight/flip/eject progress + shield-flash intensity at `now`.
   frame(now: number): BustBlockFrame {
-    let local = now - this.start
+    let local = now - this.start_
     // Fly in from the shoe, face-down.
     if (local < FLY_MS) {
       return { flight: Math.max(0, local) / FLY_MS, flip: 0, fly: 0, shield: 0 }

@@ -128,40 +128,53 @@ const HEAL_GAIN = 0.2
 const POINTS_ROLL_GAIN = 0.15
 
 class SfxService {
-  private ctx: AudioContext | null = null
-  private readonly buffers = new Map<SfxName, AudioBuffer>()
-  private readonly gains = new Map<SfxName, number>()
-  private loadPromise: Promise<void> | null = null
+  private ctx_: AudioContext | null = null
+  // A master gain every sound routes through, so the platform mute (CrazyGames settings.muteAudio)
+  // can silence all SFX at once. Created alongside the context.
+  private master_: GainNode | null = null
+  private muted_ = false
+  private readonly buffers_ = new Map<SfxName, AudioBuffer>()
+  private readonly gains_ = new Map<SfxName, number>()
+  private loadPromise_: Promise<void> | null = null
   // Sustained "shredding bed" voices (looping shredder sample + synth vacuum drone),
   // held live so they can be ramped down — unlike the fire-and-forget one-shots.
-  private shredVoices: { gain: GainNode; sources: AudioScheduledSourceNode[] }[] = []
-  private noise: AudioBuffer | null = null
+  private shredVoices_: { gain: GainNode; sources: AudioScheduledSourceNode[] }[] = []
+  private noise_: AudioBuffer | null = null
 
   constructor() {
     for (const name of Object.keys(SFX) as SfxName[]) {
-      this.gains.set(name, SFX[name].gain)
+      this.gains_.set(name, SFX[name].gain)
     }
   }
 
   // Download + decode every clip. Idempotent: repeated calls share one load.
   load(): Promise<void> {
-    if (!this.loadPromise) {
-      this.loadPromise = this.loadAll()
+    if (!this.loadPromise_) {
+      this.loadPromise_ = this.loadAll_()
     }
-    return this.loadPromise
+    return this.loadPromise_
   }
 
   // Retune a sound's base level (1 = 100%). Applies to subsequent plays.
   setGain(name: SfxName, gain: number): void {
-    this.gains.set(name, gain)
+    this.gains_.set(name, gain)
+  }
+
+  // Platform mute toggle (CrazyGames settings.muteAudio). Silences the master gain; already-
+  // scheduled one-shots ring out but nothing new is audible, and continuous beds (shredder) mute too.
+  setMuted(muted: boolean): void {
+    this.muted_ = muted
+    if (this.master_) {
+      this.master_.gain.value = muted ? 0 : 1
+    }
   }
 
   // Fire a one-shot. No-op until the clip has finished decoding (so early
   // calls during load simply drop rather than throw). `delaySeconds` schedules it
   // into the future — used to lead a charge-up sound into the event it precedes.
   play(name: SfxName, delaySeconds = 0): void {
-    const ctx = this.ctx
-    const buffer = this.buffers.get(name)
+    const ctx = this.ctx_
+    const buffer = this.buffers_.get(name)
     if (!ctx || !buffer) {
       return
     }
@@ -177,8 +190,8 @@ class SfxService {
       source.playbackRate.value = 1 + (Math.random() * 2 - 1) * variance
     }
     const gain = ctx.createGain()
-    gain.gain.value = this.gains.get(name) ?? 1
-    source.connect(gain).connect(ctx.destination)
+    gain.gain.value = this.gains_.get(name) ?? 1
+    source.connect(gain).connect(this.master_ ?? ctx.destination)
     source.start(ctx.currentTime + Math.max(0, delaySeconds))
   }
 
@@ -187,7 +200,7 @@ class SfxService {
   // works the instant the context exists (no wait on load()). `delaySeconds`
   // schedules it into the future — used to cascade a burst's per-token blips.
   playTone(name: ToneName, delaySeconds = 0): void {
-    const ctx = this.context()
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
@@ -210,7 +223,7 @@ class SfxService {
     gain.gain.linearRampToValueAtTime(def.gain, t0 + 0.008)
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur)
 
-    osc.connect(gain).connect(ctx.destination)
+    osc.connect(gain).connect(this.master_ ?? ctx.destination)
     osc.onended = () => {
       osc.disconnect()
       gain.disconnect()
@@ -225,7 +238,7 @@ class SfxService {
   // `durationMs` so it covers exactly the visible roll. Fully synthesised (no buffer), and
   // distinct from the token blips so the score reads as its own reward.
   playPointsRoll(durationMs: number): void {
-    const ctx = this.context()
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
@@ -238,7 +251,7 @@ class SfxService {
     out.gain.linearRampToValueAtTime(POINTS_ROLL_GAIN, t0 + 0.02)
     out.gain.setValueAtTime(POINTS_ROLL_GAIN, t0 + Math.max(0.02, dur - 0.05))
     out.gain.linearRampToValueAtTime(0, t0 + dur)
-    out.connect(ctx.destination)
+    out.connect(this.master_ ?? ctx.destination)
 
     // A fast square LFO drives a gain between 0 and 1, chopping the tone into the ticks
     // (32/sec) that read as the counter rattling upward.
@@ -290,7 +303,7 @@ class SfxService {
   // light rather than an impact. `delaySeconds` schedules it to lead the beam. Like
   // playTone it's fully synthesised, so it needs no buffer / load().
   playHeal(delaySeconds = 0): void {
-    const ctx = this.context()
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
@@ -304,7 +317,7 @@ class SfxService {
     out.gain.linearRampToValueAtTime(HEAL_GAIN, t0 + 0.12)
     out.gain.setValueAtTime(HEAL_GAIN, t0 + dur * 0.62)
     out.gain.linearRampToValueAtTime(0, t0 + dur)
-    out.connect(ctx.destination)
+    out.connect(this.master_ ?? ctx.destination)
 
     // A soft lowpass keeps the chord warm (no harsh upper partials); the sparkle
     // layer below bypasses it so its twinkle still reads bright.
@@ -361,38 +374,38 @@ class SfxService {
   // Begin the shredding bed: the shredder clip on a loop (so it covers a shred of any
   // length) plus a synth vacuum drone. No-op if already running; stopShredding() ends it.
   startShredding(): void {
-    if (this.shredVoices.length > 0) {
+    if (this.shredVoices_.length > 0) {
       return
     }
-    const ctx = this.context()
+    const ctx = this.context_()
     if (ctx.state === 'suspended') {
       void ctx.resume()
     }
-    const buffer = this.buffers.get('shredder')
+    const buffer = this.buffers_.get('shredder')
     if (buffer) {
       const source = ctx.createBufferSource()
       source.buffer = buffer
       source.loop = true
       const gain = ctx.createGain()
-      gain.gain.value = this.gains.get('shredder') ?? 1
-      source.connect(gain).connect(ctx.destination)
+      gain.gain.value = this.gains_.get('shredder') ?? 1
+      source.connect(gain).connect(this.master_ ?? ctx.destination)
       source.start()
-      this.shredVoices.push({ gain, sources: [source] })
+      this.shredVoices_.push({ gain, sources: [source] })
     }
-    this.shredVoices.push(this.buildVacuum(ctx))
+    this.shredVoices_.push(this.buildVacuum_(ctx))
   }
 
   // Fade the shredding bed out over `fadeMs` (kept fast so it doesn't trail past the
   // last card) and stop its sources.
   stopShredding(fadeMs: number): void {
-    const ctx = this.ctx
-    if (!ctx || this.shredVoices.length === 0) {
-      this.shredVoices = []
+    const ctx = this.ctx_
+    if (!ctx || this.shredVoices_.length === 0) {
+      this.shredVoices_ = []
       return
     }
     const t0 = ctx.currentTime
     const end = t0 + Math.max(0, fadeMs) / 1000
-    for (const voice of this.shredVoices) {
+    for (const voice of this.shredVoices_) {
       const g = voice.gain.gain
       g.cancelScheduledValues(t0)
       g.setValueAtTime(g.value, t0)
@@ -402,17 +415,17 @@ class SfxService {
         source.stop(end + 0.03)
       }
     }
-    this.shredVoices = []
+    this.shredVoices_ = []
   }
 
   // A synth vacuum drone: a sawtooth "motor" (quickly spun up) + band-limited white
   // noise "airflow", both through a lowpass — a rough mimic of a vacuum sucking the
   // cards in, to sit under the shredder.
-  private buildVacuum(ctx: AudioContext): { gain: GainNode; sources: AudioScheduledSourceNode[] } {
+  private buildVacuum_(ctx: AudioContext): { gain: GainNode; sources: AudioScheduledSourceNode[] } {
     const t0 = ctx.currentTime
     const out = ctx.createGain()
     out.gain.value = VACUUM_GAIN
-    out.connect(ctx.destination)
+    out.connect(this.master_ ?? ctx.destination)
 
     const lowpass = ctx.createBiquadFilter()
     lowpass.type = 'lowpass'
@@ -431,7 +444,7 @@ class SfxService {
     sources.push(motor)
 
     const air = ctx.createBufferSource()
-    air.buffer = this.noiseBuffer(ctx)
+    air.buffer = this.noiseBuffer_(ctx)
     air.loop = true
     const airGain = ctx.createGain()
     airGain.gain.value = 0.35
@@ -443,26 +456,26 @@ class SfxService {
   }
 
   // One second of white noise, generated once and reused (looped) as the vacuum airflow.
-  private noiseBuffer(ctx: AudioContext): AudioBuffer {
-    if (!this.noise) {
+  private noiseBuffer_(ctx: AudioContext): AudioBuffer {
+    if (!this.noise_) {
       const length = Math.floor(ctx.sampleRate)
       const buffer = ctx.createBuffer(1, length, ctx.sampleRate)
       const data = buffer.getChannelData(0)
       for (let i = 0; i < length; i += 1) {
         data[i] = Math.random() * 2 - 1
       }
-      this.noise = buffer
+      this.noise_ = buffer
     }
-    return this.noise
+    return this.noise_
   }
 
-  private async loadAll(): Promise<void> {
-    const ctx = this.context()
+  private async loadAll_(): Promise<void> {
+    const ctx = this.context_()
     await Promise.all(
       (Object.keys(SFX) as SfxName[]).map(async (name) => {
         const res = await fetch(SFX[name].url)
         const data = await res.arrayBuffer()
-        this.buffers.set(name, await ctx.decodeAudioData(data))
+        this.buffers_.set(name, await ctx.decodeAudioData(data))
       }),
     )
   }
@@ -472,11 +485,14 @@ class SfxService {
   // the "playback" audio-session hint, and hidden/visible suspend/resume) — see
   // ./context. play() still nudges resume() as a belt-and-braces for the first
   // automatic sound (e.g. the end-of-hand riffle).
-  private context(): AudioContext {
-    if (!this.ctx) {
-      this.ctx = createAudioContext()
+  private context_(): AudioContext {
+    if (!this.ctx_) {
+      this.ctx_ = createAudioContext()
+      this.master_ = this.ctx_.createGain()
+      this.master_.gain.value = this.muted_ ? 0 : 1
+      this.master_.connect(this.ctx_.destination)
     }
-    return this.ctx
+    return this.ctx_
   }
 }
 

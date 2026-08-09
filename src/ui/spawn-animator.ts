@@ -60,24 +60,24 @@ export interface DeckState {
 }
 
 export class SpawnAnimation {
-  private begun = false
-  private t0 = 0
-  private n = 0 // cards on the table to shred
-  private hasOldDeck = false // whether the previous dealer's deck gets shredded too
-  private deckShredStart = 0 // old deck: first card peels off the top
-  private deckShredEnd = 0 // old deck: last card fully drawn in (shoe clear)
-  private shredStartAt = 0 // first card begins being sucked into the mouth
-  private shredEndAt = 0 // last card drawn in + a short sfx tail; 0 = nothing to shred
-  private deckFlyStart = 0 // fresh deck: dealer → shoe
-  private deckFlyEnd = 0
-  private unwrapStart = 0
-  private unwrapEnd = 0
-  private endAt = 0
+  private begun_ = false
+  private t0_ = 0
+  private n_ = 0 // cards on the table to shred
+  private hasOldDeck_ = false // whether the previous dealer's deck gets shredded too
+  private deckShredStart_ = 0 // old deck: first card peels off the top
+  private deckShredEnd_ = 0 // old deck: last card fully drawn in (shoe clear)
+  private shredStartAt_ = 0 // first card begins being sucked into the mouth
+  private shredEndAt_ = 0 // last card drawn in + a short sfx tail; 0 = nothing to shred
+  private deckFlyStart_ = 0 // fresh deck: dealer → shoe
+  private deckFlyEnd_ = 0
+  private unwrapStart_ = 0
+  private unwrapEnd_ = 0
+  private endAt_ = 0
   // Durations for the fresh deck's fly-in + unwrap, stretched for the grand (final
   // dealer) ceremony. Held as fields so the per-frame queries scale to match begin().
-  private flyMs = DECK_FLY_MS
-  private unwrapMs = UNWRAP_MS
-  private unwrapHoldMs = UNWRAP_HOLD_MS
+  private flyMs_ = DECK_FLY_MS
+  private unwrapMs_ = UNWRAP_MS
+  private unwrapHoldMs_ = UNWRAP_HOLD_MS
 
   // Start the ceremony at `now`, shredding `cardCount` table cards (0 on page load,
   // where there are no previous cards). `shredOldDeck` also sucks the previous dealer's
@@ -87,92 +87,92 @@ export class SpawnAnimation {
   // `shredOnly` (game over): shred the table cards but fly NO fresh deck in — the run is
   // over, so there's no replacement. endAt is just the shred (+ its lingering chunks).
   begin(now: number, cardCount: number, shredOldDeck = false, grand = false, shredOnly = false, deckShredDelay = 0): number {
-    this.begun = true
-    this.t0 = now
-    this.n = Math.max(0, cardCount)
-    this.hasOldDeck = shredOldDeck
+    this.begun_ = true
+    this.t0_ = now
+    this.n_ = Math.max(0, cardCount)
+    this.hasOldDeck_ = shredOldDeck
 
     // Stretch the fresh-deck beats for the grand (final dealer) ceremony; identity
     // scales (×1) otherwise, so every other spawn is unchanged.
     const spawnDelayMs = DECK_SPAWN_DELAY_MS * (grand ? GRAND_SPAWN_DELAY_SCALE : 1)
     const settleMs = DECK_SETTLE_MS * (grand ? GRAND_SETTLE_SCALE : 1)
-    this.flyMs = DECK_FLY_MS * (grand ? GRAND_FLY_SCALE : 1)
-    this.unwrapMs = UNWRAP_MS * (grand ? GRAND_UNWRAP_SCALE : 1)
-    this.unwrapHoldMs = UNWRAP_HOLD_MS * (grand ? GRAND_HOLD_SCALE : 1)
+    this.flyMs_ = DECK_FLY_MS * (grand ? GRAND_FLY_SCALE : 1)
+    this.unwrapMs_ = UNWRAP_MS * (grand ? GRAND_UNWRAP_SCALE : 1)
+    this.unwrapHoldMs_ = UNWRAP_HOLD_MS * (grand ? GRAND_HOLD_SCALE : 1)
 
-    const lastCardSuckStart = this.n > 0 ? (this.n - 1) * SHRED_STAGGER_MS : 0
-    const lastCardSuckEnd = this.n > 0 ? lastCardSuckStart + SHRED_SUCK_MS : 0
+    const lastCardSuckStart = this.n_ > 0 ? (this.n_ - 1) * SHRED_STAGGER_MS : 0
+    const lastCardSuckEnd = this.n_ > 0 ? lastCardSuckStart + SHRED_SUCK_MS : 0
 
     // The old deck starts shredding one stagger step after the last table card starts, so its
     // cards are drawn in last; the fresh deck then flies once the shoe is clear. `deckShredDelay`
     // inserts a pause between the table cards and the deck (the Banker's entry uses it).
-    this.deckShredStart = now + this.n * SHRED_STAGGER_MS + deckShredDelay
-    const lastDeckCardStart = this.deckShredStart + (DECK_SHRED_CARDS - 1) * DECK_CARD_STAGGER_MS
-    this.deckShredEnd = lastDeckCardStart + DECK_CARD_SUCK_MS
+    this.deckShredStart_ = now + this.n_ * SHRED_STAGGER_MS + deckShredDelay
+    const lastDeckCardStart = this.deckShredStart_ + (DECK_SHRED_CARDS - 1) * DECK_CARD_STAGGER_MS
+    this.deckShredEnd_ = lastDeckCardStart + DECK_CARD_SUCK_MS
 
     // The shred window (for the shredder sfx): the cards being sucked into the mouth,
     // ending a short tail past the last one being fully drawn in — the lingering paper
     // chunks aren't part of it. Empty on the opening intro (nothing to shred).
-    const hasCards = this.n > 0 || this.hasOldDeck
-    this.shredStartAt = hasCards ? now : 0
-    const lastCardIn = this.hasOldDeck ? this.deckShredEnd : now + lastCardSuckEnd
-    this.shredEndAt = hasCards ? lastCardIn + SHRED_SFX_TAIL_MS : 0
+    const hasCards = this.n_ > 0 || this.hasOldDeck_
+    this.shredStartAt_ = hasCards ? now : 0
+    const lastCardIn = this.hasOldDeck_ ? this.deckShredEnd_ : now + lastCardSuckEnd
+    this.shredEndAt_ = hasCards ? lastCardIn + SHRED_SFX_TAIL_MS : 0
 
     // The fresh deck flies out once the shoe is clear. With an old deck shredded, hold a
     // DECK_SPAWN_DELAY_MS beat on the empty shoe first (a clear gap between the old deck
     // vanishing and the new one arriving); on the intro (no old deck) it instead leaves the
     // dealer DECK_FLY_LEAD_MS before the last table card lands, as before.
-    const deckFlyBase = this.hasOldDeck
-      ? this.deckShredEnd + spawnDelayMs
+    const deckFlyBase = this.hasOldDeck_
+      ? this.deckShredEnd_ + spawnDelayMs
       : now + lastCardSuckEnd - DECK_FLY_LEAD_MS
-    this.deckFlyStart = Math.max(now, deckFlyBase)
-    this.deckFlyEnd = this.deckFlyStart + this.flyMs
-    this.unwrapStart = this.deckFlyEnd + settleMs
-    this.unwrapEnd = this.unwrapStart + this.unwrapMs + this.unwrapHoldMs
+    this.deckFlyStart_ = Math.max(now, deckFlyBase)
+    this.deckFlyEnd_ = this.deckFlyStart_ + this.flyMs_
+    this.unwrapStart_ = this.deckFlyEnd_ + settleMs
+    this.unwrapEnd_ = this.unwrapStart_ + this.unwrapMs_ + this.unwrapHoldMs_
 
     const lastCardChunkEnd =
-      this.n > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
-    const deckChunkEnd = this.hasOldDeck
+      this.n_ > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
+    const deckChunkEnd = this.hasOldDeck_
       ? lastDeckCardStart + DECK_CARD_CHUNK_LEAD_MS + DECK_CARD_CHUNK_MS
       : 0
     if (shredOnly) {
       // No fresh deck: park the deck timeline past the end so deckState() never fires,
       // and finish once the shred + its chunks have settled.
-      this.deckFlyStart = Number.POSITIVE_INFINITY
-      this.deckFlyEnd = Number.POSITIVE_INFINITY
-      this.unwrapStart = Number.POSITIVE_INFINITY
-      this.unwrapEnd = Number.POSITIVE_INFINITY
-      this.endAt = Math.max(this.shredEndAt, lastCardChunkEnd, deckChunkEnd)
-      return this.endAt
+      this.deckFlyStart_ = Number.POSITIVE_INFINITY
+      this.deckFlyEnd_ = Number.POSITIVE_INFINITY
+      this.unwrapStart_ = Number.POSITIVE_INFINITY
+      this.unwrapEnd_ = Number.POSITIVE_INFINITY
+      this.endAt_ = Math.max(this.shredEndAt_, lastCardChunkEnd, deckChunkEnd)
+      return this.endAt_
     }
-    this.endAt = Math.max(this.unwrapEnd, lastCardChunkEnd, deckChunkEnd)
-    return this.endAt
+    this.endAt_ = Math.max(this.unwrapEnd_, lastCardChunkEnd, deckChunkEnd)
+    return this.endAt_
   }
 
   isAnimating(now: number): boolean {
-    return this.begun && now < this.endAt
+    return this.begun_ && now < this.endAt_
   }
 
   // The moment the previous dealer's DECK starts being shredded (after every table card has begun
   // its own suck) — for effects that should land as the deck goes in, not the cards.
   get oldDeckShredStart(): number {
-    return this.deckShredStart
+    return this.deckShredStart_
   }
 
   // True while cards are being sucked into the mouth + shredded — drives the shredder
   // sfx. False before it starts, once the last card is in, and on the intro (nothing
   // to shred).
   isShredding(now: number): boolean {
-    return this.begun && this.shredEndAt > this.shredStartAt && now >= this.shredStartAt && now < this.shredEndAt
+    return this.begun_ && this.shredEndAt_ > this.shredStartAt_ && now >= this.shredStartAt_ && now < this.shredEndAt_
   }
 
   // Card `i`'s suck-in progress: null while it's still resting on the felt (draw it
   // settled), else 0..1 as it flies into the mouth (1 = fully drawn in / gone).
   cardSuck(i: number, now: number): number | null {
-    if (!this.begun) {
+    if (!this.begun_) {
       return null
     }
-    const start = this.t0 + i * SHRED_STAGGER_MS
+    const start = this.t0_ + i * SHRED_STAGGER_MS
     if (now < start) {
       return null
     }
@@ -181,10 +181,10 @@ export class SpawnAnimation {
 
   // Card `i`'s paper-chunk spray life (0..1), or null when nothing is spraying for it.
   chunk(i: number, now: number): number | null {
-    if (!this.begun) {
+    if (!this.begun_) {
       return null
     }
-    const start = this.t0 + i * SHRED_STAGGER_MS + CHUNK_LEAD_MS
+    const start = this.t0_ + i * SHRED_STAGGER_MS + CHUNK_LEAD_MS
     if (now < start) {
       return null
     }
@@ -201,10 +201,10 @@ export class SpawnAnimation {
   // the shrinking resting stack. Full until the shred reaches it; then depletes as each
   // card begins its peel-off, reaching 0 once the last card has left the top.
   deckRemaining(now: number): number {
-    if (!this.begun || !this.hasOldDeck || now < this.deckShredStart) {
+    if (!this.begun_ || !this.hasOldDeck_ || now < this.deckShredStart_) {
       return 1
     }
-    const head = (now - this.deckShredStart) / DECK_CARD_STAGGER_MS // cards that have begun leaving
+    const head = (now - this.deckShredStart_) / DECK_CARD_STAGGER_MS // cards that have begun leaving
     return clamp01(1 - head / DECK_SHRED_CARDS)
   }
 
@@ -212,10 +212,10 @@ export class SpawnAnimation {
   // old deck, or its stagger hasn't come up yet), else 0..1 as it flies into the mouth
   // (1 = fully drawn in / gone).
   deckCardSuck(k: number, now: number): number | null {
-    if (!this.begun || !this.hasOldDeck) {
+    if (!this.begun_ || !this.hasOldDeck_) {
       return null
     }
-    const start = this.deckShredStart + k * DECK_CARD_STAGGER_MS
+    const start = this.deckShredStart_ + k * DECK_CARD_STAGGER_MS
     if (now < start) {
       return null
     }
@@ -224,10 +224,10 @@ export class SpawnAnimation {
 
   // Old-deck card `k`'s paper-chunk spray life (0..1), or null when it isn't spraying.
   deckCardChunk(k: number, now: number): number | null {
-    if (!this.begun || !this.hasOldDeck) {
+    if (!this.begun_ || !this.hasOldDeck_) {
       return null
     }
-    const start = this.deckShredStart + k * DECK_CARD_STAGGER_MS + DECK_CARD_CHUNK_LEAD_MS
+    const start = this.deckShredStart_ + k * DECK_CARD_STAGGER_MS + DECK_CARD_CHUNK_LEAD_MS
     if (now < start) {
       return null
     }
@@ -239,17 +239,17 @@ export class SpawnAnimation {
   // shred). Once past the unwrap it holds at { fly: 1, unwrap: 1 } — a bare resting
   // deck — until the ceremony ends and it's handed back to the static table layer.
   deckState(now: number): DeckState | null {
-    if (!this.begun || now < this.deckFlyStart) {
+    if (!this.begun_ || now < this.deckFlyStart_) {
       return null
     }
-    if (now < this.deckFlyEnd) {
-      return { fly: (now - this.deckFlyStart) / this.flyMs, unwrap: 0 }
+    if (now < this.deckFlyEnd_) {
+      return { fly: (now - this.deckFlyStart_) / this.flyMs_, unwrap: 0 }
     }
-    if (now < this.unwrapStart) {
+    if (now < this.unwrapStart_) {
       return { fly: 1, unwrap: 0 }
     }
-    if (now < this.unwrapEnd) {
-      return { fly: 1, unwrap: this.unwrapProgress(now - this.unwrapStart) }
+    if (now < this.unwrapEnd_) {
+      return { fly: 1, unwrap: this.unwrapProgress_(now - this.unwrapStart_) }
     }
     return { fly: 1, unwrap: 1 }
   }
@@ -258,15 +258,15 @@ export class SpawnAnimation {
   // UNWRAP_HOLD_AT: the fraction climbs at the base rate, freezes there for
   // UNWRAP_HOLD_MS (the strip is gone, the sheet not yet sliding), then resumes —
   // so the slide-left beat is pushed UNWRAP_HOLD_MS later without altering its shape.
-  private unwrapProgress(elapsed: number): number {
-    const holdStart = UNWRAP_HOLD_AT * this.unwrapMs
+  private unwrapProgress_(elapsed: number): number {
+    const holdStart = UNWRAP_HOLD_AT * this.unwrapMs_
     if (elapsed < holdStart) {
-      return elapsed / this.unwrapMs
+      return elapsed / this.unwrapMs_
     }
-    if (elapsed < holdStart + this.unwrapHoldMs) {
+    if (elapsed < holdStart + this.unwrapHoldMs_) {
       return UNWRAP_HOLD_AT
     }
-    return (elapsed - this.unwrapHoldMs) / this.unwrapMs
+    return (elapsed - this.unwrapHoldMs_) / this.unwrapMs_
   }
 }
 

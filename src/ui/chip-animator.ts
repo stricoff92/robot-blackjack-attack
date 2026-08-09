@@ -19,75 +19,75 @@ const COLLECT_MS = 442 // bet (+ winnings) fly into the player's bankroll
 const HAND_STAGGER = 90 // offset between hands settling, so splits cascade
 
 export class ChipAnimation implements ChipView {
-  private placeStart: number | null = null
-  private resolveStart: number | null = null
-  private clearStart: number | null = null
-  private outcomes: (HandOutcome | null)[] = []
+  private placeStart_: number | null = null
+  private resolveStart_: number | null = null
+  private clearStart_: number | null = null
+  private outcomes_: (HandOutcome | null)[] = []
   // Per hand: a loss the Anti-dealer refund partly hands back — after the bet flies
   // to the dealer, a refund stack slides back to the bankroll (see clearPhase).
-  private refunded: boolean[] = []
-  private end = 0
+  private refunded_: boolean[] = []
+  private end_ = 0
 
   get animEnd(): number {
-    return this.end
+    return this.end_
   }
 
   isAnimating(now: number): boolean {
-    return now < this.end
+    return now < this.end_
   }
 
   // Deal: the new hand's bet chips fly out of the bankroll. Clears prior state.
   placeBets(_round: Round, now: number): void {
-    this.placeStart = now
-    this.resolveStart = null
-    this.clearStart = null
-    this.outcomes = []
-    this.refunded = []
-    this.end = now + PLACE_MS
+    this.placeStart_ = now
+    this.resolveStart_ = null
+    this.clearStart_ = null
+    this.outcomes_ = []
+    this.refunded_ = []
+    this.end_ = now + PLACE_MS
   }
 
   // Resolution: winnings fly in from the dealer for winning hands, starting once
   // the card sequence has settled. Nothing else moves — everything then rests.
   resolve(round: Round, startAfter: number): void {
-    this.resolveStart = startAfter
-    this.clearStart = null
-    this.outcomes = round.hands.map((hand) => hand.outcome)
+    this.resolveStart_ = startAfter
+    this.clearStart_ = null
+    this.outcomes_ = round.hands.map((hand) => hand.outcome)
     let maxDur = 0
     round.hands.forEach((hand, i) => {
       if (isWin(hand.outcome)) {
         maxDur = Math.max(maxDur, i * HAND_STAGGER + FLY_MS)
       }
     })
-    this.end = Math.max(this.end, startAfter + maxDur)
+    this.end_ = Math.max(this.end_, startAfter + maxDur)
   }
 
   // Next hand: settle the table. Winners' bet + winnings fly into the bankroll;
   // losers' bets fly to the dealer.
   clear(round: Round, startAfter: number): void {
-    this.clearStart = startAfter
-    this.outcomes = round.hands.map((hand) => hand.outcome)
-    this.refunded = round.hands.map((hand) => isRefundedLoss(hand, round))
+    this.clearStart_ = startAfter
+    this.outcomes_ = round.hands.map((hand) => hand.outcome)
+    this.refunded_ = round.hands.map((hand) => isRefundedLoss(hand, round))
     let maxDur = 0
     round.hands.forEach((hand, i) => {
-      maxDur = Math.max(maxDur, i * HAND_STAGGER + clearDuration(hand.outcome, this.refunded[i]))
+      maxDur = Math.max(maxDur, i * HAND_STAGGER + clearDuration(hand.outcome, this.refunded_[i]))
     })
-    this.end = Math.max(this.end, startAfter + maxDur)
+    this.end_ = Math.max(this.end_, startAfter + maxDur)
   }
 
   betChip(handIndex: number, now: number): BetChipState {
-    const outcome = this.outcomes[handIndex] ?? null
+    const outcome = this.outcomes_[handIndex] ?? null
 
-    if (this.clearStart !== null) {
-      const elapsed = now - (this.clearStart + handIndex * HAND_STAGGER)
+    if (this.clearStart_ !== null) {
+      const elapsed = now - (this.clearStart_ + handIndex * HAND_STAGGER)
       if (elapsed >= 0) {
-        return clearPhase(outcome, this.refunded[handIndex] ?? false, elapsed)
+        return clearPhase(outcome, this.refunded_[handIndex] ?? false, elapsed)
       }
       return restingState(outcome) // waiting its turn: hold the resolved rest
     }
 
-    if (this.resolveStart !== null) {
+    if (this.resolveStart_ !== null) {
       if (isWin(outcome)) {
-        const elapsed = now - (this.resolveStart + handIndex * HAND_STAGGER)
+        const elapsed = now - (this.resolveStart_ + handIndex * HAND_STAGGER)
         if (elapsed < 0) {
           return { phase: 'idle', progress: 1, outcome } // bet resting, winnings not in yet
         }
@@ -99,8 +99,8 @@ export class ChipAnimation implements ChipView {
       return { phase: 'idle', progress: 1, outcome } // loss / push: bet resting
     }
 
-    if (this.placeStart !== null) {
-      const elapsed = now - this.placeStart
+    if (this.placeStart_ !== null) {
+      const elapsed = now - this.placeStart_
       if (elapsed < PLACE_MS) {
         return { phase: 'placing', progress: clamp01(elapsed / PLACE_MS), outcome: null }
       }
