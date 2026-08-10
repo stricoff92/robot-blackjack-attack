@@ -1,15 +1,15 @@
 import './game-view.css'
 
 import { readDebugFlags } from '../game/debug'
-import type { Card, Suit } from '../game/deck'
+import type { Card } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
-import { BANKRUPTCY_TAX, comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS, type RunState } from '../game/run'
+import { BANKRUPTCY_TAX, comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
-import { clearRun, loadRun } from '../game/persistence'
+import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
 import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../platform/crazygames'
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
@@ -195,13 +195,6 @@ const END_SHRED_GAP = 200
 // A picked upgrade plays a dismiss animation (darkness + card fade, chosen button
 // scales up) before the pick commits. Kept in sync with .upgrade-panel.is-dismissing.
 const UPGRADE_DISMISS_MS = 350
-
-const SUIT_SYMBOLS: Record<Suit, string> = {
-  hearts: '♥',
-  diamonds: '♦',
-  clubs: '♣',
-  spades: '♠',
-}
 
 interface ButtonDef {
   key: string
@@ -490,9 +483,10 @@ class GameView {
   // for the whole beat so a second tap can't slip through to the (still-hidden) HUD.
   private tapAt_ = 0
   private introCatcher_: HTMLElement | null = null
-  // A saved in-progress run to offer on the title screen (else null — normal tap-to-start). Set at
-  // construction from persistence.loadRun(); consumed/cleared by beginFromTitle.
-  private resumableRun_: RunState | null = null
+  // A saved in-progress SESSION to offer on the title screen (else null — normal tap-to-start). Set
+  // at construction from persistence.loadSession(); consumed/cleared by beginFromTitle. Carries the
+  // exact phase + in-progress round, so Continue can resume mid-hand / mid-coda, not just at betting.
+  private resumableRun_: PersistedSession | null = null
   // The Continue / New game title menu element (when a resumable run exists), else null.
   private titleMenu_: HTMLElement | null = null
   // True once the title menu has been shown, so the nexus "TAP TO START" prompt stays suppressed
@@ -519,7 +513,6 @@ class GameView {
   private lastTokenText_ = ''
   private lastTokenTransform_ = ''
   private messageEl_!: HTMLElement
-  private hintEl_!: HTMLElement
   private buttons_!: Record<string, HTMLButtonElement>
   // Per-button "not enough chips" badges (Double/Split), toggled in syncOverlay.
   private nsfBadges_!: Record<string, HTMLElement>
@@ -545,6 +538,10 @@ class GameView {
   private lastPagerPos_ = ''
   // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
   private infoBtnEl_!: HTMLButtonElement
+  // The help button (an "H", styled like the info button) + the full-screen ability-guide
+  // modal it opens. A tap anywhere on the modal closes it.
+  private helpBtnEl_!: HTMLButtonElement
+  private helpPanelEl_!: HTMLElement
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
   private powersEl_!: HTMLElement
   private actionsEl_!: HTMLElement
@@ -580,7 +577,7 @@ class GameView {
       debug.startScore !== null ||
       debug.startTokens !== null ||
       debug.dealerHealth !== null
-    this.resumableRun_ = hasRunOverride ? null : loadRun()
+    this.resumableRun_ = hasRunOverride ? null : loadSession()
     // Seed the opening balances + dealer/deck identity from the run so the first paint is correct.
     this.seedVisualsFromState_()
     // Arm the opening ceremony BEFORE createStage's first (synchronous) paint, so the
@@ -662,7 +659,8 @@ class GameView {
 
   // A saved run exists: offer CONTINUE (resume it) or NEW GAME (wipe it, start fresh). The wordmark
   // still projects above; these HTML buttons stand in for the "TAP TO START" prompt.
-  private buildTitleMenu_(run: RunState): void {
+  private buildTitleMenu_(saved: PersistedSession): void {
+    const run = saved.run
     this.titleMenuMode_ = true // suppress the nexus "TAP TO START" line (keep the wordmark)
     const menu = element('div', 'title-menu')
     this.titleMenu_ = menu
@@ -678,15 +676,28 @@ class GameView {
     this.stage_.container.appendChild(menu)
   }
 
-  // Leave the title screen: CONTINUE adopts the saved run (re-seeding the visuals for its dealer /
-  // balances), NEW GAME wipes the save and keeps the fresh session already built. Either way, set
-  // tapAt so the frame loop runs the normal start transition (fade, walk-in, HUD reveal, first deal).
+  // Leave the title screen: CONTINUE adopts the saved session (re-seeding the visuals for its
+  // dealer / balances), NEW GAME wipes the save and keeps the fresh session already built. A NEW
+  // game — or a CONTINUE that resumes at 'betting' — sets tapAt so the frame loop runs the normal
+  // start transition (fade, walk-in, HUD reveal, first deal). A CONTINUE that resumes mid-hand /
+  // mid-coda instead snaps straight to a settled, playable scene (resumeSettled_) — its hand is
+  // already on the table, so there's no deal ceremony to run.
   private beginFromTitle_(mode: 'continue' | 'new'): void {
     if (this.tapAt_ > 0) {
       return // already starting (guard against a double click)
     }
-    if (mode === 'continue' && this.resumableRun_) {
-      this.session_.adoptRun(this.resumableRun_)
+    const resumed = mode === 'continue' ? this.resumableRun_ : null
+    if (resumed) {
+      this.session_.adoptSession(resumed)
+      // A 'resolved' checkpoint is a between-hands state — the hand already settled and the deck
+      // advanced. DON'T re-show the resolved screen: its Next-click re-runs the gather / kill /
+      // walk-in ceremonies, which depend on transient UI state (pendingAttack_, pendingCeremony_,
+      // spawnIncomingShift_) that a fresh resume never set up → a broken next deal. Advance the
+      // engine straight to the next real state (the upgrade pick, or the next hand's betting) so we
+      // resume there instead. Called directly (not via run_), so no UI ceremony fires.
+      if (resumed.phase === 'resolved') {
+        this.session_.nextHand()
+      }
       this.seedVisualsFromState_()
     } else {
       clearRun() // wipe the save; the fresh session built at construction stands
@@ -694,7 +705,89 @@ class GameView {
     this.resumableRun_ = null
     this.titleMenu_?.remove()
     this.titleMenu_ = null
+    // Resume entry states (after the resolved→next advance above):
+    //  • 'playing' / 'coda' — a hand/coda is mid-action and can't be re-dealt, so snap to a settled,
+    //    ceremony-free scene (resumeSettled_).
+    //  • 'betting' / 'choosing-upgrade' — take the normal start path (tapAt_): the walk-in plays,
+    //    then the deal fires off dealAfter_ (immediately for betting; after the pick commits betting
+    //    for choosing-upgrade). This reuses the real deal trigger — resumeSettled_ never sets
+    //    dealAfter_, so a pick there would leave the next hand un-dealt.
+    if (resumed && (this.state_.phase === 'playing' || this.state_.phase === 'coda')) {
+      this.resumeSettled_()
+      return
+    }
     this.tapAt_ = now()
+  }
+
+  // Resume a saved run at a MID-ACTION phase — 'playing' (a hand in progress) or the coda — where
+  // there's a live table that can't be re-dealt. (Betting and the post-kill upgrade pick take the
+  // normal tapAt_ start path instead; see beginFromTitle_.) The state is already in this.state_
+  // (adopted + seeded). Bypass the opening ceremony (walk-in, deck fly-in, first deal) and snap to a
+  // settled, playable scene: stand the dealer at its mark, reveal the HUD + buttons, and let the
+  // normal render paint the restored round settled (the deal animator is idle, so drawHands lays
+  // cards at rest).
+  //
+  // The anti-cheat lives entirely in the engine (the session was restored exactly); this is purely
+  // the display. A resumed coda skips the Banker entry ceremony — it's seeded best-effort here.
+  private resumeSettled_(): void {
+    const state = this.state_
+    this.started_ = true
+    this.introHold_ = false
+    this.deckHidden_ = false // the resting deck sits on the table (no ceremony flew one in)
+    this.openingCountsShown_ = true // show projected counts at once — there's no first-deal hold
+    this.betFlown_ = true // the bet's already on the table — draw it (+ its count), not just the pile
+    this.dealer_.standAtMark() // cancel the constructor's parked walk-in; stand upright at the spot
+    if (state.phase === 'coda') {
+      // The coda is fought against the BANKER, not the last regular dealer. seedVisualsFromState_
+      // seeded run.shiftIndex — already BANKER_SHIFT for a victory coda, but the fought dealer (2-6)
+      // for a bankruptcy coda. Force the Banker's identity + full health + deck colour so a resumed
+      // coda shows him, exactly as the normal entry ceremony (playCodaArrival_) does.
+      this.dealer_.setShift(BANKER_SHIFT)
+      this.dealer_.setLevel(maxIntegrityFor(BANKER_SHIFT), BANKER_SHIFT)
+      this.deckColorShift_ = BANKER_SHIFT
+      this.codaCrystalValue_ = state.run.score // best-effort: show the real pot, not 0 (default)
+      this.codaCounters_.reveal(now()) // the glass pot pile (drawn in drawChips_), shown all coda long
+      if (state.round && state.round.status === 'resolved') {
+        // A resolved hand at the tab-close (the killing hand that entered the coda, or a played-out
+        // gamble awaiting its outcome): re-arm the auto-advance. codaResolveNext then dismisses it and
+        // transitions INTO the prompt — which is where the normal flow sets codaStakeShownAt_, so the
+        // stake panel appears then. Don't set it here (it'd double-draw over the resolving hand).
+        this.codaAdvanceAt_ = now()
+      } else if (!state.round) {
+        // AT THE PROMPT (double-or-nothing offer): arm the projected stake PANEL — Points at risk +
+        // the high-score BEST, drawn by drawCodaStake and gated on codaStakeShownAt_. The normal flow
+        // only sets it when transitioning INTO the prompt, which a resume skips → no projected text.
+        // The panel's other inputs stay at their construction defaults, which is exactly the plain
+        // steady offer we want: codaWonHand_ = false (not a fresh win), codaStakeTax_ = null (the
+        // bankruptcy seizure was a one-time entry reveal that already happened).
+        this.codaStakeShownAt_ = now()
+      }
+      // (mid-gamble — round in 'player-turn' — needs neither: the hand is up, no stake panel.)
+    }
+    // Reveal the HUD + button groups (normally faded in by the frame loop after the opening deal).
+    this.stage_.overlay.classList.remove('hud-hidden')
+    this.introCatcher_?.remove()
+    this.introCatcher_ = null
+    this.revealOpeningButtons_()
+    // Seed the deal animator so the restored cards read as ALREADY LANDED — the renderer skips any
+    // card the animator has no timing for, so a fresh animator would paint an empty felt.
+    const t = now()
+    this.anim_.setNow(t)
+    this.anim_.settle(this.state_, t)
+    // Paint every layer once now (the frame loop will keep them fresh), so the resumed table shows
+    // its cards + counts on the very first frame rather than flashing empty.
+    const canvas = this.stage_.canvas
+    const layout = computeLayout(canvas.width, canvas.height)
+    this.paintTable_(canvas, layout, this.tableHasDeck_())
+    this.drawDealerFigure_(canvas, layout, t)
+    this.drawCards_(canvas, layout, t)
+    this.drawChips_(canvas, layout, t)
+    this.drawTokens_(canvas, layout, t)
+    this.drawMask_(canvas, layout, t)
+    this.drawFx_(canvas, layout, t)
+    this.lastAnimating_ = false
+    this.syncOverlay_(t)
+    this.ensureLoop_()
   }
 
   // The "TAP TO START" projection this frame — its strike-in age + a fade (1 while waiting,
@@ -928,7 +1021,11 @@ class GameView {
       // Skipped once a game-over shred has finished — those cards were sucked up and stay gone.
       const round = this.state_.round ?? this.collectRound_
       if (round) {
-        const revealHole = this.state_.phase !== 'playing' || this.state_.peeked
+        // Hole hidden while it's the player's turn (main game OR coda), revealed once past it or on a
+        // peek — keyed off round.status, not phase, so the coda (always phase 'coda') doesn't leak the
+        // Banker's hole. (drawHands ignores this when the animator drives the flip, as here; kept
+        // consistent so the one pattern can't reintroduce the resumed-coda hole-reveal bug.)
+        const revealHole = round.status !== 'player-turn' || this.state_.peeked
         this.frameProjections_.push(
           ...drawHands(ctx, layout, round, revealHole, timestamp, this.anim_, this.handResults_(timestamp), this.splitPrev_ ?? undefined, this.firstHandCountsHidden_(timestamp)),
         )
@@ -2309,13 +2406,11 @@ class GameView {
     const tokens = this.buildTokenCounter_()
     const points = this.buildPointsCounter_()
     this.messageEl_ = element('div', 'hud-message')
-    this.hintEl_ = element('div', 'hud-powerhint')
     const powers = element('div', 'hud-powerups')
     const actions = element('div', 'hud-actions')
     const codaPowers = element('div', 'hud-coda-powers')
     this.powersEl_ = powers
     this.actionsEl_ = actions
-    powers.appendChild(this.hintEl_) // hint sits atop the powerup stack
 
     this.buttons_ = {}
     this.nsfBadges_ = {}
@@ -2370,9 +2465,16 @@ class GameView {
     // the nexus's spec-sheet projection.
     this.infoBtnEl_ = this.buildInfoButton_()
 
+    // The help button ("H") rides at the BOTTOM of the powerup column (appended last, so
+    // flexbox keeps it right under whichever ability button is currently the lowest visible
+    // one — the stack's height changes as powerups show/hide). Opens the ability-guide modal.
+    this.helpBtnEl_ = this.buildHelpButton_()
+    powers.appendChild(this.helpBtnEl_)
+    this.helpPanelEl_ = this.buildHelpPanel_()
+
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_())
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -2395,6 +2497,59 @@ class GameView {
     btn.setAttribute('aria-label', 'Show the dealer ruleset and energy inflation')
     btn.addEventListener('click', () => this.toggleSpec_())
     return btn
+  }
+
+  // The help button: a small circular "H" stacked just above the info button. A click opens
+  // the full-screen ability guide; a tap anywhere on that guide closes it (see buildHelpPanel_).
+  private buildHelpButton_(): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.className = 'hud-help'
+    btn.textContent = 'H'
+    btn.title = 'What each ability does'
+    btn.setAttribute('aria-label', 'Show what each ability does')
+    btn.addEventListener('click', () => this.openHelp_())
+    return btn
+  }
+
+  // The ability-guide modal: a full-screen panel listing every ability with a terse one-liner,
+  // packed to fit on one screen (even on mobile). It starts hidden; openHelp_ reveals it, and a
+  // pointerdown ANYWHERE on the panel dismisses it (it covers the whole screen, so any tap lands
+  // on it). sfx mirrors the spec sheet's projector cue.
+  private buildHelpPanel_(): HTMLElement {
+    const panel = element('div', 'help-panel is-hidden')
+    const card = element('div', 'help-panel__card')
+    const title = element('div', 'help-panel__title')
+    title.textContent = 'ABILITIES'
+    card.appendChild(title)
+    const list = element('div', 'help-panel__list')
+    for (const { name, desc } of ABILITY_HELP) {
+      const row = element('div', 'help-panel__row')
+      const term = element('span', 'help-panel__name')
+      term.textContent = name
+      const detail = element('span', 'help-panel__desc')
+      detail.textContent = desc
+      row.append(term, detail)
+      list.appendChild(row)
+    }
+    card.appendChild(list)
+    const hint = element('div', 'help-panel__hint')
+    hint.textContent = 'tap anywhere to close'
+    card.appendChild(hint)
+    panel.appendChild(card)
+    panel.addEventListener('pointerdown', () => this.closeHelp_())
+    return panel
+  }
+
+  // Reveal the ability guide. Opened on the help button's `click`, which completes before any
+  // fresh pointerdown reaches the now-visible panel, so the opening tap never self-closes it.
+  private openHelp_(): void {
+    this.helpPanelEl_.classList.remove('is-hidden')
+    sfx.play('ability')
+  }
+
+  private closeHelp_(): void {
+    this.helpPanelEl_.classList.add('is-hidden')
+    sfx.play('ability') // same projector cue as opening it (and as the info spec sheet's toggle)
   }
 
   // The final scoreboard's page controls: a ‹ back arrow, a two-dot page indicator, and a ›
@@ -2527,6 +2682,9 @@ class GameView {
     // wait, on the coda offer / scoreboards, and at game over.
     const inPlay = s.phase === 'playing' || (s.phase === 'coda' && !!s.round && s.round.status === 'player-turn')
     this.infoBtnEl_.classList.toggle('is-hidden', !(inPlay || this.specShownAt_ !== null))
+    // The help button rides with the info button (in-play only), but hides while another modal —
+    // the spec sheet or the choose-upgrade card — owns the screen.
+    this.helpBtnEl_.classList.toggle('is-hidden', !inPlay || modal)
   }
 
   // The choose-upgrade card: a title and one big coloured button per upgrade path,
@@ -3503,7 +3661,6 @@ class GameView {
     this.updateTokenCounter_(timestamp)
     this.updatePointsCounter_(timestamp)
     this.messageEl_.textContent = animating ? '' : this.buildMessage_()
-    this.hintEl_.textContent = animating ? '' : this.buildHint_()
     this.syncUpgradePanel_(s, animating, timestamp)
 
     for (const def of this.defs_) {
@@ -3589,23 +3746,6 @@ class GameView {
     return ''
   }
 
-  private buildHint_(): string {
-    const { phase, round } = this.state_
-    if (phase !== 'playing' || !round) {
-      return ''
-    }
-    const parts: string[] = []
-    if (round.secondChanceArmed) {
-      parts.push('Bust Block armed')
-    }
-    if (round.dealerFrozen) {
-      parts.push('Dealer frozen')
-    }
-    if (round.burned) {
-      parts.push(`Burned: ${cardLabel(round.burned)}`)
-    }
-    return parts.join(' · ')
-  }
 }
 
 // A single hand's result label + tone, from its settled outcome and net chips.
@@ -3650,10 +3790,6 @@ function affordsExtra(s: SessionState): boolean {
   return s.run.chips >= exposure + activeBet
 }
 
-function cardLabel(card: Card): string {
-  return `${card.rank}${SUIT_SYMBOLS[card.suit]}`
-}
-
 function now(): number {
   return performance.now()
 }
@@ -3667,6 +3803,20 @@ function element(tag: string, className: string): HTMLElement {
   node.className = className
   return node
 }
+
+// The ability guide's contents: every powerup with a one-line gloss, kept terse so all eight
+// fit one screen even on mobile. Ordered to roughly follow the on-screen powerup column so the
+// list is easy to cross-reference. Names match the in-game button labels.
+const ABILITY_HELP: readonly { name: string; desc: string }[] = [
+  { name: 'Analyze', desc: 'Show probabilities based on known info.' },
+  { name: 'Peek Dealer', desc: "Reveal the dealer's hole card." },
+  { name: 'Forced split', desc: 'Split any 2 cards into 2 hands.' },
+  { name: 'Late double', desc: 'Double your bet anytime.' },
+  { name: 'Return', desc: 'Send last drawn card to the top of the deck.' },
+  { name: 'Freeze Dealer', desc: 'Prevent the dealer from drawing.' },
+  { name: 'Bust Block', desc: 'Next drawn card is discarded if it causes a bust.' },
+  { name: 'Mulligan', desc: 'Discard cards and redraw.' },
+]
 
 // Render an averaged 1–5 rating as filled/empty stars plus the decimal, e.g. 4.2 → "★★★★☆ 4.2".
 // The star count rounds to nearest; the number keeps the precision the glyphs lose.

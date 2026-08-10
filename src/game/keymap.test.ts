@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
+import { createShoe, shuffle } from './deck'
 import { decodeSaveKeys, encodeSaveKeys } from './keymap'
+import { createRng } from './random'
+import { startRound } from './round'
 import { applyUpgrade, RULES_VERSION, startRun } from './run'
 
-// A representative full save payload: a real RunState (so every serialized field is present),
-// with the array + nested-object fields made non-trivial (kills populated, an upgrade unlocked)
-// so the recursion is exercised end-to-end.
+// A representative full save payload: a real RunState (so every serialized field is present) AND a
+// real in-progress Round (so every Round/PlayerHand/RoundRules/Card key is present too), with the
+// array + nested-object fields made non-trivial (kills populated, an upgrade unlocked) so the
+// recursion — and every code in the dictionary — is exercised end-to-end.
 function sampleSave() {
   const run = { ...applyUpgrade(startRun(7), 'antiDealer'), chips: 500, score: 1234, kills: [1, 2] }
-  return { version: RULES_VERSION, run }
+  const round = startRound(shuffle(createShoe(6), createRng(7)), 20)
+  return { version: RULES_VERSION, run, phase: 'playing', round, peeked: true, codaRedeal: false, upgradePending: false }
 }
 
 // Every object key reachable in `value` (array elements recursed, numeric indices excluded).

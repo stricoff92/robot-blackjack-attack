@@ -163,6 +163,34 @@ export class DealAnimation implements CardAnim {
     }
   }
 
+  // Snap every card in `state`'s round to its SETTLED position — fully flown in, and (for a face-up
+  // card) flipped up — with NO animation. Used when RESUMING a saved hand mid-play: the cards are
+  // already on the table, but the renderer consults this animator per card and DRAWS NOTHING for any
+  // it has no timing for ("not dealt yet"). A fresh animator knows none of the restored cards, so
+  // without this the resumed hand paints an empty felt. Placing each card's flight + flip start in
+  // the past makes state() report it landed and revealed, so drawHands lays the whole hand at rest.
+  settle(state: SessionState, now: number): void {
+    this.reset_(now)
+    const round = state.round
+    if (!round) {
+      return
+    }
+    // Far enough in the past that both flight and flip clamp to a full 1.
+    const past = now - FLIGHT_MS - LAND_DELAY - FLIP_MS - 1
+    // The dealer's hole stays DOWN while it's still the player's turn (they're mid-decision),
+    // revealed once the round moves past that (dealer plays / resolved) or the player peeked. Keyed
+    // off round.status, NOT phase: the coda is phase 'coda' throughout, so a phase check would wrongly
+    // reveal the Banker's hole on a resumed in-progress gamble.
+    const revealHole = round.status !== 'player-turn' || state.peeked
+    const place = (key: string, faceUp: boolean): void => {
+      this.cards_.set(key, { flightStart: past, flipStart: faceUp ? past : null })
+      this.firedFlights_.add(key) // already on the table — it must never fire a draw sfx
+    }
+    round.hands.forEach((hand, hi) => hand.cards.forEach((_, ci) => place(playerKey(hi, ci), true)))
+    round.dealer.forEach((_, di) => place(dealerKey(di), di !== 1 || revealHole)) // dealerKey(1) is the hole
+    this.end_ = now // settled — not animating
+  }
+
   // 0..1 position of the deck: 0 = resting spot, 1 = shuffle spot (centre).
   deckShift(): number {
     if (this.slideOutStart_ === null || this.shuffleStart_ === null || this.slideBackStart_ === null) {

@@ -47,11 +47,17 @@ export function drawShred(ctx: CanvasRenderingContext2D, l: Layout, round: Round
     if (suck === null) {
       drawCardCentered(ctx, c.card, c.cx, c.cy, c.w, c.h, 1, dpr) // still resting, face-up
     } else if (suck < 1) {
-      // Fly toward the mouth, shrinking as it's drawn in.
+      // Fly toward the mouth and get drawn in. Mirror the DECK shred (drawOldDeckShred): the card
+      // shrinks only MODESTLY — to ~0.5, staying a readable card — and disappears by FADING late,
+      // NOT by shrinking to a point. The old `1 - suck` scaled it to nothing, and since the position
+      // eases in (barely moves at first), it collapsed to a dot on its own slot — which read as the
+      // dealt card going tiny the instant the shred began, unlike the deck cards beside it.
       const e = smoothStart2(suck)
       const x = c.cx + (mouth.x - c.cx) * e
       const y = c.cy + (mouth.y - c.cy) * e
-      drawCardCentered(ctx, c.card, x, y, c.w, c.h, 1 - suck, dpr)
+      const cardScale = 1 - 0.5 * smoothStart2(suck)
+      const alpha = 1 - smoothStart4(suck)
+      drawCardCentered(ctx, c.card, x, y, c.w, c.h, cardScale, dpr, alpha)
     }
     const chunk = view.chunk(i, now)
     if (chunk !== null) {
@@ -148,12 +154,16 @@ function drawCardCentered(
   h: number,
   s: number,
   dpr: number,
+  alpha = 1,
 ): void {
-  if (s <= 0.02) {
+  if (s <= 0.02 || alpha <= 0.02) {
     return
   }
   const sprite = getCardSprite(card, w, h, dpr)
   ctx.save()
+  if (alpha < 1) {
+    ctx.globalAlpha = alpha
+  }
   ctx.translate(cx, cy)
   ctx.scale(s, s)
   blitCard(ctx, sprite, -w / 2, -h / 2)

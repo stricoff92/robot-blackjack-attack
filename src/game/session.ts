@@ -45,7 +45,7 @@ import {
 } from './run'
 import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
 import { recordRun } from './leaderboard'
-import { clearRun, saveRun } from './persistence'
+import { clearRun, saveSession, type PersistedSession } from './persistence'
 
 export const SHOE_DECKS = 6
 
@@ -129,7 +129,7 @@ export const CODA_MULLIGAN_COST = 200
 
 export class Session {
   // The deal RNG — its `.state` is checkpointed into run.deckState so a resume reproduces the
-  // upcoming shoe exactly (see deal/adoptRun). The analysis + heal RNGs need no snapshot: they're
+  // upcoming shoe exactly (see deal/adoptSession). The analysis + heal RNGs need no snapshot: they're
   // re-derived from run.seed on resume (below), so they stay deterministic per save too.
   private nextRandom_: SeededRng
   private analysisRandom_: Rng
@@ -258,11 +258,9 @@ export class Session {
     }
     const bet = nextBet(this.run_)
     const shoe = this.shuffleShoe_()
-    // The shuffle just advanced the deal RNG. Mirror its new position into the run so the next
-    // checkpoint (settle_/chooseUpgrade) persists it: a resume restores this exact position, making
-    // the upcoming shoe identical on every reload — a reload can't reroll the opening cards. The
-    // shoe already dealt uses the OLD position; this snapshot is where the NEXT deal will resume.
-    this.run_ = { ...this.run_, deckState: this.nextRandom_.state }
+    // shuffleShoe_ just advanced the deal RNG past this hand's shoe; nothing advances it again until
+    // the NEXT deal. checkpoint_ (below, and at every action) snapshots that live position into
+    // run.deckState, so a resume restores the exact upcoming shoe — a reload can't reroll the deal.
     if (this.forcePairs_) {
       forcePlayerPair(shoe, this.forcePairRank_)
     }
@@ -286,10 +284,13 @@ export class Session {
     }
     this.round_ = startRound(shoe, bet, rules)
     if (this.round_.status === 'resolved') {
-      this.settle_()
+      this.settle_() // an opening natural — resolves straight to resolved/coda/over
     } else {
       this.phase_ = 'playing'
     }
+    // One checkpoint for the deal, whichever branch: persists the freshly-dealt hand (mid-hand
+    // refresh resumes it exactly) or the natural's resolution. A no-op if the natural busted out.
+    this.checkpoint_()
   }
 
   // Shuffle a fresh 6-deck shoe for the deal, honoring the opening-deal guard rails (see the
@@ -375,11 +376,13 @@ export class Session {
     // A busting hit doesn't reset the combo here — the reset happens at RESOLUTION (run.ts
     // applyRound) when the whole hand is lost, so a split hand that busts but has a winning
     // sibling keeps the streak.
+    this.checkpoint_() // after the token/combo update above, so a refund isn't possible on refresh
   }
 
   stand(): void {
     this.recordDecision_('stand')
     this.act_(() => stand(this.requireRound_()))
+    this.checkpoint_()
   }
 
   double(): void {
@@ -387,10 +390,12 @@ export class Session {
     // judged at the pre-double total (the bust chance of that one card).
     this.recordDecision_('hit')
     this.act_(() => doubleDown(this.requireRound_()))
+    this.checkpoint_()
   }
 
   split(): void {
     this.act_(() => split(this.requireRound_()))
+    this.checkpoint_()
   }
 
   buyPeek(): void {
@@ -400,6 +405,9 @@ export class Session {
     this.analysis_ = null
     this.run_ = spendTokens(this.run_, this.costOf_('peek'))
     this.peeked_ = true
+    // Persist the spend + the revealed-hole flag: a refresh now resumes mid-hand WITH the hole known
+    // and the tokens gone, so you can't peek, read the hole, then refresh to refund the cost.
+    this.checkpoint_()
   }
 
   // Read the odds and hold them in `analysis` until the next action clears them.
@@ -418,6 +426,7 @@ export class Session {
       hole: this.peeked_ ? round.dealer[1] : null,
     }
     this.analysis_ = computeAnalysis(round, knowledge, this.analysisRandom_)
+    this.checkpoint_() // persist the token spend (the reading itself is transient, re-derivable)
   }
 
   buyLateDouble(): void {
@@ -428,6 +437,7 @@ export class Session {
     // Like a free Double: a terminal, aggressive HIT decision at the pre-double total.
     this.recordDecision_('hit')
     this.act_(() => lateDouble(this.requireRound_()))
+    this.checkpoint_()
   }
 
   buyForcedSplit(): void {
@@ -436,6 +446,7 @@ export class Session {
     }
     this.run_ = spendTokens(this.run_, this.costOf_('forced-split'))
     this.act_(() => forcedSplit(this.requireRound_()))
+    this.checkpoint_()
   }
 
   buySecondChance(): void {
@@ -445,6 +456,7 @@ export class Session {
     this.analysis_ = null
     this.run_ = spendTokens(this.run_, this.costOf_('second-chance'))
     this.round_ = armSecondChance(this.requireRound_())
+    this.checkpoint_()
   }
 
   buyFreezeDealer(): void {
@@ -454,6 +466,7 @@ export class Session {
     this.analysis_ = null
     this.run_ = spendTokens(this.run_, this.costOf_('freeze'))
     this.round_ = freezeDealer(this.requireRound_())
+    this.checkpoint_()
   }
 
   buyMulligan(): void {
@@ -466,6 +479,7 @@ export class Session {
     if (this.requireRound_().status === 'resolved') {
       this.settle_()
     }
+    this.checkpoint_()
   }
 
   buyReturn(): void {
@@ -480,6 +494,7 @@ export class Session {
     if (this.requireRound_().status === 'resolved') {
       this.settle_()
     }
+    this.checkpoint_()
   }
 
   // --- The Banker coda: double-or-nothing on the whole score (see run.ts coda flow) ---
@@ -503,6 +518,9 @@ export class Session {
       forcePlayerNaturalCards(shoe)
     }
     this.round_ = startRound(shoe, 0, CODA_RULES)
+    // Persist the dealt gamble + the advanced deal-RNG position, so a refresh resumes THIS gamble
+    // (not a rewind that re-rolls it — the coda re-roll hole).
+    this.checkpoint_()
   }
 
   codaHit(): void {
@@ -511,6 +529,7 @@ export class Session {
     }
     this.analysis_ = null
     this.round_ = hit(this.round_) // a bust resolves the round; codaResolveNext reads the outcome
+    this.checkpoint_()
   }
 
   codaStand(): void {
@@ -519,6 +538,7 @@ export class Session {
     }
     this.analysis_ = null
     this.round_ = stand(this.round_)
+    this.checkpoint_()
   }
 
   // Advance the coda past the resolved hand on the table — called by the UI after the reveal
@@ -538,20 +558,24 @@ export class Session {
       // The killing hand from the main game — already scored; just dismiss it to the prompt.
       this.round_ = null
       this.codaRedeal_ = false
-      return
-    }
-    const outcome = hand.outcome
-    if (outcome === 'win' || outcome === 'blackjack') {
-      this.run_ = { ...this.run_, score: this.run_.score * 2 }
-      this.round_ = null
-      this.codaRedeal_ = false
-    } else if (outcome === 'push' || outcome === 'voided') {
-      this.round_ = null
-      this.codaRedeal_ = true
     } else {
-      this.run_ = { ...this.run_, score: 0 }
-      this.enterOver_()
+      const outcome = hand.outcome
+      if (outcome === 'win' || outcome === 'blackjack') {
+        this.run_ = { ...this.run_, score: this.run_.score * 2 }
+        this.round_ = null
+        this.codaRedeal_ = false
+      } else if (outcome === 'push' || outcome === 'voided') {
+        this.round_ = null
+        this.codaRedeal_ = true
+      } else {
+        this.run_ = { ...this.run_, score: 0 }
+        this.enterOver_() // a coda bust ends the run — cleared, nothing left to resume
+        return
+      }
     }
+    // Back at the coda prompt (or a push re-deal): checkpoint so a refresh resumes the prompt, not a
+    // rewind that would let the player retry the double-or-nothing.
+    this.checkpoint_()
   }
 
   // Walk away from the coda, banking the current score. Only from the prompt (no hand up).
@@ -573,6 +597,7 @@ export class Session {
     }
     this.run_ = spendTokens(this.run_, CODA_ANALYZE_COST)
     this.analysis_ = computeAnalysis(this.round_, { hole: null }, this.analysisRandom_)
+    this.checkpoint_() // persist the token spend
   }
 
   // Coda Mulligan: expensive, flat-priced — discards the opening two and redraws (guaranteed,
@@ -588,6 +613,7 @@ export class Session {
     this.analysis_ = null
     this.run_ = spendTokens(this.run_, cost)
     this.round_ = mulligan(this.round_)
+    this.checkpoint_()
   }
 
   nextHand(): void {
@@ -600,6 +626,9 @@ export class Session {
     // (the walk-in ceremony plays after the pick), unless every path is already maxed.
     this.phase_ = this.upgradePending_ && hasAvailableUpgrade(this.run_) ? 'choosing-upgrade' : 'betting'
     this.upgradePending_ = false
+    // Saves the 'betting' transition; a no-op at 'choosing-upgrade' (checkpoint_ skips it), which
+    // preserves the prior 'resolved' + upgradePending save so a refresh there still offers the pick.
+    this.checkpoint_()
   }
 
   // Apply the chosen roguelite upgrade and release the held deal. No-op unless the
@@ -611,34 +640,37 @@ export class Session {
     this.run_ = applyUpgrade(this.run_, path)
     this.phase_ = 'betting'
     // The upgrade mutated the run (new roguelite tier) — re-checkpoint so a resume keeps it.
-    saveRun(this.run_)
+    this.checkpoint_()
   }
 
-  // Resume a saved in-progress run (the title "Continue"). Adopts the restored RunState and reopens
-  // at the betting screen. Crucially it RE-SEEDS the RNGs from the SAVE, not from construction: the
-  // deal RNG is restored to run.deckState (its exact stream position at the last checkpoint), so the
-  // next shoe is byte-for-byte the same on every reload — a player can't reload-spam CONTINUE to
-  // reroll a better opening hand. The Analyze/heal RNGs are re-derived from run.seed (their salted
-  // streams restart from origin — harmless, they don't touch the card sequence, and this keeps them
-  // deterministic per save too, so a reload can't reroll a dealer's heal either). Without this the
-  // RNGs would keep the construction seed (a fresh Math.random per page load), which is exactly the
-  // save-scum hole. The saved run is never over or in the coda (loadRun rejects those), so betting
-  // is always the right phase.
-  adoptRun(run: RunState): void {
+  // Resume a saved in-progress session (the title "Continue"). Restores the EXACT phase + in-progress
+  // round + flags — not just the RunState — so a refresh resumes precisely where the player was: a
+  // mid-hand reload shows the same cards on the same turn, a coda reload lands back in the coda. This
+  // exactness is the anti-cheat: it removes the rewind-to-an-earlier-checkpoint window that let a
+  // refresh replay a lost hand (see persistence).
+  //
+  // It RE-SEEDS the RNGs from the SAVE, not from construction: the deal RNG is restored to
+  // run.deckState — the checkpoint refreshes that to the LIVE stream position on every save (so it's
+  // correct mid-coda too, where codaGamble advances the RNG outside deal()). Byte-for-byte the same
+  // shoe on every reload, so a player can't reload-spam to reroll. The Analyze/heal/rating RNGs are
+  // re-derived from run.seed (their salted streams restart from origin — harmless, they don't touch
+  // the card sequence, and stay deterministic per save, so a reload can't reroll a dealer's heal).
+  adoptSession(saved: PersistedSession): void {
+    const run = saved.run
     this.nextRandom_ = createRng(run.deckState)
     this.analysisRandom_ = createRng(run.seed ^ ANALYSIS_SEED_SALT)
     this.healRandom_ = createRng(run.seed ^ HEAL_SEED_SALT)
     this.ratingRandom_ = createRng(run.seed ^ RATING_SEED_SALT)
     this.run_ = run
-    this.round_ = null
-    this.peeked_ = false
+    this.round_ = saved.round
+    this.peeked_ = saved.peeked
     this.analysis_ = null
     this.lastHitRisk_ = null
     this.handDecisions_ = []
-    this.codaRedeal_ = false
+    this.codaRedeal_ = saved.codaRedeal
     this.newPersonalBest_ = false
-    this.upgradePending_ = false
-    this.phase_ = 'betting'
+    this.upgradePending_ = saved.upgradePending
+    this.phase_ = saved.phase
   }
 
   restart(): void {
@@ -700,16 +732,44 @@ export class Session {
     if (!this.run_.over && !this.run_.coda && this.run_.shiftIndex > beforeShift) {
       this.upgradePending_ = true
     }
+    // settle_ only RESOLVES the round (compute + set phase); the CALLER checkpoints exactly once
+    // afterwards (deal / the act_-based moves / buyMulligan / buyReturn all do). So the coda + the
+    // finished hand get persisted — which is the fix for the bankruptcy/victory coda refresh escapes
+    // (the coda used to not be saved at all) — without a redundant double-save on resolving actions.
     if (this.run_.over) {
-      this.enterOver_() // a chip bust-out — funnel through the single submit seam
+      this.enterOver_() // a chip bust-out — funnel through the single submit seam (clears the save)
     } else if (this.run_.coda) {
-      this.phase_ = 'coda' // the 6th dealer fell → the Banker coda begins (not persisted)
+      this.phase_ = 'coda' // the 6th dealer fell (victory) or the bankroll emptied (bankruptcy)
     } else {
       this.phase_ = 'resolved'
-      // Checkpoint the finished hand so a mid-run quit resumes here (the in-progress next hand
-      // isn't saved, so quitting mid-hand rewinds to this stable between-hands state).
-      saveRun(this.run_)
     }
+  }
+
+  // Persist the EXACT live session so a refresh resumes precisely here — same phase, same in-progress
+  // round, same peeked / coda flags. Called after every state-changing action (not only at settle),
+  // so a mid-hand or mid-coda reload can't rewind to an earlier checkpoint and replay the hand.
+  //
+  // Skipped when the run is over (enterOver_ has already cleared the save — a finished run must never
+  // resume) or at the transient 'choosing-upgrade' gate (its prior 'resolved' checkpoint carries
+  // upgradePending, so resuming there flows resolved → Next → pick).
+  //
+  // We also refresh run.deckState to the LIVE deal-RNG position here. In the main game that equals
+  // the deal-time value (nothing advances the RNG mid-hand), but the coda's codaGamble advances the
+  // RNG WITHOUT going through deal() — so checkpointing the live position is what makes a resumed
+  // coda deal the same next gamble, closing the coda re-roll hole.
+  private checkpoint_(): void {
+    if (this.phase_ === 'over' || this.phase_ === 'choosing-upgrade') {
+      return
+    }
+    this.run_ = { ...this.run_, deckState: this.nextRandom_.state }
+    saveSession({
+      run: this.run_,
+      phase: this.phase_,
+      round: this.round_,
+      peeked: this.peeked_,
+      codaRedeal: this.codaRedeal_,
+      upgradePending: this.upgradePending_,
+    })
   }
 
   // The single game-end choke point: mark the run over, surface the score screen, and record the

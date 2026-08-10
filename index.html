@@ -19,6 +19,15 @@
         height: 100%;
         overflow: hidden;
         background: #0b0b12;
+        /* CrazyGames-recommended: block accidental selection of game elements.
+           On mobile/tablets a double-tap or press-and-hold would otherwise raise
+           the magnifier or select the whole game and pop a contextual menu. */
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        /* Suppress the tap-highlight flash on touch interactions. */
+        -webkit-tap-highlight-color: transparent;
       }
       #app {
         position: fixed;

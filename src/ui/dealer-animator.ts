@@ -180,6 +180,17 @@ export class DealerAnimation implements DealerView, StrikeView {
     this.killFromShift_ = shiftIndex
   }
 
+  // Place the settled figure at its mark with NO walk-in — used when RESUMING a saved run
+  // mid-hand / mid-coda: the dealer is already present, so there's no arrival ceremony to play.
+  // The constructor's opening armIntro_ leaves the figure in 'spawn' (parked off-screen); this
+  // cancels that so the first resumed frame paints it upright at its spot. Colour + level come
+  // from setShift / setLevel, called alongside.
+  standAtMark(): void {
+    this.mode_ = 'none'
+    this.seqEnd_ = 0
+    this.levelAt_ = 0
+  }
+
   // A standalone walk-in with no preceding death — the dealer slides in from the
   // right and its eyes ignite, over the same window as a kill's arrival. Used on
   // page load and on a New run, where there's no old dealer being destroyed. Set

@@ -57,6 +57,52 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   antiDealer: 'ad',
   chipEco: 'ce',
   tokenEco: 'te',
+  // Session envelope (resume-exactly): the live phase + in-progress round + the transient flags a
+  // refresh must preserve, so a mid-hand / coda reload resumes precisely, never replaying a hand.
+  phase: 'ph',
+  round: 'rd',
+  peeked: 'pk',
+  codaRedeal: 'cr',
+  upgradePending: 'up',
+  // Round
+  shoe: 'sh',
+  drawIndex: 'di',
+  hands: 'ha',
+  activeIndex: 'ai',
+  dealer: 'de',
+  rules: 'ru',
+  status: 'ts',
+  secondChanceArmed: 'sa',
+  burned: 'bn',
+  dealerFrozen: 'df',
+  mulliganed: 'mu',
+  discarded: 'dc',
+  // PlayerHand
+  cards: 'ca',
+  bet: 'be',
+  doubled: 'db',
+  splitAce: 'sl',
+  finished: 'fn',
+  busted: 'bt',
+  outcome: 'oc',
+  lostToDealerNatural: 'ln',
+  chipsOnly: 'cy',
+  freeDoubled: 'fd',
+  // RoundRules
+  dealerSoft17: 's7',
+  dealerHardHitCeiling: 'hh',
+  blackjackPayoutNumerator: 'pn',
+  blackjackPayoutDenominator: 'pe',
+  allowSplit: 'al',
+  doubleWinBonusRatio: 'wb',
+  pushWinsToPlayer: 'pw',
+  voidDealer21: 'v2',
+  hijackDealerNatural: 'hj',
+  dealerNaturalRefundRatio: 'nr',
+  tokenMultiplier: 'tm',
+  // Card
+  rank: 'rk',
+  suit: 'su',
 }
 
 // Inverse (code → field name). Built once; the map has no duplicate codes, so this is lossless

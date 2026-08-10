@@ -65,7 +65,11 @@ import {
 //      accumulator ratingSum/ratedHands — see tallyPerformance) for the scoreboard's "page 2".
 //      Display only, no effect on resolution maths. Bumped so an in-progress v26 save (which
 //      lacks the fields) is discarded on load rather than resumed missing them.
-export const RULES_VERSION = 27
+// v28: resume-EXACT saves — the persisted payload grew from RunState-only to a full session
+//      snapshot (phase + in-progress round + peeked/codaRedeal/upgradePending). Bumped so a v27
+//      RunState-only save is discarded rather than resumed into the new (incompatible) shape. This
+//      is the fix for the mid-hand / bankruptcy-coda refresh replay (see game/persistence).
+export const RULES_VERSION = 28
 export const STARTING_CHIPS = 400
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
@@ -175,7 +179,7 @@ export interface RunState {
   seed: number
   // The deal RNG's stream position (its mulberry32 `.state`), checkpointed at each save so a resume
   // deals the SAME upcoming shoe on every reload — reloading can't reroll the opening cards. Kept in
-  // sync with the live deal RNG by Session.deal; restored via createRng(deckState) in adoptRun.
+  // sync with the live deal RNG on every checkpoint; restored via createRng(deckState) in adoptSession.
   // Distinct from `seed` (the run's fixed origin, which also derives the Analyze/heal streams): this
   // is the evolving position that seed has advanced to.
   deckState: number

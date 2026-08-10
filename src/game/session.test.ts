@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { cardValue, isBlackjack } from './hand'
 import { recordRun } from './leaderboard'
 import { bustChanceOnHit } from './odds'
-import { clearRun, saveRun } from './persistence'
+import { clearRun, saveSession, type PersistedSession } from './persistence'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
 import { comboGain, getShift, hitTokens, powerupCost, startRun } from './run'
@@ -15,8 +15,13 @@ import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session } from './session'
 vi.mock('./leaderboard', () => ({ recordRun: vi.fn(() => ({ previousBest: 0, isNewBest: false })) }))
 
 // Persistence writes to real storage (SDK.data/localStorage); mock it so tests can observe the
-// save/clear checkpoints without touching storage. loadRun returns null (no saved run) by default.
-vi.mock('./persistence', () => ({ saveRun: vi.fn(), clearRun: vi.fn(), loadRun: vi.fn(() => null) }))
+// save/clear checkpoints without touching storage. loadSession returns null (no saved run) by default.
+vi.mock('./persistence', () => ({ saveSession: vi.fn(), clearRun: vi.fn(), loadSession: vi.fn(() => null) }))
+
+// Wrap a bare run into a betting-phase session snapshot for adoptSession (the common resume shape).
+function bettingResume(run: import('./run').RunState): PersistedSession {
+  return { run, phase: 'betting', round: null, peeked: false, codaRedeal: false, upgradePending: false }
+}
 
 describe('Session', () => {
   it('opens in the betting phase with the starting bankroll', () => {
@@ -42,7 +47,7 @@ describe('Session', () => {
   })
 
   it('checkpoints the run after a resolved hand and clears it at game-over', () => {
-    const save = vi.mocked(saveRun)
+    const save = vi.mocked(saveSession)
     const clear = vi.mocked(clearRun)
     const session = new Session(12345)
     save.mockClear()
@@ -57,7 +62,7 @@ describe('Session', () => {
     if (snap.phase === 'resolved') {
       // A between-hands checkpoint captured the finished hand's run.
       expect(save).toHaveBeenCalled()
-      const lastRun = save.mock.calls[save.mock.calls.length - 1][0]
+      const lastRun = save.mock.calls[save.mock.calls.length - 1][0].run
       expect(lastRun.handsPlayed).toBe(1)
     } else {
       // A bankrupt bust-out funnels through enterOver, which nukes the save.
@@ -65,11 +70,11 @@ describe('Session', () => {
     }
   })
 
-  it('adoptRun resumes a saved run at the betting phase', () => {
+  it('adoptSession resumes a saved betting run', () => {
     const session = new Session(1)
-    const saved = { ...startRun(999), chips: 555, score: 4200, tokens: 40, shiftIndex: 3, integrity: 80, kills: [1, 2] }
+    const saved = bettingResume({ ...startRun(999), chips: 555, score: 4200, tokens: 40, shiftIndex: 3, integrity: 80, kills: [1, 2] })
 
-    session.adoptRun(saved)
+    session.adoptSession(saved)
 
     const snap = session.snapshot()
     expect(snap.phase).toBe('betting')
@@ -914,7 +919,7 @@ describe('Session bankruptcy coda', () => {
   function bankruptcyEntry(): Session {
     for (let seed = 1; seed < 500; seed += 1) {
       const session = new Session(seed)
-      session.adoptRun({ ...startRun(seed), shiftIndex: 3, kills: [1, 2], integrity: 90, chips: 10, score: 1000 })
+      session.adoptSession(bettingResume({ ...startRun(seed), shiftIndex: 3, kills: [1, 2], integrity: 90, chips: 10, score: 1000 }))
       session.deal()
       for (let guard = 0; session.snapshot().phase === 'playing' && guard < 12; guard += 1) {
         session.stand()

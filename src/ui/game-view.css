@@ -179,6 +179,123 @@
   box-shadow: 0 0 16px rgba(116, 236, 224, 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
 }
 
+/* The help button: an "H" twin of the info button, but it rides at the BOTTOM of the powerup
+ * column as its last child, so it always sits right under the lowest visible ability button no
+ * matter how many are showing. Scoped under .hud-powerups so it overrides the generic ability-
+ * button chrome (.hud-powerups button); align-self keeps it a left-aligned circle instead of
+ * stretching to the column width. Same teal-energy chrome as the info button; upright bold sans
+ * so the H reads as a label, not the serif "i". Opens the ability guide (.help-panel). */
+.hud-powerups .hud-help {
+  position: relative;
+  align-self: flex-start;
+  margin-top: 2px; /* a touch of air below the stack, on top of the column's own row gap */
+  width: 38px;
+  height: 38px;
+  min-height: 0; /* clears the ability button's 48px floor */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  color: rgba(196, 246, 241, 0.96);
+  font: 800 18px system-ui, -apple-system, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
+}
+
+.hud-powerups .hud-help:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+}
+
+.hud-powerups .hud-help:active {
+  transform: scale(0.92);
+}
+
+/* Ability guide: a full-screen modal that lists every ability with a terse one-liner. Same
+ * teal-holo language as the nexus readouts. Sized to fit all eight rows on one screen even on
+ * mobile (compact card, small type). A tap anywhere on the panel closes it (buildHelpPanel_). */
+.help-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6; /* above the HUD + the choose-upgrade card */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+
+.help-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.help-panel__card {
+  width: min(560px, 92vw);
+  max-height: 92vh;
+  overflow: hidden; /* everything is sized to fit — no scroll */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 22px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(116, 236, 224, 0.4);
+  background: linear-gradient(rgba(14, 30, 34, 0.66), rgba(8, 18, 22, 0.66));
+  box-shadow: 0 0 26px rgba(116, 236, 224, 0.28), inset 0 0 18px rgba(116, 236, 224, 0.08);
+}
+
+.help-panel__title {
+  text-align: center;
+  font: 800 22px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.14em;
+  color: rgba(196, 246, 241, 0.98);
+  text-shadow: 0 0 12px rgba(116, 236, 224, 0.55);
+}
+
+.help-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.help-panel__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.25;
+}
+
+.help-panel__name {
+  flex: 0 0 40%;
+  max-width: 40%;
+  font: 700 15px system-ui, -apple-system, sans-serif;
+  color: rgba(150, 246, 236, 0.98);
+}
+
+.help-panel__desc {
+  flex: 1 1 auto;
+  font: 500 14px system-ui, -apple-system, sans-serif;
+  color: rgba(224, 244, 242, 0.9);
+}
+
+.help-panel__hint {
+  text-align: center;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
 /* The final scoreboard's page pager (‹ • • ›): a holo-cyan control row, its left/top set inline
  * from the band coords (syncScorePager) and centred on that anchor. Fixed just below the summary
  * band, so it holds still as the two pages' differing heights change the board above it. */
@@ -279,22 +396,6 @@
   max-width: 44vw;
   pointer-events: none;
   transition: opacity 0.5s ease;
-}
-
-.hud-powerhint {
-  font: 600 13px system-ui, -apple-system, sans-serif;
-  color: #cfe0ff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
-  margin-bottom: 2px;
-  min-height: 1em;
-}
-
-/* The hint is empty in almost every state (it only speaks up for Bust Block / Dealer frozen /
- * a burned card). When empty, collapse it entirely so it reserves NO line and drops out of the
- * flex gap — otherwise a blank row pushes the whole ability stack a line below the token
- * counter. When a hint does appear it takes its space back and the stack shifts down a touch. */
-.hud-powerhint:empty {
-  display: none;
 }
 
 .hud-powerups button {
@@ -734,6 +835,41 @@ button.is-hidden,
     font-size: 18px;
   }
 
+  .hud-powerups .hud-help {
+    width: 32px;
+    height: 32px;
+    font-size: 15px;
+  }
+
+  /* Compress the ability guide so all eight rows clear a short phone screen. */
+  .help-panel__card {
+    gap: 9px;
+    padding: 15px 16px;
+    border-radius: 12px;
+  }
+
+  .help-panel__title {
+    font-size: 18px;
+  }
+
+  .help-panel__list {
+    gap: 6px;
+  }
+
+  .help-panel__name {
+    flex-basis: 42%;
+    max-width: 42%;
+    font-size: 13px;
+  }
+
+  .help-panel__desc {
+    font-size: 12.5px;
+  }
+
+  .help-panel__hint {
+    font-size: 11px;
+  }
+
   .hud-message {
     font-size: 19px;
   }
@@ -742,10 +878,6 @@ button.is-hidden,
     left: 10px;
     top: 50px;
     gap: 6px;
-  }
-
-  .hud-powerhint {
-    font-size: 12px;
   }
 
   .hud-powerups button {

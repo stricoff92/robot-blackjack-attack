@@ -43,7 +43,7 @@ describe('createRng', () => {
     const continuation = [rng(), rng(), rng(), rng()]
 
     // A fresh RNG built from the snapshot resumes the identical sequence — the property the save
-    // relies on to make a resumed deal deterministic (see game/session adoptRun).
+    // relies on to make a resumed deal deterministic (see game/session adoptSession).
     const restored = createRng(saved)
     expect([restored(), restored(), restored(), restored()]).toEqual(continuation)
   })
