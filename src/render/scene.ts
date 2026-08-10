@@ -10,8 +10,7 @@
 // This module keeps the shared dealer GEOMETRY (dealerBox / dealerEyes) as the
 // single source of truth that the figure and the chip anchors read.
 
-import { deviceDpr } from './canvas'
-import { createFeltTexture, type FeltCanvas } from './felt'
+import { paintFelt } from './felt'
 
 export interface Layout {
   width: number
@@ -52,9 +51,6 @@ function railThickness(w: number, h: number): number {
 }
 
 export class Scene {
-  private felt_: FeltCanvas | null = null
-  private feltKey_ = ''
-
   // Back layer: just the room. The dealer figure is drawn separately on the
   // 'dealer' layer (render/dealer.ts) so it can animate.
   drawBackground(ctx: CanvasRenderingContext2D, layout: Layout): void {
@@ -64,35 +60,25 @@ export class Scene {
   // Table layer: felt + rail. Drawn on a transparent canvas so the back layer
   // shows through above the rail.
   drawTable(ctx: CanvasRenderingContext2D, layout: Layout): void {
-    const dpr = deviceDpr()
-    this.drawFelt_(ctx, layout, dpr)
+    this.drawFelt_(ctx, layout)
     drawRail(ctx, layout)
   }
 
-  private drawFelt_(ctx: CanvasRenderingContext2D, layout: Layout, dpr: number): void {
-    // The felt fills the screen from the arch's highest point down to the
-    // bottom, full width; the clip trims it to the curved top edge.
+  private drawFelt_(ctx: CanvasRenderingContext2D, layout: Layout): void {
+    // The felt fills the screen from the arch's highest point down to the bottom, full
+    // width; the clip trims it to the curved top edge. We paint it straight onto this
+    // (on-screen, DOM-composited) table layer rather than blitting a cached offscreen
+    // buffer — a visible layer keeps its backing store, so there's nothing to purge and
+    // nothing to probe. The paint is deterministic (fixed seed), so repaints don't shimmer.
     const top = layout.apexY
     const width = layout.width
     const height = layout.height - top
 
-    const key = `${Math.round(width)}x${Math.round(height)}@${dpr}`
-    // Rebuild the felt whenever the cache is empty, the size changed, OR the
-    // cached buffer lost its backing store. A long-lived OffscreenCanvas can be
-    // silently discarded by the browser under memory pressure, leaving a blank
-    // felt that previously only a resize would restore (the table read as an empty
-    // dark void, most visibly right after a dealer kill). isFeltBlank() cheaply
-    // detects that loss so we regenerate; the texture is only blitted a couple of
-    // times per hand, so the occasional rebuild is negligible.
-    if (!this.felt_ || this.feltKey_ !== key || isFeltBlank(this.felt_)) {
-      this.felt_ = createFeltTexture(width, height, dpr)
-      this.feltKey_ = key
-    }
-
     ctx.save()
     traceFeltRegion(ctx, layout)
     ctx.clip()
-    ctx.drawImage(this.felt_, 0, top, width, height)
+    ctx.translate(0, top)
+    paintFelt(ctx, width, height)
     ctx.restore()
   }
 }
@@ -298,30 +284,4 @@ export function dealerMouth(l: Layout): { x: number; y: number } {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
-}
-
-// Whether the cached felt buffer has lost its pixels. A long-lived OffscreenCanvas
-// backing store can be silently discarded by the browser under memory pressure;
-// once that happens every blit of it paints nothing and the table reads as an
-// empty dark void. We probe the felt's centre (always opaque green when healthy):
-// a transparent centre means the buffer was discarded and must be rebuilt.
-function isFeltBlank(felt: FeltCanvas): boolean {
-  const w = felt.width
-  const h = felt.height
-  if (!w || !h) {
-    return true
-  }
-  const ctx = (felt as HTMLCanvasElement).getContext('2d') as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null
-  if (!ctx) {
-    return true
-  }
-  try {
-    const { data } = ctx.getImageData((w / 2) | 0, (h / 2) | 0, 1, 1)
-    return data[3] === 0
-  } catch {
-    return true // reading failed — safest to rebuild
-  }
 }
