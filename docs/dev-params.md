@@ -8,6 +8,15 @@ hands, jump to a later dealer, seed upgrades, and so on.
 the production build** (`npm run build`) — they can never fire on the deployed
 game. Source of truth: [`src/game/debug.ts`](../src/game/debug.ts).
 
+**"token" = player-facing "ENERGY".** The `tokens` / `tokenUpgrades` params (and the code) keep
+the internal name **token**; the player only ever sees **ENERGY**. It's a display-layer rename —
+see [the nomenclature note in the rules doc](./blackjack-roguelike-rules.md#6-tokens).
+
+**Initial run only.** Every param seeds the **first** run of the page. Pressing **New run**
+starts a **clean default run** that ignores all of them (first dealer, default chips/tokens, zero
+score, no forced hands) — so a debug-seeded run can never re-seed the same state on restart.
+Reload the page to apply the params again.
+
 ## Usage
 
 Append to the dev URL as normal query params, combining freely with `&`:
@@ -27,11 +36,12 @@ server is `5173`.)
 | `forcePairs=<rank>` | `2`–`10`, `J`, `Q`, `K`, `A` | …a pair of that specific rank. |
 | `tokens=<n>` | non-negative int | Start the run with `n` tokens (buy powerups off the first deal). |
 | `chips=<n>` | positive int | Start the run with `n` chips (test the wealth-floor bet — §5 — with a fat stack). |
+| `points=<n>` | non-negative int | Start the run with `n` score points (test the [banker scoreboards](./scoreboards.md) — the stake + the bankruptcy tax rows — without grinding a real score). |
 | `dealerHealth=<n>` | `1`–`100` | Start the first dealer at `n`% health (see the low-health eye flicker / a quick kill). |
 | `dealer=<n>` | `1`–`6` | Start the run at dealer `n` (jumps straight to that dealer's colour). |
 | `sabotageUpgrade=<t>` | `0`–`3` | Start with the **Sabotage** (anti-dealer) path unlocked through tier `t`. |
 | `chipUpgrade=<t>` | `0`–`3` | Start with the **Payout** (chip) path unlocked through tier `t`. |
-| `tokenUpgrades=<t>` | `0`–`3` | Start with the **Tokens** path unlocked through tier `t`. |
+| `tokenUpgrades=<t>` | `0`–`3` | Start with the **Energy** (`tokenEco`) path unlocked through tier `t`. |
 | `dealerBlackjack` | *(flag)* | The dealer draws a natural 21 (Ace + ten-value) **every** hand. |
 | `playerBlackjack` | *(flag)* | The player is dealt a natural 21 (Ace + ten-value) **every** hand (test the blackjack payout / win). |
 
@@ -76,6 +86,7 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 ?forcePairs&tokens=1000                # splits + re-splits with tokens to burn
 ?dealer=6&dealerHealth=5               # the final RGB dealer, near death
 ?dealer=6&chips=8000                   # Dealer 6 with a fat stack → the 25% wealth-floor bet kicks in
+?dealer=3&chips=40&points=50000        # bust the all-in hand → the bankruptcy banker scoreboard taxes 50000 down to 8500
 ?chipUpgrade=3&tokenUpgrades=2         # maxed Payout + Tokens through tier 2
 ?sabotageUpgrade=3&dealer=5            # maxed Sabotage, starting at dealer 5
 ?dealerBlackjack&sabotageUpgrade=1     # watch the refund animation on repeat

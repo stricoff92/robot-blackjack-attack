@@ -27,6 +27,7 @@ import laserPrepareUrl from '../assets/DSGNSynth_CAST-Mecha Laser Prepare_HY_PC-
 import laserImpactUrl from '../assets/FGHTImpt_HIT-Strong Punch_HY_PC-004.ogg'
 import dealerDeathUrl from '../assets/DSGNMisc_SKILL IMPACT-Whimsimpact_HY_PC-005.ogg'
 import footstepUrl from '../assets/FEETMisc_STEP-Boots on Concrete Dungeon_HY_PC-002.ogg'
+import handClapUrl from '../assets/freesound_community-hand-clap-106596.ogg'
 
 export type SfxName =
   | 'shuffle'
@@ -43,6 +44,7 @@ export type SfxName =
   | 'laser-impact'
   | 'dealer-death'
   | 'footstep'
+  | 'hand-clap'
 
 interface SfxDef {
   url: string
@@ -114,6 +116,9 @@ const SFX: Record<SfxName, SfxDef> = {
   // bob). Rate-jittered ±25% so the three steps of a single walk-in don't sound
   // machine-stamped identical.
   footstep: { url: footstepUrl, gain: 0.6, rateVariance: 0.25 },
+  // A slow hand-clap the Banker gives when the player wins a coda hand — fired as the
+  // banker-hand-win scoreboard appears. One distinct one-shot, so no rate jitter.
+  'hand-clap': { url: handClapUrl, gain: 0.7, rateVariance: 0 },
 }
 
 // Peak level of the synth vacuum drone that accompanies the shredder.

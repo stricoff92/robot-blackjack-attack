@@ -1,10 +1,14 @@
-// The game-over "score screen": once the ending hand's cards have been sucked into the
-// dealer's mouth and shredded, the table nexus's holo projector casts a run summary into
-// the clear band between the two hands' counts — the same projection the RULES spec sheet
-// and Analyze readout use. A "GAME OVER" heading over a stack of label/value rows (points,
-// hands played, win/loss, tokens spent, free doubles), all projected LIGHT: no panel or
-// frame. It flickers in on a strike ramp, shrinks to fit the band, and returns its text
-// box so drawHoloProjection fans the holo lens's rays onto it.
+// The FINAL SCOREBOARD (docs/scoreboards.md): the game-over "score screen" shown when the run
+// ends — an early bankruptcy, a cash-out after the Banker, or a loss to the Banker (the title
+// names which; see buildScore_ in game-view). Distinct from the two BANKER scoreboards (the
+// double-or-nothing offer, render/coda-stake.ts), which are still mid-run.
+//
+// Once the ending hand's cards have been sucked into the dealer's mouth and shredded, the table
+// nexus's holo projector casts a run summary into the clear band between the two hands' counts —
+// the same projection the RULES spec sheet and Analyze readout use. A "GAME OVER" heading over a
+// stack of label/value rows (points, hands played, win/loss, tokens spent, free doubles), all
+// projected LIGHT: no panel or frame. It flickers in on a strike ramp, shrinks to fit the band,
+// and returns its text box so drawHoloProjection fans the holo lens's rays onto it.
 //
 // Render-only, mirroring spec-sheet.ts: the game builds the ScoreReadout (pure strings,
 // import-free of the run types) and this paints it.
@@ -26,6 +30,9 @@ export interface ScoreRow {
 // The readout's data — pure strings, so the render layer stays decoupled from RunState.
 export interface ScoreReadout {
   title: string
+  // An optional CENTERED hero line drawn between the heading and the rows, label-less (e.g. the
+  // performance page's star rating "★★★★☆ 3.5"). Bigger than a row, amber like a value.
+  hero?: string
   rows: ScoreRow[]
 }
 
@@ -45,9 +52,15 @@ function monoFont(px: number, weight = 700): string {
   return `${weight} ${px}px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace`
 }
 
+// How far (× felt scale) `shiftLeft` nudges the board left of centre — matches the coda
+// scoreboards' offset so the run-ending boards share one left column. Exported so the DOM page
+// pager (game-view) can sit under the same shifted centre.
+export const SCORE_LEFT_SHIFT = 0.08
+
 // Draw the score summary and RETURN its text box (one ray-target, so the holo lens fans
 // one clean beam onto it). `age` is ms since it appeared (the strike-in), `fade` winds it
-// out on dismiss, `now` positions the shared flicker.
+// out on dismiss, `now` positions the shared flicker. `shiftLeft` nudges the board slightly
+// left of felt-centre (the cash-out / lost-to-Banker boards, matching the coda scoreboards).
 export function drawScoreSheet(
   ctx: CanvasRenderingContext2D,
   l: Layout,
@@ -55,6 +68,7 @@ export function drawScoreSheet(
   age: number,
   fade = 1,
   now = 0,
+  shiftLeft = false,
 ): HoloRayTarget[] {
   // The clear band between the two counts — the same one the Analyze / RULES readouts use.
   const dc = dealerCountAnchor(l)
@@ -64,11 +78,13 @@ export function drawScoreSheet(
   const bandBottom = pc.y - countPx * 0.7
   const bandH = Math.max(1, bandBottom - bandTop)
   const bandMid = (bandTop + bandBottom) / 2
-  const cx = l.width / 2
+  const cx = l.width / 2 - (shiftLeft ? Math.min(l.width, l.height) * SCORE_LEFT_SHIFT : 0)
 
   const scale = Math.min(l.width, l.height)
   const titlePx = clamp(scale * 0.03, 16, 28)
   const rowPx = clamp(scale * 0.02, 12, 19)
+  // The centered hero line (if any) sits between the heading and the rows — larger than a row.
+  const heroPx = clamp(scale * 0.026, 14, 24)
   // Size the row column to its CONTENT — the widest label, a readable gap, the widest value
   // — rather than a fixed slab of screen width. The old fixed column (70% of width) left a
   // cavern between the short labels and shorter values, and on mobile pushed the board's
@@ -87,24 +103,34 @@ export function drawScoreSheet(
   }
   ctx.font = monoFont(titlePx, 800)
   const titleW = ctx.measureText(readout.title).width
+  let heroW = 0
+  if (readout.hero) {
+    ctx.font = monoFont(heroPx, 800)
+    heroW = ctx.measureText(readout.hero).width
+  }
   const rowsW = labelW + rowPx * LABEL_VALUE_GAP + valueW
-  const contentW = Math.min(Math.max(rowsW, titleW), l.width * 0.9, 360)
+  const contentW = Math.min(Math.max(rowsW, titleW, heroW), l.width * 0.9, 360)
 
-  // Vertical budget: the heading block, a gap, then the label/value rows. Shrink to fit
-  // the band so it never spills into the counts.
+  // Vertical budget: the heading block, a gap, an optional centered hero line + its gap, then the
+  // label/value rows. Shrink to fit the band so it never spills into the counts.
   const titleBlock = titlePx * 1.5
   const titleGap = rowPx * 0.9
+  const heroBlock = readout.hero ? heroPx * 1.5 : 0
+  const heroGap = readout.hero ? rowPx * 0.8 : 0
   const rowH = rowPx * 1.7
-  const contentH = titleBlock + titleGap + readout.rows.length * rowH
+  const contentH = titleBlock + titleGap + heroBlock + heroGap + readout.rows.length * rowH
   const f = Math.min(1, bandH / contentH)
 
   const tPx = titlePx * f
+  const hPx = heroPx * f
   const rPx = rowPx * f
   const tBlock = titleBlock * f
   const tGap = titleGap * f
+  const hBlock = heroBlock * f
+  const hGap = heroGap * f
   const rH = rowH * f
   const cW = contentW * f
-  const totalH = tBlock + tGap + readout.rows.length * rH
+  const totalH = tBlock + tGap + hBlock + hGap + readout.rows.length * rH
 
   const presence = clamp01(age / SCORE_STRIKE_MS) * fade
 
@@ -114,6 +140,12 @@ export function drawScoreSheet(
   let y = bandMid - totalH / 2
   holoCentered(ctx, readout.title, cx, y + tBlock / 2, tPx, HEAD, now, 800)
   y += tBlock + tGap
+
+  // The centered hero line (e.g. the star rating), drawn label-less in the amber value tone.
+  if (readout.hero) {
+    holoCentered(ctx, readout.hero, cx, y + hBlock / 2, hPx, AMBER, now, 800)
+    y += hBlock + hGap
+  }
 
   const left = cx - cW / 2
   const right = cx + cW / 2
@@ -125,7 +157,8 @@ export function drawScoreSheet(
   ctx.restore()
 
   const top = bandMid - totalH / 2
-  return [{ left, right, top, bottom: top + totalH }]
+  // clampToNexus: the final scoreboard — keep its fan left of the lens (no right-of-nexus spill).
+  return [{ left, right, top, bottom: top + totalH, clampToNexus: true }]
 }
 
 // The game title (ROBOT / BLACKJACK / ATTACK) projected ABOVE the score board on the game-over

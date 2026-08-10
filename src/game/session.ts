@@ -1,8 +1,8 @@
 import { createShoe, shuffle, type Card, type Rank } from './deck'
 import { cardValue, isBlackjack } from './hand'
-import { bustChanceOnHit, computeAnalysis, type Analysis, type Knowledge } from './odds'
+import { bustChanceOnHit, computeAnalysis, dealerWinChance, NOTHING_KNOWN, type Analysis, type Knowledge } from './odds'
 import { POWERUPS, type PowerupId } from './powerups'
-import { createRng, type Rng } from './random'
+import { createRng, type Rng, type SeededRng } from './random'
 import {
   activeHand,
   armSecondChance,
@@ -39,6 +39,8 @@ import {
   powerupCost,
   spendTokens,
   startRun,
+  tallyPerformance,
+  type HandDecision,
   type RunState,
 } from './run'
 import { rulesForUpgrades, type RunUpgrades, type UpgradePath } from './upgrades'
@@ -52,20 +54,24 @@ export const SHOE_DECKS = 6
 // replacement's walk-in ceremony plays once the pick releases the deal.
 export type Phase = 'betting' | 'playing' | 'resolved' | 'over' | 'choosing-upgrade' | 'coda'
 
+// Dev URL overrides. ALL apply to the INITIAL run only — a New run (restart) forgets them and starts
+// a clean default run (see forgetDevOverrides_), so a debug-seeded run never re-seeds itself.
 export interface SessionOptions {
   /** Dev switch: force the player's opening two cards to be a splittable pair. */
   forcePairs?: boolean
   /** With forcePairs, an optional specific rank to pair; otherwise pairs the top card. */
   forcePairRank?: Rank | null
-  /** Dev switch: seed the run (and each New run) with this many tokens; null = default. */
+  /** Dev switch: seed the initial run with this many tokens; null = default. */
   startTokens?: number | null
-  /** Dev switch: seed the run (and each New run) with this many chips; null = default (400). */
+  /** Dev switch: seed the initial run with this many chips; null = default (400). */
   startChips?: number | null
-  /** Dev switch: start the first dealer of each run at this % health (1-100); null = full. */
+  /** Dev switch: seed the initial run with this many score points; null = default (0). */
+  startScore?: number | null
+  /** Dev switch: start the initial run's first dealer at this % health (1-100); null = full. */
   dealerHealth?: number | null
-  /** Dev switch: start each run at this dealer (1-based); null = the first dealer. */
+  /** Dev switch: start the initial run at this dealer (1-based); null = the first dealer. */
   startDealer?: number | null
-  /** Dev switch: start each run with these unlocked upgrade tiers; null = none. */
+  /** Dev switch: start the initial run with these unlocked upgrade tiers; null = none. */
   startUpgrades?: RunUpgrades | null
   /** Dev switch: force the dealer's opening two cards to be a natural 21 every deal. */
   forceDealerNatural?: boolean
@@ -101,6 +107,16 @@ const ANALYSIS_SEED_SALT = 0x5f356495
 // amount never disturbs the card sequence (like ANALYSIS_SEED_SALT does for Analyze).
 const HEAL_SEED_SALT = 0x1b873593
 
+// Decorrelates the per-hand rating's dealer-win Monte-Carlo (recordDecision_) from every other
+// stream — so scoring the player's decisions never disturbs the deal sequence, the heal rolls,
+// or an Analyze readout (which would otherwise draw from a stream the rating had advanced).
+const RATING_SEED_SALT = 0x27d4eb2f
+
+// Monte-Carlo trials for the rating's "chance the dealer beats me if I stand". Fewer than the
+// Analyze readout's 4000 — a 6-bucket star rating doesn't need that precision, and this runs on
+// every hit/stand, so keep it cheap.
+const RATING_TRIALS = 1200
+
 // The Banker coda's stripped rules: plain S17, no split (and no double/upgrades) — the
 // double-or-nothing hand is pure hit/stand blackjack. See the coda* methods below.
 const CODA_RULES: RoundRules = { ...DEFAULT_ROUND_RULES, allowSplit: false }
@@ -112,9 +128,13 @@ export const CODA_ANALYZE_COST = 5
 export const CODA_MULLIGAN_COST = 200
 
 export class Session {
-  private nextRandom_: Rng
+  // The deal RNG — its `.state` is checkpointed into run.deckState so a resume reproduces the
+  // upcoming shoe exactly (see deal/adoptRun). The analysis + heal RNGs need no snapshot: they're
+  // re-derived from run.seed on resume (below), so they stay deterministic per save too.
+  private nextRandom_: SeededRng
   private analysisRandom_: Rng
   private healRandom_: Rng
+  private ratingRandom_: Rng
   private run_: RunState
   private round_: Round | null = null
   private phase_: Phase = 'betting'
@@ -123,6 +143,10 @@ export class Session {
   // The bust risk of the last surviving hit that paid points (see hit()); cleared by the
   // next move. Drives the UI's risk caption ("WHOA!"/"Lucky!"/"Nice").
   private lastHitRisk_: number | null = null
+  // The player's terminal hit/stand decision per hand this round (indexed by hand, so a split's
+  // two hands are tracked separately), captured live because the odds can't be reconstructed once
+  // the deck advances. Read at settle_ to rate the hand (tallyPerformance); reset on each deal.
+  private handDecisions_: (HandDecision | undefined)[] = []
   // Coda only: a pushed double-or-nothing hand flags the UI to auto-re-deal. Resets on each
   // coda deal (and on restart).
   private codaRedeal_ = false
@@ -132,24 +156,30 @@ export class Session {
   // Set when a kill just advanced the dealer (and the run isn't won): the next
   // hand is gated on a choose-upgrade pick.
   private upgradePending_ = false
-  private readonly forcePairs_: boolean
-  private readonly forcePairRank_: Rank | null
-  private readonly startTokens_: number | null
-  private readonly startChips_: number | null
-  private readonly dealerHealth_: number | null
-  private readonly startDealer_: number | null
-  private readonly startUpgrades_: RunUpgrades | null
-  private readonly forceDealerNatural_: boolean
-  private readonly forcePlayerNatural_: boolean
+  // Dev URL overrides, seeded from SessionOptions. They apply to the INITIAL run only — a New run
+  // (restart) forgets them (forgetDevOverrides_) so it always starts a clean default run and a
+  // debug-seeded run can't re-seed the same state on restart. Not readonly for that reason.
+  private forcePairs_: boolean
+  private forcePairRank_: Rank | null
+  private startTokens_: number | null
+  private startChips_: number | null
+  private startScore_: number | null
+  private dealerHealth_: number | null
+  private startDealer_: number | null
+  private startUpgrades_: RunUpgrades | null
+  private forceDealerNatural_: boolean
+  private forcePlayerNatural_: boolean
 
   constructor(seed: number, options: SessionOptions = {}) {
     this.nextRandom_ = createRng(seed)
     this.analysisRandom_ = createRng(seed ^ ANALYSIS_SEED_SALT)
     this.healRandom_ = createRng(seed ^ HEAL_SEED_SALT)
+    this.ratingRandom_ = createRng(seed ^ RATING_SEED_SALT)
     this.forcePairs_ = options.forcePairs ?? false
     this.forcePairRank_ = options.forcePairRank ?? null
     this.startTokens_ = options.startTokens ?? null
     this.startChips_ = options.startChips ?? null
+    this.startScore_ = options.startScore ?? null
     this.dealerHealth_ = options.dealerHealth ?? null
     this.startDealer_ = options.startDealer ?? null
     this.startUpgrades_ = options.startUpgrades ?? null
@@ -167,6 +197,9 @@ export class Session {
     }
     if (this.startChips_ !== null) {
       run = { ...run, chips: this.startChips_ }
+    }
+    if (this.startScore_ !== null) {
+      run = { ...run, score: this.startScore_ }
     }
     if (this.startDealer_ !== null && this.startDealer_ > 1) {
       // Jump to a later dealer: advance the shift index and seed the kills of the
@@ -190,6 +223,21 @@ export class Session {
     return run
   }
 
+  // Drop every dev URL override so subsequent runs + deals ignore them — the existing `!== null` /
+  // boolean guards in freshRun_ and deal() then no-op. Called on New run (see restart).
+  private forgetDevOverrides_(): void {
+    this.forcePairs_ = false
+    this.forcePairRank_ = null
+    this.startTokens_ = null
+    this.startChips_ = null
+    this.startScore_ = null
+    this.dealerHealth_ = null
+    this.startDealer_ = null
+    this.startUpgrades_ = null
+    this.forceDealerNatural_ = false
+    this.forcePlayerNatural_ = false
+  }
+
   snapshot(): SessionState {
     return {
       run: this.run_,
@@ -210,6 +258,11 @@ export class Session {
     }
     const bet = nextBet(this.run_)
     const shoe = this.shuffleShoe_()
+    // The shuffle just advanced the deal RNG. Mirror its new position into the run so the next
+    // checkpoint (settle_/chooseUpgrade) persists it: a resume restores this exact position, making
+    // the upcoming shoe identical on every reload — a reload can't reroll the opening cards. The
+    // shoe already dealt uses the OLD position; this snapshot is where the NEXT deal will resume.
+    this.run_ = { ...this.run_, deckState: this.nextRandom_.state }
     if (this.forcePairs_) {
       forcePlayerPair(shoe, this.forcePairRank_)
     }
@@ -223,6 +276,7 @@ export class Session {
     }
     this.peeked_ = false
     this.analysis_ = null
+    this.handDecisions_ = [] // a fresh hand: forget last round's decision snapshots
     // Fold the run's unlocked upgrades AND the current dealer's house rules (late
     // dealers hit soft 17) into this round's rules.
     const rules = {
@@ -283,6 +337,21 @@ export class Session {
     return shoe
   }
 
+  // Snapshot the player's decision on the active hand for the end-of-run star rating (see
+  // run.ts ratePlayerHand). Captured BEFORE the move lands, from public cards: the exact
+  // bust-if-hit chance and the Monte-Carlo chance the dealer beats the current total if the
+  // player stands. Overwrites each move, so the last one recorded is the hand's terminal call.
+  // The dealer-win sim runs on its own decorrelated RNG, so rating never perturbs the deal.
+  private recordDecision_(action: 'hit' | 'stand', bustChance?: number): void {
+    if (this.phase_ !== 'playing' || this.round_ === null || this.round_.status !== 'player-turn') {
+      return
+    }
+    const round = this.round_
+    const pBust = bustChance ?? bustChanceOnHit(round)
+    const pLose = dealerWinChance(round, NOTHING_KNOWN, this.ratingRandom_, RATING_TRIALS)
+    this.handDecisions_[round.activeIndex] = { action, bustChance: pBust, standLoseChance: pLose }
+  }
+
   hit(): void {
     if (this.phase_ !== 'playing') {
       return
@@ -292,6 +361,8 @@ export class Session {
     // Price the risk before taking it: the odds this hit busts (from public cards) set both
     // the token reward and how much the hit grows the combo.
     const bustChance = bustChanceOnHit(round)
+    // Record this hit as the hand's (current) terminal decision — reusing the bust chance.
+    this.recordDecision_('hit', bustChance)
     const tokenMult = round.rules.tokenMultiplier
     this.act_(() => hit(this.requireRound_())) // clears lastHitRisk; re-set below on survival
     if (this.round_ !== null && !this.round_.hands[hitIndex].busted) {
@@ -307,10 +378,14 @@ export class Session {
   }
 
   stand(): void {
+    this.recordDecision_('stand')
     this.act_(() => stand(this.requireRound_()))
   }
 
   double(): void {
+    // A double commits to exactly one more card then stands — an aggressive HIT decision,
+    // judged at the pre-double total (the bust chance of that one card).
+    this.recordDecision_('hit')
     this.act_(() => doubleDown(this.requireRound_()))
   }
 
@@ -350,6 +425,8 @@ export class Session {
       return
     }
     this.run_ = spendTokens(this.run_, this.costOf_('late-double'))
+    // Like a free Double: a terminal, aggressive HIT decision at the pre-double total.
+    this.recordDecision_('hit')
     this.act_(() => lateDouble(this.requireRound_()))
   }
 
@@ -418,7 +495,14 @@ export class Session {
     this.codaRedeal_ = false
     // guardDealerNatural: the Banker must never open on a natural 21 (it would zero the whole
     // score instantly, with no player move and no coda sabotage to catch it).
-    this.round_ = startRound(this.shuffleShoe_(true), 0, CODA_RULES)
+    const shoe = this.shuffleShoe_(true)
+    // Dev aid (?playerBlackjack): honour the forced player natural in the coda too, like deal()
+    // — an instant coda WIN. Safe against the dealer-natural guard above: if seating the player's
+    // natural incidentally leaves the Banker one, both-natural is a PUSH (re-deal), never a loss.
+    if (this.forcePlayerNatural_) {
+      forcePlayerNaturalCards(shoe)
+    }
+    this.round_ = startRound(shoe, 0, CODA_RULES)
   }
 
   codaHit(): void {
@@ -530,16 +614,27 @@ export class Session {
     saveRun(this.run_)
   }
 
-  // Resume a saved in-progress run (the title "Continue"). Adopts the restored RunState and
-  // reopens at the betting screen; the RNGs keep the fresh seed from construction (a resumed run
-  // gets an unpredictable next shoe — no save-scumming the deal). The saved run is never over or
-  // in the coda (persistence.loadRun rejects those), so betting is always the right phase.
+  // Resume a saved in-progress run (the title "Continue"). Adopts the restored RunState and reopens
+  // at the betting screen. Crucially it RE-SEEDS the RNGs from the SAVE, not from construction: the
+  // deal RNG is restored to run.deckState (its exact stream position at the last checkpoint), so the
+  // next shoe is byte-for-byte the same on every reload — a player can't reload-spam CONTINUE to
+  // reroll a better opening hand. The Analyze/heal RNGs are re-derived from run.seed (their salted
+  // streams restart from origin — harmless, they don't touch the card sequence, and this keeps them
+  // deterministic per save too, so a reload can't reroll a dealer's heal either). Without this the
+  // RNGs would keep the construction seed (a fresh Math.random per page load), which is exactly the
+  // save-scum hole. The saved run is never over or in the coda (loadRun rejects those), so betting
+  // is always the right phase.
   adoptRun(run: RunState): void {
+    this.nextRandom_ = createRng(run.deckState)
+    this.analysisRandom_ = createRng(run.seed ^ ANALYSIS_SEED_SALT)
+    this.healRandom_ = createRng(run.seed ^ HEAL_SEED_SALT)
+    this.ratingRandom_ = createRng(run.seed ^ RATING_SEED_SALT)
     this.run_ = run
     this.round_ = null
     this.peeked_ = false
     this.analysis_ = null
     this.lastHitRisk_ = null
+    this.handDecisions_ = []
     this.codaRedeal_ = false
     this.newPersonalBest_ = false
     this.upgradePending_ = false
@@ -547,15 +642,21 @@ export class Session {
   }
 
   restart(): void {
+    // A New run is a CLEAN run: forget every dev URL override (dealer=, chips=, points=, forcePairs,
+    // dealerHealth, upgrades, forced naturals…) so restarting from a debug-seeded run can't re-seed
+    // the same (possibly broken) state — New run always starts a default first-dealer run.
+    this.forgetDevOverrides_()
     const seed = generateSeed()
     this.nextRandom_ = createRng(seed)
     this.analysisRandom_ = createRng(seed ^ ANALYSIS_SEED_SALT)
     this.healRandom_ = createRng(seed ^ HEAL_SEED_SALT)
+    this.ratingRandom_ = createRng(seed ^ RATING_SEED_SALT)
     this.run_ = this.freshRun_(seed)
     this.round_ = null
     this.peeked_ = false
     this.analysis_ = null
     this.lastHitRisk_ = null
+    this.handDecisions_ = []
     this.codaRedeal_ = false
     this.newPersonalBest_ = false
     this.upgradePending_ = false
@@ -579,7 +680,20 @@ export class Session {
 
   private settle_(): void {
     const beforeShift = this.run_.shiftIndex
-    this.run_ = applyRound(this.run_, this.requireRound_(), this.healRandom_)
+    const round = this.requireRound_()
+    this.run_ = applyRound(this.run_, round, this.healRandom_)
+    // Fold in the display-only performance tallies (bust %, blackjack %, star rating) from the
+    // decisions captured this hand. Only main-game hands reach settle_ — coda hands resolve in
+    // codaResolveNext — so the metrics stay scoped to the run proper, as intended.
+    const ratedBefore = this.run_.ratedHands
+    const ratingSumBefore = this.run_.ratingSum
+    this.run_ = tallyPerformance(this.run_, round, this.handDecisions_)
+    // Dev aid: log this dealer 1–6 hand's star rating as it resolves. Compiled out of the
+    // production build (import.meta.env.DEV). Only fires when the hand was actually rated.
+    if (import.meta.env.DEV && this.run_.ratedHands > ratedBefore) {
+      const rating = this.run_.ratingSum - ratingSumBefore
+      console.log(`PLAYER HAND RATING: ${Number.isInteger(rating) ? rating : rating.toFixed(1)}/5`)
+    }
     // A non-final kill (the dealer advanced, but it wasn't the 6th) earns an upgrade pick,
     // taken after the player calls the next hand. The 6th kill enters the coda instead, so
     // it must never arm an upgrade selector.

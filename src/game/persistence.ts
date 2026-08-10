@@ -48,7 +48,15 @@ export function loadRun(): RunState | null {
   if (parsed.run.over || parsed.run.coda) {
     return null
   }
-  return parsed.run
+  const run = parsed.run
+  // Backfill the deck-stream position for a save written before deckState was persisted (or one
+  // with the field stripped): resume the deal RNG from the run's origin seed. Deterministic per
+  // save (seed is fixed), so reloading a migrated run still can't reroll the deal. `seed >>> 0`
+  // coerces a missing seed to 0 rather than NaN, keeping createRng(deckState) well-defined.
+  if (typeof run.deckState !== 'number' || !Number.isFinite(run.deckState)) {
+    run.deckState = run.seed >>> 0
+  }
+  return run
 }
 
 export function clearRun(): void {

@@ -28,7 +28,7 @@ export interface SpecFlag {
 
 // The readout's data — pure strings (mirrors AnalysisReadout, so the render layer stays
 // decoupled from the game's rules/run types). `inflation` is the pre-formatted value
-// (e.g. "+12%") shown on its own "TOKEN INFLATION" line above the flags.
+// (e.g. "+12%") shown on its own "ENERGY INFLATION" line above the flags.
 export interface SpecReadout {
   inflation: string
   flags: SpecFlag[]
@@ -115,7 +115,7 @@ export function drawSpecSheet(
     rows.push({ toks: cur, w: curW })
   }
 
-  // Vertical budget: the heading, the TOKEN INFLATION line, a gap, then the flag rows.
+  // Vertical budget: the heading, the ENERGY INFLATION line, a gap, then the flag rows.
   // Shrink to fit the band so it never spills into the counts (the flags stay narrower
   // than contentW when scaled, so the row packing above still holds).
   const headBlock = headPx * 1.3
@@ -141,7 +141,7 @@ export function drawSpecSheet(
   ctx.font = monoFont(hPx, 800)
   const headW = ctx.measureText('RULES').width
   ctx.font = monoFont(sPx)
-  const statW = ctx.measureText('TOKEN INFLATION').width + sPx * 0.6 + ctx.measureText(spec.inflation).width
+  const statW = ctx.measureText('ENERGY INFLATION').width + sPx * 0.6 + ctx.measureText(spec.inflation).width
   let maxRowW = Math.max(headW, statW)
   for (const row of rows) {
     maxRowW = Math.max(maxRowW, row.w * f)
@@ -169,7 +169,7 @@ export function drawSpecSheet(
   holoLeft(ctx, 'RULES', blockLeft, y + hBlock / 2, hPx, HEAD, now, 800)
   y += hBlock
 
-  // The token inflation on its own labelled line: "TOKEN INFLATION" (dim) + value (amber).
+  // The token inflation on its own labelled line: "ENERGY INFLATION" (dim) + value (amber).
   drawStat(ctx, blockLeft, y + sBlock / 2, sPx, spec.inflation, now)
   y += sBlock + hGap
 
@@ -189,10 +189,10 @@ export function drawSpecSheet(
   return [{ left: blockCenterX - rayHalfW, right: blockCenterX + rayHalfW, top, bottom: top + totalH }]
 }
 
-// The token-inflation line: a dim "TOKEN INFLATION" label with the amber value beside it,
+// The token-inflation line: a dim "ENERGY INFLATION" label with the amber value beside it,
 // the pair left-aligned from `x`.
 function drawStat(ctx: CanvasRenderingContext2D, x: number, y: number, px: number, value: string, now: number): void {
-  const label = 'TOKEN INFLATION'
+  const label = 'ENERGY INFLATION'
   const gap = px * 0.6
   ctx.font = monoFont(px)
   ctx.textBaseline = 'middle'

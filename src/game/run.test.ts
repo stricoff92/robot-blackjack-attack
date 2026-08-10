@@ -319,6 +319,47 @@ describe('victory → the Banker coda', () => {
   })
 })
 
+describe('bankruptcy → the Banker redemption coda', () => {
+  // A losing hand of `bet` that empties a `bet`-chip stack: chips → 0 (bankrupt).
+  const brokeAt = (shiftIndex: number, score: number) => ({ ...startRun(1), shiftIndex, score, chips: 10 })
+
+  it('routes a deep bankruptcy into the coda (taxed), not game over', () => {
+    const after = applyRound(brokeAt(3, 1000), losingHand(10))
+    expect(after.chips).toBe(0)
+    expect(after.coda).toBe(true)
+    expect(after.bankruptcyCoda).toBe(true)
+    expect(after.over).toBe(false)
+    // 83% bankruptcy tax → the coda stakes only 17% of the earned score.
+    expect(after.score).toBe(170)
+  })
+
+  it('redeems a Dealer-2 bankruptcy into the coda (taxed), not game over', () => {
+    const after = applyRound(brokeAt(2, 1000), losingHand(10))
+    expect(after.chips).toBe(0)
+    expect(after.coda).toBe(true)
+    expect(after.bankruptcyCoda).toBe(true)
+    expect(after.over).toBe(false)
+    expect(after.score).toBe(170) // 83% bankruptcy tax → 17% staked
+  })
+
+  it('still ends the run on an early bankruptcy (Dealer 1, no redemption)', () => {
+    const after = applyRound(brokeAt(1, 1000), losingHand(10))
+    expect(after.chips).toBe(0)
+    expect(after.over).toBe(true)
+    expect(after.coda).toBe(false)
+    expect(after.bankruptcyCoda).toBe(false)
+    expect(after.score).toBe(1000) // untaxed — the run simply ended
+  })
+
+  it('does not trigger while chips remain (a survivable loss)', () => {
+    const after = applyRound({ ...startRun(1), shiftIndex: 3, score: 1000, chips: 500 }, losingHand(10))
+    expect(after.chips).toBe(490)
+    expect(after.coda).toBe(false)
+    expect(after.bankruptcyCoda).toBe(false)
+    expect(after.over).toBe(false)
+  })
+})
+
 describe('scaled dealer HP and late min bets', () => {
   it('climbs dealer integrity per shift, up to 220 at dealer 6', () => {
     expect(getShift(1).maxIntegrity).toBe(100)

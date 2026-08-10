@@ -44,16 +44,6 @@ const UNWRAP_MS = 860 // plastic opens in beats: edge strip peels + tosses → s
 const UNWRAP_HOLD_AT = 0.5
 const UNWRAP_HOLD_MS = 300
 
-// The final dealer gets a grander presentation: the fresh deck's fly-in, settle, and
-// unwrap all play slower and more deliberately, with a longer pause on the empty shoe
-// and a longer mid-unwrap hold — so its arrival reads as the climax it is. Only the
-// scaling changes; the beats themselves are the same. Applied when begin(grand=true).
-const GRAND_SPAWN_DELAY_SCALE = 1.7
-const GRAND_FLY_SCALE = 1.5
-const GRAND_SETTLE_SCALE = 2.6
-const GRAND_UNWRAP_SCALE = 1.3
-const GRAND_HOLD_SCALE = 2.4
-
 export interface DeckState {
   fly: number // 0..1 dealer → shoe (0 = at the dealer, 1 = landed)
   unwrap: number // 0..1 plastic tear-off (0 = wrapped, 1 = bare deck)
@@ -73,40 +63,30 @@ export class SpawnAnimation {
   private unwrapStart_ = 0
   private unwrapEnd_ = 0
   private endAt_ = 0
-  // Durations for the fresh deck's fly-in + unwrap, stretched for the grand (final
-  // dealer) ceremony. Held as fields so the per-frame queries scale to match begin().
-  private flyMs_ = DECK_FLY_MS
-  private unwrapMs_ = UNWRAP_MS
-  private unwrapHoldMs_ = UNWRAP_HOLD_MS
 
   // Start the ceremony at `now`, shredding `cardCount` table cards (0 on page load,
   // where there are no previous cards). `shredOldDeck` also sucks the previous dealer's
   // resting deck into the mouth before the fresh one flies in (a kill / New run — false
   // on the opening intro, which has no old deck). Returns the timestamp the deck is
-  // fully unwrapped and ready — the moment the next hand may deal.
+  // fully unwrapped and ready — the moment the next hand may deal. Every dealer (including
+  // the final dealer + the Banker) shares one timing — there's no grander/slower variant.
   // `shredOnly` (game over): shred the table cards but fly NO fresh deck in — the run is
   // over, so there's no replacement. endAt is just the shred (+ its lingering chunks).
-  begin(now: number, cardCount: number, shredOldDeck = false, grand = false, shredOnly = false, deckShredDelay = 0): number {
+  begin(now: number, cardCount: number, shredOldDeck = false, shredOnly = false): number {
     this.begun_ = true
     this.t0_ = now
     this.n_ = Math.max(0, cardCount)
     this.hasOldDeck_ = shredOldDeck
 
-    // Stretch the fresh-deck beats for the grand (final dealer) ceremony; identity
-    // scales (×1) otherwise, so every other spawn is unchanged.
-    const spawnDelayMs = DECK_SPAWN_DELAY_MS * (grand ? GRAND_SPAWN_DELAY_SCALE : 1)
-    const settleMs = DECK_SETTLE_MS * (grand ? GRAND_SETTLE_SCALE : 1)
-    this.flyMs_ = DECK_FLY_MS * (grand ? GRAND_FLY_SCALE : 1)
-    this.unwrapMs_ = UNWRAP_MS * (grand ? GRAND_UNWRAP_SCALE : 1)
-    this.unwrapHoldMs_ = UNWRAP_HOLD_MS * (grand ? GRAND_HOLD_SCALE : 1)
+    const spawnDelayMs = DECK_SPAWN_DELAY_MS
+    const settleMs = DECK_SETTLE_MS
 
     const lastCardSuckStart = this.n_ > 0 ? (this.n_ - 1) * SHRED_STAGGER_MS : 0
     const lastCardSuckEnd = this.n_ > 0 ? lastCardSuckStart + SHRED_SUCK_MS : 0
 
     // The old deck starts shredding one stagger step after the last table card starts, so its
-    // cards are drawn in last; the fresh deck then flies once the shoe is clear. `deckShredDelay`
-    // inserts a pause between the table cards and the deck (the Banker's entry uses it).
-    this.deckShredStart_ = now + this.n_ * SHRED_STAGGER_MS + deckShredDelay
+    // cards are drawn in last; the fresh deck then flies once the shoe is clear.
+    this.deckShredStart_ = now + this.n_ * SHRED_STAGGER_MS
     const lastDeckCardStart = this.deckShredStart_ + (DECK_SHRED_CARDS - 1) * DECK_CARD_STAGGER_MS
     this.deckShredEnd_ = lastDeckCardStart + DECK_CARD_SUCK_MS
 
@@ -126,9 +106,9 @@ export class SpawnAnimation {
       ? this.deckShredEnd_ + spawnDelayMs
       : now + lastCardSuckEnd - DECK_FLY_LEAD_MS
     this.deckFlyStart_ = Math.max(now, deckFlyBase)
-    this.deckFlyEnd_ = this.deckFlyStart_ + this.flyMs_
+    this.deckFlyEnd_ = this.deckFlyStart_ + DECK_FLY_MS
     this.unwrapStart_ = this.deckFlyEnd_ + settleMs
-    this.unwrapEnd_ = this.unwrapStart_ + this.unwrapMs_ + this.unwrapHoldMs_
+    this.unwrapEnd_ = this.unwrapStart_ + UNWRAP_MS + UNWRAP_HOLD_MS
 
     const lastCardChunkEnd =
       this.n_ > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
@@ -157,6 +137,13 @@ export class SpawnAnimation {
   // its own suck) — for effects that should land as the deck goes in, not the cards.
   get oldDeckShredStart(): number {
     return this.deckShredStart_
+  }
+
+  // The moment the shredding FINISHES: the last card (table + old deck) fully chewed into the mouth,
+  // plus the short sfx tail — but BEFORE the lingering paper chunks fade (that's endAt). For a beat
+  // that should follow the shred itself, e.g. the Banker's laugh landing a moment after he's done.
+  get shredEnd(): number {
+    return this.shredEndAt_
   }
 
   // True while cards are being sucked into the mouth + shredded — drives the shredder
@@ -243,7 +230,7 @@ export class SpawnAnimation {
       return null
     }
     if (now < this.deckFlyEnd_) {
-      return { fly: (now - this.deckFlyStart_) / this.flyMs_, unwrap: 0 }
+      return { fly: (now - this.deckFlyStart_) / DECK_FLY_MS, unwrap: 0 }
     }
     if (now < this.unwrapStart_) {
       return { fly: 1, unwrap: 0 }
@@ -259,14 +246,14 @@ export class SpawnAnimation {
   // UNWRAP_HOLD_MS (the strip is gone, the sheet not yet sliding), then resumes —
   // so the slide-left beat is pushed UNWRAP_HOLD_MS later without altering its shape.
   private unwrapProgress_(elapsed: number): number {
-    const holdStart = UNWRAP_HOLD_AT * this.unwrapMs_
+    const holdStart = UNWRAP_HOLD_AT * UNWRAP_MS
     if (elapsed < holdStart) {
-      return elapsed / this.unwrapMs_
+      return elapsed / UNWRAP_MS
     }
-    if (elapsed < holdStart + this.unwrapHoldMs_) {
+    if (elapsed < holdStart + UNWRAP_HOLD_MS) {
       return UNWRAP_HOLD_AT
     }
-    return (elapsed - this.unwrapHoldMs_) / this.unwrapMs_
+    return (elapsed - UNWRAP_HOLD_MS) / UNWRAP_MS
   }
 }
 

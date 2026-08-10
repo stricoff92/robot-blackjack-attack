@@ -123,12 +123,12 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
   },
   {
     path: 'tokenEco',
-    name: 'Tokens',
+    name: 'Energy',
     color: '#49b26a',
     tiers: [
-      '+10% tokens · 25% inflation resist',
-      '+18% tokens · 45% inflation resist',
-      '+30% tokens · 65% inflation resist',
+      '+10% energy · 25% inflation resist',
+      '+18% energy · 45% inflation resist',
+      '+30% energy · 65% inflation resist',
     ],
   },
 ]

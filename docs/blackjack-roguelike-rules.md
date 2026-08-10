@@ -237,6 +237,17 @@ This escalates risk over time and quietly rewards **destroying fast** — a drag
 
 ## 6. Tokens
 
+> **Nomenclature: "token" (code) = "ENERGY" (player).** The currency defined here is called
+> **tokens** throughout the code and these docs — variables (`tokensSpent`, `tokenInflation`,
+> `tokenMultiplier`), the `tokenEco` upgrade path, the sfx tones (`token-launch`/`token-land`),
+> the CSS (`hud-tokens`), and the dev URL params (`?tokens=`, `?tokenUpgrades=`). The player
+> **never sees the word "token"** — every user-facing surface says **ENERGY**: the upgrade
+> screen's **Energy** path ("+X% energy"), the final scoreboard's **ENERGY SPENT** row, the info
+> projection's **ENERGY INFLATION** line and its **`ENERGY_x…`** flag, and the info button's
+> tooltip. This is a **display-layer rename only** (like `shiftIndex` → "Dealer N",
+> `integrity` → "health"): keep the internal `token` names, and route any new user-facing text
+> through "ENERGY". When this doc says "tokens" below, the player reads "energy".
+
 Tokens are the powerup currency (§7). Unlike the old Charge meter, they're earned **directly from what you do at the table**:
 
 | Action | Tokens |

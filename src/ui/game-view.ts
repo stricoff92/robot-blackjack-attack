@@ -6,7 +6,7 @@ import { POWERUPS } from '../game/powerups'
 import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
-import { comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS, type RunState } from '../game/run'
+import { BANKRUPTCY_TAX, comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS, type RunState } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
 import { clearRun, loadRun } from '../game/persistence'
@@ -14,7 +14,7 @@ import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../p
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, dealerCountAnchor, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, playerCountAnchor, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawPlayerPile, drawTableMarkings } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
@@ -23,13 +23,15 @@ import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } fro
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
-import { drawScoreSheet, drawScoreTitle, type ScoreReadout } from '../render/score-sheet'
+import { drawScoreSheet, drawScoreTitle, SCORE_LEFT_SHIFT, type ScoreReadout } from '../render/score-sheet'
 import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
-import { drawCodaStake } from '../render/coda-stake'
+import { drawCodaStake, type CodaTaxBreakdown } from '../render/coda-stake'
+import { drawCodaCounters } from '../render/coda-counters'
 import { drawTapToStart } from '../render/tap-to-start'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
 import { drawTokens, type Point } from '../render/tokens'
 import { ChipAnimation } from './chip-animator'
+import { CodaCounterAnimation } from './coda-counter-animator'
 import { CountTicker } from './count-ticker'
 import { BustBlockAnimation } from './bust-block-animator'
 import { DealAnimation } from './deal-animator'
@@ -51,6 +53,8 @@ import powerUrl from '../assets/power.png'
 // The choose-upgrade path icons (replace the path name text on each big button).
 import detectiveUrl from '../assets/detective.png'
 import chipUrl from '../assets/poker-chip.png'
+// The yellow POINTS star, shown beside the top-right score counter.
+import starUrl from '../assets/star.png'
 
 // Path → icon: Sabotage a detective, Payout a chip, Tokens the token icon.
 const UPGRADE_ICONS: Record<UpgradePath, string> = {
@@ -69,6 +73,9 @@ const UPGRADE_ICONS: Record<UpgradePath, string> = {
 // that the Analyze projection lights through, and the dealer's emissive eye glow
 // (the HTML button/counter overlay sits above it, so those stay bright).
 const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'fx', 'tokens', 'mask'] as const
+
+// The final scoreboard has two pages (run summary + performance stats), flipped by the ‹ › pager.
+const SCORE_PAGES = 2
 
 // When a reward's tokens lift off, relative to the card motion settling
 // (anim.animEnd): a hit's token waits a short beat after its card lands, and a
@@ -114,6 +121,9 @@ const RETURN_DEAL_DELAY = 220
 // How much the dealer-spawn shred overlaps the tail of the walk-in, so the cards
 // start being sucked in just as the new dealer arrives (no dead beat between).
 const SHRED_ARRIVE_OVERLAP = 140
+// A beat between the Banker finishing his entry shred and starting to cackle — his laugh lands this
+// long after the shredding animation ends, so the two don't run on top of each other.
+const BANKER_LAUGH_DELAY = 300
 // A kill that grants an upgrade pick is played in two halves so the selector sits in
 // the middle: the dealer is destroyed, then after this beat the upgrade card appears;
 // once the player picks, the replacement's walk-in ceremony begins after this beat.
@@ -135,12 +145,25 @@ const CODA_PUSH_HOLD = 450
 const CODA_NATURAL_HOLD = 1250
 // Beat after the boss is fully gone before the Banker strides in (a clear pause).
 const CODA_WALKIN_DELAY = 500
+// The bankruptcy coda's stake panel leads with the tax seizure (Points → −tax% → Net) folded in
+// above the double-or-nothing offer — see drawCodaStake's `tax` path. Every row of that combined
+// panel cascades in this far apart; the top-right score counter ticks DOWN from the gross to the
+// taxed net as the Net row (index 3) lands, i.e. 3 · this after the panel appears.
+const CODA_STAKE_ROW_STAGGER = 340
 // How long the player's chip stack takes to fade out once the last dealer dies (the coda).
 const CODA_CHIPS_FADE_MS = 700
 // How long the stake projection takes to fade out when the prompt closes (DOUBLE / cash-out).
 const CODA_STAKE_FADE_MS = 260
-// The Banker's congratulations, one picked at random each time the player wins a coda hand.
-const CONGRATS = ['Bravo', 'Well done', 'Lovely', 'Good for you', 'Well played', 'Superb']
+// The coda pot renders as glass markers that COLOUR UP: 2^wins decomposes into perTier(wins)
+// markers (1/2/4/8) of tier(wins), each tier worth 16× the last. Every 4th win fuses the
+// eight markers into one of the next denomination, so the felt never holds more than eight.
+const CODA_WINS_PER_TIER = 4
+function codaTier(wins: number): number {
+  return Math.floor(wins / CODA_WINS_PER_TIER)
+}
+function codaPerTier(wins: number): number {
+  return 1 << (wins % CODA_WINS_PER_TIER)
+}
 // The Banker figure's shift sentinel — one past the last real dealer. drawFigure/dealerColors
 // key off it for the Banker's look; the coda run sits at run.shiftIndex 7 too, so the health
 // math (integrity / maxIntegrityFor(7)) reads full.
@@ -331,6 +354,10 @@ class GameView {
   // shredded cards stay gone. `spawnShredOnly` marks a shred with no fresh deck flying in.
   private scoreRevealAt_ = 0
   private scoreRevealed_ = false
+  // The final scoreboard's current page: 0 = the run summary, 1 = the performance stats
+  // (bust %, blackjack %, star rating). Flipped by the DOM pager (‹ ›) below the board; reset
+  // to 0 each time the board is revealed (line ~scoreRevealed latch).
+  private scorePage_ = 0
   private endShredDone_ = false
   private spawnShredOnly_ = false
   // The Banker coda: `codaAdvanceAt` fires codaResolveNext once a resolved coda hand's reveal
@@ -342,7 +369,14 @@ class GameView {
   // began, plus the content frozen at that moment so it fades the prompt, not the live hand.
   private codaStakeHideAt_ = 0
   private codaStakeFadePoints_ = 0
-  private codaStakeFadeCongrats_: string | null = null
+  private codaStakeFadeWon_ = false
+  // The BANKRUPTCY coda's tax seizure, folded into the stake panel at the entry prompt (Points →
+  // −tax% → Net, above the offer). Non-null only for that first prompt; cleared once the panel has
+  // faded. The gross + taxed net are captured at entry (a losing hand never scores, so the pre-coda
+  // total is the gross).
+  private codaStakeTax_: CodaTaxBreakdown | null = null
+  private codaTaxGross_ = 0
+  private codaTaxNet_ = 0
   // True from the Banker's entry until his shred finishes, so the killing hand's cards are
   // marked gone (endShredDone) at the right moment and don't redraw before the prompt.
   private codaEntering_ = false
@@ -352,6 +386,10 @@ class GameView {
   // The Banker's entrance is deferred a beat after the boss dies: `codaArrivalAt` is when his
   // walk-in fires (0 = none pending), and `codaEntryScore` is the stake to roll up as he arrives.
   private codaArrivalAt_ = 0
+  // When to start the "Decisions" (Banker waiting) music: the moment his entry shred COMPLETES
+  // (set from playCodaArrival, = codaShredEndAt; 0 = none pending). It plays once, filling what
+  // used to be the coda-entry silence, while the player weighs double-or-nothing.
+  private codaDecisionsAt_ = 0
   private codaEntryScore_: { prevScore: number; gained: number } | null = null
   // When the Banker's first-double deck fly-in lands, so it's committed to the static table
   // (visible as the cards deal from it) rather than only after the whole deal finishes.
@@ -363,10 +401,20 @@ class GameView {
   // When the chips start fading out (the last dealer just died — no bets in the coda).
   private codaChipsFadeAt_ = 0
   // When to fade the fight music out to silence at coda entry: the moment the dealer-6 winning
-  // hand is revealed (its cards settle). Silence then holds until the player picks a coda action.
+  // hand is revealed (its cards settle). The quiet holds through the Banker's walk-in + shred
+  // until the "Decisions" theme rises (codaDecisionsAt) once the shred completes.
   private codaMusicFadeAt_ = 0
-  // The Banker's congratulation shown at the prompt after a coda win (null = the plain prompt).
-  private codaCongrats_: string | null = null
+  // Whether the current coda prompt follows a HAND WIN — the banker-hand-win scoreboard (left-
+  // justified, offer last, slow-clap sfx). false = the plain centred entry offer.
+  private codaWonHand_ = false
+  // The Banker coda's glass winnings counters: physical markers that make the pot tangible.
+  // codaCrystalValue is the ENTRY score (the base unit); codaWins is how many coda hands have
+  // been won. The pot is 2^wins × base, rendered as codaPerTier(wins) markers of codaTier(wins)
+  // — the markers COLOUR UP into higher denominations rather than overflowing the felt. The
+  // animation owns timing (reveal / grow / colour-up on a win, fly back on a bust).
+  private readonly codaCounters_ = new CodaCounterAnimation()
+  private codaCrystalValue_ = 0
+  private codaWins_ = 0
   // Every projected-number box actually drawn this frame (counts, chip amounts, analysis
   // rows). The number-drawing calls append here, and drawHoloProjection fires a ray fan at
   // each — so a ray exists iff its number is on screen, at exactly its position. Cleared at
@@ -481,10 +529,20 @@ class GameView {
   // the "+N" delta that flashes underneath each time it starts ticking.
   private pointsCountEl_!: HTMLElement
   private pointsDeltaEl_!: HTMLElement
+  // The star + number row — the swell transform rides this so the star pumps with the count
+  // (and the delta, a sibling of the row, isn't dragged by it).
+  private pointsRowEl_!: HTMLElement
   // Last values written to the points counter's DOM, so updatePointsCounter can skip the
   // write when nothing changed (it's called every frame, like the token counter).
   private lastPointsText_ = ''
   private lastPointsTransform_ = ''
+  // The final scoreboard's page controls (‹ • • ›), anchored below the summary band and shown
+  // only once the board is revealed. `lastPagerPos` gates the position write (like the counters).
+  private scorePagerEl_!: HTMLElement
+  private scorePrevBtn_!: HTMLButtonElement
+  private scoreNextBtn_!: HTMLButtonElement
+  private scoreDotsEl_!: HTMLElement
+  private lastPagerPos_ = ''
   // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
   private infoBtnEl_!: HTMLButtonElement
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
@@ -492,7 +550,7 @@ class GameView {
   private actionsEl_!: HTMLElement
   // The choose-upgrade card (shown after a non-final kill) and its three path buttons.
   private upgradeEl_!: HTMLElement
-  private upgradeButtons_!: { info: UpgradePathInfo; btn: HTMLButtonElement; effectEl: HTMLElement }[]
+  private upgradeButtons_!: { info: UpgradePathInfo; btn: HTMLButtonElement; effectEl: HTMLElement; tierEl: HTMLElement }[]
 
   constructor(root: HTMLElement) {
     const debug = readDebugFlags()
@@ -506,6 +564,7 @@ class GameView {
       forcePairRank: debug.forcePairRank,
       startTokens: debug.startTokens,
       startChips: debug.startChips,
+      startScore: debug.startScore,
       dealerHealth: debug.dealerHealth,
       startDealer: debug.startDealer,
       startUpgrades,
@@ -518,6 +577,7 @@ class GameView {
       startUpgrades !== null ||
       debug.startDealer !== null ||
       debug.startChips !== null ||
+      debug.startScore !== null ||
       debug.startTokens !== null ||
       debug.dealerHealth !== null
     this.resumableRun_ = hasRunOverride ? null : loadRun()
@@ -726,6 +786,8 @@ class GameView {
     this.drawTokens_(canvas, layout, t)
     this.drawMask_(canvas, layout, t)
     this.drawFx_(canvas, layout, t)
+    // Re-anchor the score pager to the new layout (it reads band coords from the current size).
+    this.syncScorePager_()
   }
 
   // Repaint the table layer (felt + rail + betting-spot markings), optionally
@@ -914,13 +976,15 @@ class GameView {
       this.frameProjections_.push(...drawSpecSheet(ctx, layout, sr.spec, sr.age, sr.fade, timestamp))
     }
 
-    // The game-over score screen the nexus projects once the cards are sucked up: the game title
-    // above the summary board, both boxes joining frameProjections so the holo lens fans its rays
-    // onto each, like the spec sheet.
+    // The FINAL SCOREBOARD the nexus projects once the cards are sucked up: the game title above
+    // the summary board, both boxes joining frameProjections so the holo lens fans its rays onto
+    // each, like the spec sheet.
     const scr = this.scoreRender_(timestamp)
     if (scr) {
+      // The cash-out / lost-to-Banker boards (run went through the coda) sit slightly left of
+      // centre, like the coda scoreboards; an early bankruptcy (no coda) stays centred.
       this.frameProjections_.push(...drawScoreTitle(ctx, layout, scr.age, timestamp))
-      this.frameProjections_.push(...drawScoreSheet(ctx, layout, scr.readout, scr.age, 1, timestamp))
+      this.frameProjections_.push(...drawScoreSheet(ctx, layout, scr.readout, scr.age, 1, timestamp, this.state_.run.coda))
     }
 
     // The combo multiplier the nexus projects big in the middle of the felt — ticking up on
@@ -929,12 +993,15 @@ class GameView {
     if (cp) {
       this.frameProjections_.push(...drawComboProjection(ctx, layout, cp.proj, cp.age, cp.fade, timestamp))
     }
-    // The Banker coda: project the "points at risk" stake at the prompt (between hands).
+    // The BANKER SCOREBOARD: project the double-or-nothing "points at risk" stake at the prompt
+    // (between hands). At the BANKRUPTCY entry the same panel leads with the tax seizure (Points →
+    // −tax% → Net) folded in above the offer (cs.tax = the bankruptcy variant), all on one screen;
+    // every other prompt passes tax = null (the victory / between-hands variant).
     const cs = this.codaStakeRender_(timestamp)
     if (cs) {
       // getPersonalBest() is in-memory cached after its first read, so the per-frame call here is
       // cheap; it's the prior best (recordRun only updates at run-end), i.e. the score to beat.
-      this.frameProjections_.push(...drawCodaStake(ctx, layout, cs.points, cs.congrats, getPersonalBest(), cs.age, cs.fade, timestamp))
+      this.frameProjections_.push(...drawCodaStake(ctx, layout, cs.points, cs.wonHand, getPersonalBest(), cs.age, cs.fade, timestamp, cs.tax, CODA_STAKE_ROW_STAGGER))
     }
 
     // The opening "TAP TO START" the nexus projects while the game waits for the first tap. Its
@@ -1014,8 +1081,8 @@ class GameView {
     return null
   }
 
-  // The game-over score screen to project this frame, or null until the ending cards have
-  // been sucked up (scoreRevealAt). It only flickers IN — it stays up until the New run
+  // The FINAL SCOREBOARD (docs/scoreboards.md) to project this frame, or null until the ending
+  // cards have been sucked up (scoreRevealAt). It only flickers IN — it stays up until the New run
   // resets the phase, so there's no dismiss/fade-out to mirror.
   private scoreRender_(timestamp: number): { readout: ScoreReadout; age: number } | null {
     if (this.state_.phase !== 'over' || this.scoreRevealAt_ <= 0 || timestamp < this.scoreRevealAt_) {
@@ -1024,10 +1091,18 @@ class GameView {
     return { readout: this.buildScore_(), age: timestamp - this.scoreRevealAt_ }
   }
 
-  // The run summary the score screen shows: the outcome heading (VICTORY on a win — every
-  // dealer beaten — else BANKRUPT), the final points, hands played, the win/loss tally
-  // (pushes count as neither), and tokens spent on powerups.
+  // The final scoreboard's contents, one of two pages the DOM pager (‹ ›) flips between: the run
+  // SUMMARY (page 0) or the PERFORMANCE stats (page 1). Both share the same title spot and holo
+  // rendering (drawScoreSheet takes pure strings).
   private buildScore_(): ScoreReadout {
+    return this.scorePage_ === 1 ? this.buildPerformance_() : this.buildSummary_()
+  }
+
+  // Page 0: the outcome TITLE naming which of the three run-ending paths happened — CASHED OUT
+  // (banked the stake after the Banker), BUSTED (lost a hand to the Banker, a coda bust), or
+  // BANKRUPT (broke at Dealer 1–2, no coda offered) — then the final points, hands played, the
+  // win/loss tally (pushes count as neither), and tokens spent on powerups.
+  private buildSummary_(): ScoreReadout {
     const run = this.state_.run
     // recordRun (at enterOver) has already folded this run's score into the personal best, so on a
     // new record getPersonalBest() === run.score — show "NEW BEST ★" rather than echo the number;
@@ -1038,11 +1113,38 @@ class GameView {
       // a coda bust zeroes it, and a pre-coda chip bust-out is a plain bankruptcy.
       title: run.cashedOut ? 'CASHED OUT' : run.coda ? 'BUSTED' : 'BANKRUPT',
       rows: [
-        { label: 'POINTS', value: String(run.score) },
-        { label: 'BEST', value: isNewBest ? 'NEW BEST ★' : String(getPersonalBest()) },
+        // Player points are locale-grouped (thousands separators — "," or "." per the runtime
+        // locale), matching the banker scoreboards; the count rows below stay bare.
+        { label: 'POINTS', value: run.score.toLocaleString() },
+        { label: 'BEST', value: isNewBest ? 'NEW BEST ★' : getPersonalBest().toLocaleString() },
         { label: 'HANDS PLAYED', value: String(run.handsPlayed) },
-        { label: 'WIN / LOSS', value: `${run.handsWon} / ${run.handsLost}` },
-        { label: 'TOKENS SPENT', value: String(run.tokensSpent) },
+        // The win/loss RATIO (wins ÷ losses), guarded against divide-by-zero — a flawless run
+        // (0 losses) divides by 1, so it reads as the win count (e.g. "12.00"), never NaN/∞.
+        { label: 'WIN / LOSS', value: (run.handsWon / Math.max(run.handsLost, 1)).toFixed(2) },
+        { label: 'ENERGY SPENT', value: String(run.tokensSpent) },
+      ],
+    }
+  }
+
+  // Page 1: how WELL the run was played — the share of hands that busted, the share won on a
+  // blackjack (natural or hijacked), the share that pushed, and the averaged 1–5 star rating of
+  // each hand's terminal call (see run.ts tallyPerformance). Percentages are over handsPlayed
+  // (rounds, so a split counts once, matching the summary); the rating averages only the hands
+  // that had a real decision to judge (a run that ended before any playable hand shows "—").
+  private buildPerformance_(): ScoreReadout {
+    const run = this.state_.run
+    const played = Math.max(run.handsPlayed, 1)
+    // Every round is exactly one of win / loss / push (see applyRound), so pushes need no stored
+    // tally — they're whatever's left once the wins and losses are removed.
+    const pushes = Math.max(0, run.handsPlayed - run.handsWon - run.handsLost)
+    return {
+      title: 'PERFORMANCE',
+      // The star rating leads, centered label-less under the heading; the percentages follow.
+      hero: run.ratedHands > 0 ? ratingStars(run.ratingSum / run.ratedHands) : '—',
+      rows: [
+        { label: 'BUST %', value: `${Math.round((run.busts / played) * 100)}%` },
+        { label: 'BLACKJACK %', value: `${Math.round((run.blackjackWins / played) * 100)}%` },
+        { label: 'PUSH %', value: `${Math.round((pushes / played) * 100)}%` },
       ],
     }
   }
@@ -1121,7 +1223,11 @@ class GameView {
 
     // Player roguelite mods (Sabotage / Payout / Tokens), all working in the player's
     // favour — drawn in green.
-    if (rules.dealerNaturalRefundRatio > 0) {
+    // The T1 refund only ever pays out when it's the top Sabotage tier: a higher tier
+    // (T2 voids the losing hand, T3 hijacks the dealer's natural into a win) supersedes
+    // the loss-to-dealer-natural branch entirely (see round.ts), so the refund never
+    // fires — hide the flag rather than project a moot rule.
+    if (rules.dealerNaturalRefundRatio > 0 && !rules.voidDealer21 && !rules.hijackDealerNatural) {
       player(`REFUND_${Math.round(rules.dealerNaturalRefundRatio * 100)}%`)
     }
     if (rules.voidDealer21) {
@@ -1134,8 +1240,8 @@ class GameView {
       player('PUSH_WINS')
     }
     if (rules.tokenMultiplier > 1) {
-      // ×1.10 → "TOKEN_x1.1", ×1.18 → "TOKEN_x1.18" (drop a trailing zero).
-      player(`TOKEN_x${rules.tokenMultiplier.toFixed(2).replace(/0$/, '')}`)
+      // ×1.10 → "ENERGY_x1.1", ×1.18 → "ENERGY_x1.18" (drop a trailing zero).
+      player(`ENERGY_x${rules.tokenMultiplier.toFixed(2).replace(/0$/, '')}`)
     }
 
     return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags }
@@ -1384,6 +1490,10 @@ class GameView {
         drawPlayerPile(ctx, layout, this.displayedBankroll_())
         ctx.restore()
       }
+      // The glass winnings counters: the double-or-nothing pot made physical. Drawn on
+      // the (now bet-free) chips layer; the view is empty until the entry prompt reveals
+      // the first plaque, so nothing shows during the boss death / Banker walk-in.
+      drawCodaCounters(ctx, layout, this.codaCrystalValue_, this.codaCounters_.frame(timestamp))
       return
     }
     if (!this.betFlown_) {
@@ -1490,7 +1600,9 @@ class GameView {
     const scale = this.scoreTicker_.scale(now)
     const transform = scale === 1 ? '' : `scale(${scale})`
     if (transform !== this.lastPointsTransform_) {
-      this.pointsCountEl_.style.transform = transform
+      // Swell the whole star + number row together (pinned to the right edge) so the star
+      // pumps with the count and never overlaps it.
+      this.pointsRowEl_.style.transform = transform
       this.lastPointsTransform_ = transform
     }
   }
@@ -1584,11 +1696,14 @@ class GameView {
     return { proj: { mult, tone: p.tone }, age: now - p.startAt, fade }
   }
 
-  // The Banker-coda stake projection to paint this frame: full presence at the prompt (live
-  // values), then fading out once a hand is dealt (DOUBLE) or the run ends (cash-out). Its
+  // The BANKER SCOREBOARD (docs/scoreboards.md) to paint this frame: full presence at the prompt
+  // (live values), then fading out once a hand is dealt (DOUBLE) or the run ends (cash-out). Its
   // content freezes the instant it starts fading, so the fade shows the prompt it's leaving, not
-  // the live hand behind it. Null when nothing's up. (Mirrors comboProjRender's self-clearing.)
-  private codaStakeRender_(now: number): { points: number; congrats: string | null; age: number; fade: number } | null {
+  // the live hand behind it. `tax` set → the bankruptcy variant (the seizure rows fold into the
+  // panel; set only for the bankruptcy ENTRY prompt and cleared with the panel); null → the
+  // victory / between-hands offer. Null return when nothing's up. (Mirrors comboProjRender's
+  // self-clearing.)
+  private codaStakeRender_(now: number): { points: number; wonHand: boolean; age: number; fade: number; tax: CodaTaxBreakdown | null } | null {
     if (this.codaStakeShownAt_ <= 0) {
       return null
     }
@@ -1597,21 +1712,22 @@ class GameView {
       // Use the ROLLING counter value (the same one the top-right score rides), not the raw
       // displayedScore() — so on a win the projected stake ticks up to the doubled total in
       // lockstep with the HUD instead of snapping when the held reward releases.
-      return { points: this.scoreTicker_.value(now), congrats: this.codaCongrats_, age: now - this.codaStakeShownAt_, fade: 1 }
+      return { points: this.scoreTicker_.value(now), wonHand: this.codaWonHand_, age: now - this.codaStakeShownAt_, fade: 1, tax: this.codaStakeTax_ }
     }
     // The prompt just closed — fade out, freezing the content at the moment it began hiding.
     if (this.codaStakeHideAt_ <= 0) {
       this.codaStakeHideAt_ = now
       this.codaStakeFadePoints_ = this.scoreTicker_.value(now)
-      this.codaStakeFadeCongrats_ = this.codaCongrats_
+      this.codaStakeFadeWon_ = this.codaWonHand_
     }
     const fade = 1 - (now - this.codaStakeHideAt_) / CODA_STAKE_FADE_MS
     if (fade <= 0) {
       this.codaStakeShownAt_ = 0
       this.codaStakeHideAt_ = 0
+      this.codaStakeTax_ = null // gone with the panel — the next prompt is a plain offer
       return null
     }
-    return { points: this.codaStakeFadePoints_, congrats: this.codaStakeFadeCongrats_, age: now - this.codaStakeShownAt_, fade }
+    return { points: this.codaStakeFadePoints_, wonHand: this.codaStakeFadeWon_, age: now - this.codaStakeShownAt_, fade, tax: this.codaStakeTax_ }
   }
 
   // Animation loop: repaints the dynamic canvas layers every frame. It never fully
@@ -1673,7 +1789,10 @@ class GameView {
     if (this.scoreRevealAt_ > 0 && !this.scoreRevealed_ && timestamp >= this.scoreRevealAt_) {
       this.scoreRevealed_ = true
       this.endShredDone_ = true
-      this.syncOverlay_(timestamp)
+      // Every run's board opens on the summary page; force a reposition on this fresh board.
+      this.scorePage_ = 0
+      this.lastPagerPos_ = ''
+      this.syncOverlay_(timestamp) // syncScorePager_ runs at the end → the pager appears + positions
     }
     // A card just launched from the shoe (one entry per fresh flight this frame) —
     // fire the draw sfx for each. Glides (split originals) are excluded upstream.
@@ -1843,8 +1962,8 @@ class GameView {
       this.codaEntering_ = false
     }
     // The dealer-6 winning hand has just been revealed (its cards settled) — fade the fight
-    // music out to silence. It stays silent through the Banker's entrance + the prompt until
-    // the player picks double-or-nothing (codaHand) or cash out (codaCashOut).
+    // music out to silence. The quiet holds through the Banker's walk-in + shred; the "Decisions"
+    // theme (codaDecisionsAt) rises once the shred completes and plays through the prompt.
     if (this.codaMusicFadeAt_ > 0 && timestamp >= this.codaMusicFadeAt_) {
       this.codaMusicFadeAt_ = 0
       music.enterCodaSilence()
@@ -1958,6 +2077,12 @@ class GameView {
       this.codaArrivalAt_ = 0
       this.playCodaArrival_()
     }
+    // Once his entry shred completes (codaDecisionsAt, set in playCodaArrival), the Banker's
+    // waiting theme rises out of the quiet — it plays once through the double-or-nothing prompt.
+    if (this.codaDecisionsAt_ > 0 && timestamp >= this.codaDecisionsAt_ && this.started_) {
+      this.codaDecisionsAt_ = 0
+      music.codaDecisions()
+    }
     // The Banker coda auto-advances: once a resolved hand's reveal beat passes (or the entry
     // ceremony finishes), codaResolveNext dismisses the killing hand / doubles a win + re-prompts
     // / re-deals a push / ends the run on a loss.
@@ -2039,12 +2164,15 @@ class GameView {
         enabled: (s) => !!s.round && canSplit(s.round) && affordsExtra(s),
         shortFunds: (s) => !!s.round && canSplit(s.round) && !affordsExtra(s),
       },
-      // Also shown (disabled) through the game-over draw-out/shred, so the bottom row looks
-      // exactly like any resolving hand — an EMPTY row (no Next hand) would spoil that this
-      // was the final hand. It swaps to New run once the score screen shows (scoreRevealed).
+      // Also shown (disabled) through a MAIN-GAME game-over draw-out/shred, so the bottom row looks
+      // exactly like any resolving hand — an EMPTY row (no Next hand) would spoil that this was the
+      // final hand. It swaps to New run once the score screen shows (scoreRevealed). EXCLUDED for a
+      // coda end (`run.coda` — a cash-out or a loss to the Banker): the player deliberately ended
+      // the run there, so there's nothing to spoil, and a disabled "Next hand" over the Banker's
+      // collect/walk-off just reads as a bug (the action row is simply empty until New run).
       // Held back while a deal-time natural is still revealing (dealRevealPending): the play row
       // shows instead, so the button doesn't pop in early and spoil the instant blackjack.
-      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session_.nextHand(), visible: (s) => (s.phase === 'resolved' && !this.dealRevealPending_()) || (this.state_.phase === 'over' && !this.scoreRevealed_), enabled: (s) => s.phase === 'resolved' },
+      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session_.nextHand(), visible: (s) => (s.phase === 'resolved' && !this.dealRevealPending_()) || (this.state_.phase === 'over' && !this.scoreRevealed_ && !this.state_.run.coda), enabled: (s) => s.phase === 'resolved' },
       // Shown only once the game-over sequence has projected the score screen (the cards
       // are sucked up, the dealer destroyed / gone) — not the instant the run ends.
       { key: 'restart', label: 'New run', group: 'action', act: () => this.session_.restart(), visible: () => this.state_.phase === 'over' && this.scoreRevealed_, enabled: yes },
@@ -2244,7 +2372,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildUpgradePanel_())
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_())
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -2263,10 +2391,87 @@ class GameView {
     const btn = document.createElement('button')
     btn.className = 'hud-info'
     btn.textContent = 'i'
-    btn.title = 'Show the dealer ruleset + token inflation'
-    btn.setAttribute('aria-label', 'Show the dealer ruleset and token inflation')
+    btn.title = 'Show the dealer ruleset + energy inflation'
+    btn.setAttribute('aria-label', 'Show the dealer ruleset and energy inflation')
     btn.addEventListener('click', () => this.toggleSpec_())
     return btn
+  }
+
+  // The final scoreboard's page controls: a ‹ back arrow, a two-dot page indicator, and a ›
+  // forward arrow, in a row anchored just below the summary band (positioned in syncScorePager).
+  // Hidden until the board is revealed. Flipping a page only swaps which readout buildScore_
+  // returns — the always-running render loop repaints the holo board on the next frame.
+  private buildScorePager_(): HTMLElement {
+    const pager = element('div', 'hud-score-pager is-hidden')
+    const prev = element('button', 'hud-score-pager__btn hud-score-pager__btn--prev') as HTMLButtonElement
+    prev.type = 'button'
+    prev.textContent = '‹'
+    prev.setAttribute('aria-label', 'Previous page')
+    const dots = element('div', 'hud-score-pager__dots')
+    for (let i = 0; i < SCORE_PAGES; i += 1) {
+      dots.appendChild(element('span', 'hud-score-pager__dot'))
+    }
+    const next = element('button', 'hud-score-pager__btn hud-score-pager__btn--next') as HTMLButtonElement
+    next.type = 'button'
+    next.textContent = '›'
+    next.setAttribute('aria-label', 'Next page')
+    for (const btn of [prev, next]) {
+      // Keep a page tap from bubbling to the stage's pointerdown (which dismisses the spec sheet).
+      btn.addEventListener('pointerdown', (e) => e.stopPropagation())
+    }
+    prev.addEventListener('click', () => this.flipScorePage_(-1))
+    next.addEventListener('click', () => this.flipScorePage_(1))
+    pager.append(prev, dots, next)
+    this.scorePagerEl_ = pager
+    this.scorePrevBtn_ = prev
+    this.scoreNextBtn_ = next
+    this.scoreDotsEl_ = dots
+    return pager
+  }
+
+  // Step the scoreboard page (clamped to the two pages) and refresh the pager chrome; the board
+  // itself rebuilds from scorePage_ on the next frame.
+  private flipScorePage_(delta: number): void {
+    const page = Math.max(0, Math.min(SCORE_PAGES - 1, this.scorePage_ + delta))
+    if (page === this.scorePage_) {
+      return
+    }
+    this.scorePage_ = page
+    this.syncScorePager_()
+  }
+
+  // Show/position the page pager and reflect the current page. Called on every overlay sync, on
+  // resize, and on a page flip. The pager is anchored to a FIXED y — just below the summary band's
+  // lower edge, which is page-independent (the board always fits within the band) — so it never
+  // shifts as the two pages' differing row counts change the board's height. Centred under the
+  // board (matching its slight left shift on the coda-ending boards). Position is written only
+  // when it changes, like the counters, so a settled screen isn't rewriting layout each sync.
+  private syncScorePager_(): void {
+    if (!this.scorePagerEl_) {
+      return
+    }
+    const visible = this.state_.phase === 'over' && this.scoreRevealed_
+    this.scorePagerEl_.classList.toggle('is-hidden', !visible)
+    if (!visible) {
+      return
+    }
+    this.scorePrevBtn_.disabled = this.scorePage_ <= 0
+    this.scoreNextBtn_.disabled = this.scorePage_ >= SCORE_PAGES - 1
+    const dots = this.scoreDotsEl_.children
+    for (let i = 0; i < dots.length; i += 1) {
+      ;(dots[i] as HTMLElement).classList.toggle('is-active', i === this.scorePage_)
+    }
+    const layout = computeLayout(this.stage_.canvas.width, this.stage_.canvas.height)
+    const dc = dealerCountAnchor(layout)
+    const bandBottom = playerCountAnchor(layout, 1, 0).y - dc.size * 0.7
+    const cx = layout.width / 2 - (this.state_.run.coda ? Math.min(layout.width, layout.height) * SCORE_LEFT_SHIFT : 0)
+    const top = bandBottom + dc.size * 0.6
+    const pos = `${Math.round(cx)},${Math.round(top)}`
+    if (pos !== this.lastPagerPos_) {
+      this.scorePagerEl_.style.left = `${cx}px`
+      this.scorePagerEl_.style.top = `${top}px`
+      this.lastPagerPos_ = pos
+    }
   }
 
   // Toggle the nexus spec-sheet projection on or off, arming its flicker-in / -out.
@@ -2316,7 +2521,12 @@ class GameView {
     const over = s.phase === 'over' && this.scoreRevealed_
     this.powersEl_.classList.toggle('is-hidden', modal || over)
     this.actionsEl_.classList.toggle('is-hidden', modal)
-    this.infoBtnEl_.classList.toggle('is-hidden', over)
+    // The info button rides with the Hit/Stand prompt ONLY — visible while the player has a live
+    // hand to act on (main play, or a coda double-or-nothing hand at player-turn), or while its own
+    // spec sheet is still open (so it can be toggled off). Hidden between rounds, at the betting
+    // wait, on the coda offer / scoreboards, and at game over.
+    const inPlay = s.phase === 'playing' || (s.phase === 'coda' && !!s.round && s.round.status === 'player-turn')
+    this.infoBtnEl_.classList.toggle('is-hidden', !(inPlay || this.specShownAt_ !== null))
   }
 
   // The choose-upgrade card: a title and one big coloured button per upgrade path,
@@ -2336,10 +2546,14 @@ class GameView {
       icon.src = UPGRADE_ICONS[info.path]
       icon.alt = info.name // the path name still reaches screen readers
       const effectEl = element('span', 'upgrade-btn__effect')
-      btn.append(icon, effectEl)
+      // The tier being offered (1, 2, or 3), pinned to the button's top-right corner so the
+      // player can see how deep this path already runs. Text set per-frame in syncUpgradePanel.
+      const tierEl = element('span', 'upgrade-btn__tier')
+      tierEl.setAttribute('aria-hidden', 'true') // decorative; the effect text conveys the tier
+      btn.append(icon, effectEl, tierEl)
       btn.addEventListener('click', () => this.pickUpgrade_(info, btn))
       row.appendChild(btn)
-      return { info, btn, effectEl }
+      return { info, btn, effectEl, tierEl }
     })
     panel.append(title, row)
     this.upgradeEl_ = panel
@@ -2385,9 +2599,13 @@ class GameView {
   // the delta is a sibling, so it isn't dragged by the count's swell transform.
   private buildPointsCounter_(): HTMLElement {
     const el = element('div', 'hud-points')
+    this.pointsRowEl_ = element('div', 'hud-points__row')
     this.pointsCountEl_ = element('div', 'hud-points__count')
+    // Star TRAILS the number as its points unit ("512,000 ★") — matches the coda banner, and
+    // pins the icon at the outer top-right corner (mirroring the token icon at the top-left).
+    this.pointsRowEl_.append(this.pointsCountEl_, starIcon('hud-points__star'))
     this.pointsDeltaEl_ = element('div', 'hud-points__delta')
-    el.append(this.pointsCountEl_, this.pointsDeltaEl_)
+    el.append(this.pointsRowEl_, this.pointsDeltaEl_)
     return el
   }
 
@@ -2494,6 +2712,11 @@ class GameView {
         this.comboProj_ = null // drop any lingering combo projection
         this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda')
         this.scoreTicker_.set(this.displayedScore_())
+        // Clear any coda winnings-counter state from the prior run (a fresh run has no pot
+        // until it reaches the Banker again; reveal() re-arms the animation there).
+        this.codaWins_ = 0
+        this.codaCrystalValue_ = 0
+        this.codaStakeTax_ = null
       }
 
       if (this.pendingAttack_ && prevPhase === 'resolved') {
@@ -2818,8 +3041,8 @@ class GameView {
     // run — they were already shredded at game over, so nothing is chewed there).
     const src = this.collectRound_
     const cardCount = src ? src.dealer.length + src.hands.reduce((sum, hand) => sum + hand.cards.length, 0) : 0
-    // The final dealer gets the grander, slower deck ceremony.
-    return this.spawn_.begin(shredStart, cardCount, shredOldDeck, incomingShift >= TOTAL_DEALERS)
+    // Every dealer — including the final dealer and the Banker — uses the same deck ceremony timing.
+    return this.spawn_.begin(shredStart, cardCount, shredOldDeck)
   }
 
   // The front half of an upgrade-granting kill: the laser fires, the dealer breaks
@@ -2892,13 +3115,14 @@ class GameView {
     return startAfter + HIT_TOTAL_MS
   }
 
-  // The game-over sequence. Once the ending hand's cards settle, the dealer sucks BOTH the
-  // table cards AND its resting deck into its mouth and shreds them — exactly the shred a
-  // beaten dealer's ceremony plays, but with NO fresh deck flying in (the run is over).
-  // Then — a win: the nexus laser fires and the final dealer breaks apart; a loss: the
-  // dealer strides off to the right (footsteps). The instant everything is shredded the
-  // nexus starts projecting the score screen and the New-run button appears (scoreRevealAt
-  // / the frame loop's reveal edge).
+  // The game-over sequence that ends at the FINAL SCOREBOARD (docs/scoreboards.md). Reached by an
+  // early bankruptcy (broke at Dealer 1–2, no coda) — the coda's own end runs through
+  // beginCodaEnd_ instead. Once the ending hand's cards settle, the dealer sucks BOTH the table
+  // cards AND its resting deck into its mouth and shreds them — exactly the shred a beaten
+  // dealer's ceremony plays, but with NO fresh deck flying in (the run is over). Then — a win: the
+  // nexus laser fires and the final dealer breaks apart; a loss: the dealer strides off to the
+  // right (footsteps). The instant everything is shredded the nexus starts projecting the final
+  // scoreboard and the New-run button appears (scoreRevealAt / the frame loop's reveal edge).
   private beginEndGame_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, shiftIndex: number, t: number): void {
     const round = this.state_.round
     if (!round) {
@@ -2945,11 +3169,15 @@ class GameView {
     this.pointsDeltaEl_.textContent = ''
   }
 
-  // The 6th dealer just fell (a winning hand). The boss breaks apart and the BANKER walks in as
-  // its "replacement" — a normal non-final kill ceremony (final would suppress the walk-in) — its
-  // mouth shredding the boss's resting cards as it arrives, with a fresh Banker-coloured deck for
-  // the double-or-nothing hands. The killing hand is kept resting for the shred, then dismissed
-  // to the prompt (codaResolveNext) once the ceremony finishes.
+  // Enter the coda — the BANKER walks in to run a double-or-nothing, ending at one of the two
+  // banker scoreboards (docs/scoreboards.md). Two doorways, branched on run.bankruptcyCoda below:
+  // the VICTORY entry (the 6th dealer just fell to a winning hand — the boss breaks apart, then the
+  // Banker walks in as its "replacement") and the BANKRUPTCY entry (the player went broke at Dealer
+  // 3+ — the victorious dealer walks off, then the Banker walks in). Either way it's a normal
+  // non-final kill ceremony (final would suppress the walk-in), his mouth shredding the boss's
+  // resting cards as he arrives, with a fresh Banker-coloured deck for the double-or-nothing hands.
+  // The killing hand is kept resting for the shred, then dismissed to the prompt (codaResolveNext)
+  // once the ceremony finishes.
   private beginCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
     const round = this.state_.round
     if (!round) {
@@ -2965,7 +3193,7 @@ class GameView {
     // Fade the fight music out to SILENCE the moment the winning hand is revealed (its cards
     // settle), then hold silent through the Banker's entrance until the player picks an action.
     this.codaMusicFadeAt_ = Math.max(this.anim_.animEnd, t)
-    this.codaCongrats_ = null // the first prompt has no "well played" yet
+    this.codaWonHand_ = false // the entry prompt isn't a hand-win
     this.codaChipsFadeAt_ = t // the chips start fading out now (the last dealer is dead)
     // Score to roll up when the Banker arrives (his walk-in is deferred by CODA_WALKIN_DELAY).
     this.codaEntryScore_ = { prevScore, gained: this.state_.run.score - prevScore }
@@ -2975,9 +3203,24 @@ class GameView {
     this.holdScoreReward_(prevScore, 0, 1, Number.MAX_SAFE_INTEGER)
     this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda')
 
-    // Collect the winning hand's chips (the 6th kill is a win) before the boss dies.
+    // Settle the last hand's chips before the exit — a bankruptcy loss flies the bet to the
+    // house; a 6th-kill win collects the winnings — then the boss leaves.
     const chipStart = Math.max(this.anim_.animEnd, this.chips_.animEnd)
     this.chips_.clear(round, chipStart)
+
+    if (this.state_.run.bankruptcyCoda) {
+      // Bankruptcy: the player went broke, so the dealer isn't destroyed — it WON. It strides
+      // off (no laser/death), and the Banker walks in behind it to run the last-chance
+      // double-or-nothing. Capture the gross + taxed net for the tax reveal (playCodaArrival);
+      // prevScore is the gross (a losing hand never scores). The killing hand's cards stay
+      // resting (collectRound, above) for the Banker to shred on arrival, same as a 6th-kill entry.
+      this.codaTaxGross_ = prevScore
+      this.codaTaxNet_ = this.state_.run.score
+      const walkStart = this.chips_.animEnd + LASER_GAP
+      this.dealer_.walkOff(walkStart)
+      this.codaArrivalAt_ = walkStart + KILL_ARRIVE_MS + CODA_WALKIN_DELAY
+      return
+    }
 
     // The boss breaks apart — DEATH ONLY, no walk-in (walkIn=false). The Banker arrives a beat
     // later (playCodaArrival, scheduled here) so there's a clear pause before he appears.
@@ -3005,20 +3248,33 @@ class GameView {
     this.paintTable_(canvas, computeLayout(canvas.width, canvas.height), false)
     const round = this.collectRound_
     const cardCount = round ? round.dealer.length + round.hands.reduce((sum, hand) => sum + hand.cards.length, 0) : 0
-    const shredEnd = this.spawn_.begin(t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, cardCount, true, false, true)
+    // shredOnly (no fresh deck — he pulls his own out on the first double); one continuous shred.
+    const shredEnd = this.spawn_.begin(t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, cardCount, true, true)
     this.codaShredEndAt_ = shredEnd
-    // The walk-in cackle plays over his arrival + the CARD shred, ending as the deck shred begins
-    // (the shredding stays continuous — cards straight into the deck, no pause).
-    this.playBankerLaugh_(t, this.spawn_.oldDeckShredStart) // flip endShredDone + clear the shredded cards when it lands
+    // Hold the Banker's waiting theme until the shred is fully done — it rises out of the quiet as
+    // the last card is chewed, then plays once through the double-or-nothing prompt.
+    this.codaDecisionsAt_ = shredEnd
+    // He cackles a BANKER_LAUGH_DELAY beat AFTER the shredding finishes — the shred and the laugh are
+    // separate moments, not layered. (endShredDone / clearing the cards is driven by codaShredEndAt_
+    // above, independent of this.)
+    this.playBankerLaugh_(this.spawn_.shredEnd + BANKER_LAUGH_DELAY)
 
     const info = this.codaEntryScore_
+    this.codaEntryScore_ = null
+    this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda') // fade any lingering delta from the last hand
+    if (this.state_.run.bankruptcyCoda) {
+      // Bankruptcy: the tax seizure isn't a separate pre-roll any more — it folds into the stake
+      // panel (Points → −tax% → Net → the offer) as one screen. So here we just dismiss the
+      // shredded hand to that prompt on the usual beat, keeping the top-right counter held at the
+      // gross (set in beginCoda); runCoda's entry branch arms the tax rows + ticks it down to net.
+      this.codaAdvanceAt_ = shredEnd + CODA_ENTRY_HOLD
+      return
+    }
     if (info) {
       // Roll the counter up to the stake as the Banker settles — no "+N" delta (the coda is
       // about the total at risk, not a per-hand gain).
       this.holdScoreReward_(info.prevScore, 0, 1, shredEnd)
     }
-    this.codaEntryScore_ = null
-    this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda') // fade any lingering delta from the last hand
     // Once the shred finishes, dismiss the killing hand → the coda prompt (DOUBLE / CASH OUT).
     this.codaAdvanceAt_ = shredEnd + CODA_ENTRY_HOLD
   }
@@ -3120,12 +3376,40 @@ class GameView {
       if (!this.state_.codaRedeal) {
         this.codaStakeShownAt_ = t
       }
+      if (prevRound.hands[0].bet > 0) {
+        // ENTRY: the killing hand was just dismissed to the first prompt. The pot's first
+        // glass marker materialises now, embedding the entry score as its base unit.
+        this.codaCrystalValue_ = this.state_.run.score
+        this.codaWins_ = 0
+        this.codaCounters_.reveal(t)
+        if (this.state_.run.bankruptcyCoda) {
+          // The bankruptcy entry: fold the tax seizure into this panel (Points → −tax% → Net,
+          // above the offer), and tick the top-right counter DOWN from the held gross to the taxed
+          // net (run.score) as the Net row lands — row index 3, so 3 · stagger after the panel
+          // appears. Until then the counter stays parked at the gross (held since beginCoda).
+          this.codaStakeTax_ = { gross: this.codaTaxGross_, net: this.codaTaxNet_, taxPct: BANKRUPTCY_TAX * 100 }
+          this.holdScoreReward_(this.codaTaxGross_, 0, 1, t + 3 * CODA_STAKE_ROW_STAGGER)
+        }
+      }
       const gained = this.state_.run.score - prevScore
       if (gained > 0) {
-        // A coda WIN just doubled the stake — the Banker congratulates the player, and the
-        // projected number ticks up to the new doubled total.
+        // A coda WIN just doubled the stake — the banker-hand-win scoreboard appears (left-
+        // justified), the projected number ticks up to the new doubled total, and the Banker gives
+        // a slow hand-clap as it shows.
         this.holdScoreReward_(prevScore, gained, 1, this.anim_.animEnd)
-        this.codaCongrats_ = CONGRATS[Math.floor(Math.random() * CONGRATS.length)]
+        this.codaWonHand_ = true
+        sfx.play('hand-clap')
+        // Grow the glass pile in lockstep with the score roll: within a tier the banker slides
+        // matching markers in (1→2→4→8), and on every 4th win the eight fuse into ONE marker of
+        // the next, higher denomination (colour up) rather than overflowing the felt.
+        const prevWins = this.codaWins_
+        this.codaWins_ = prevWins + 1
+        const start = this.anim_.animEnd
+        if (codaTier(this.codaWins_) > codaTier(prevWins)) {
+          this.codaCounters_.colourUp(codaPerTier(prevWins), codaTier(prevWins), codaTier(this.codaWins_), start)
+        } else {
+          this.codaCounters_.grow(codaPerTier(prevWins), codaPerTier(this.codaWins_), codaTier(this.codaWins_), start)
+        }
       }
     }
 
@@ -3144,10 +3428,11 @@ class GameView {
     this.anim_.sync(prevAnimPhase, { ...this.state_, phase: animPhase }, t)
   }
 
-  // The coda's game-over sequence. A coda bust leaves the losing hand on the table — the Banker
-  // shreds it (no laser: he isn't destroyed) and strides off; a cash-out has no hand, so he just
-  // collects and leaves. Either way the nexus then projects the score screen (score already
-  // banked / zeroed by the Session).
+  // The coda's game-over sequence, ending at the FINAL SCOREBOARD (docs/scoreboards.md — title
+  // BUSTED on a coda bust, CASHED OUT on a cash-out). A coda bust leaves the losing hand on the
+  // table — the Banker shreds it (no laser: he isn't destroyed) and strides off; a cash-out has no
+  // hand, so he just collects and leaves. Either way the nexus then projects the final scoreboard
+  // (score already banked / zeroed by the Session).
   private beginCodaEnd_(prevRound: Round | null): void {
     const t = now()
     if (prevRound) {
@@ -3164,11 +3449,15 @@ class GameView {
       const gatherStart = Math.max(this.anim_.animEnd, t) + END_SHRED_GAP
       this.anim_.collect(prevRound, gatherStart, false)
       const gatherEnd = this.anim_.animEnd
-      this.dealer_.walkOff(gatherEnd)
-      this.playBankerLaugh_(gatherEnd) // he cackles as he strides off, not while gathering
-      // Reveal the score AS the gather ends, while the Banker strides off (the gathered cards
-      // have vanished into the deck, so they can't flicker back).
-      this.scoreRevealAt_ = gatherEnd
+      // The pot is lost: once the cards are gathered, the glass counters fly BACK to the
+      // Banker's hands before he leaves (he reclaims his stake), and only then does he stride
+      // off. Reveal the score once the plaques have landed.
+      const reclaimEnd = this.codaCrystalValue_ > 0 ? this.codaCounters_.collect(codaPerTier(this.codaWins_), codaTier(this.codaWins_), gatherEnd) : gatherEnd
+      this.dealer_.walkOff(reclaimEnd)
+      this.playBankerLaugh_(reclaimEnd) // he cackles as he strides off with everything
+      // Reveal the score as the Banker strides off (cards vanished into the deck, plaques back
+      // in his hands, so nothing can flicker back).
+      this.scoreRevealAt_ = reclaimEnd
       // The bust zeroes the score — clear any lingering "+N" delta from the last coda WIN so a
       // stale gain doesn't flash over the game-over screen.
       this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda')
@@ -3180,6 +3469,11 @@ class GameView {
       // Cash out: no hand on the table — the Banker collects and strides off (from `now`, not a
       // stale clock, so the walk-off is actually seen), then the score screen projects once he's gone.
       const walkStart = t + END_SHRED_GAP
+      // The pot is BANKED, not reclaimed: the glass counters dissolve where they sit (they don't
+      // fly back to the Banker — the player keeps the score) as he leaves.
+      if (this.codaCrystalValue_ > 0) {
+        this.codaCounters_.fade(codaPerTier(this.codaWins_), codaTier(this.codaWins_), walkStart)
+      }
       this.dealer_.walkOff(walkStart)
       this.scoreRevealAt_ = walkStart + KILL_ARRIVE_MS
     }
@@ -3241,6 +3535,9 @@ class GameView {
         pill.textContent = String(flat ? def.cost : powerupCost(def.cost, s.run))
       }
     }
+    // The score-screen page pager rides the same sync (it fires at the reveal edge and on every
+    // action), so it appears the instant the board does and hides the moment a New run begins.
+    this.syncScorePager_()
   }
 
   // Show/hide the choose-upgrade card and swap the normal HUD columns out while it's
@@ -3269,11 +3566,14 @@ class GameView {
     if (!choosing) {
       return
     }
-    for (const { info, btn, effectEl } of this.upgradeButtons_) {
-      const label = nextTierLabel(info, s.run.upgrades[info.path])
+    for (const { info, btn, effectEl, tierEl } of this.upgradeButtons_) {
+      const level = s.run.upgrades[info.path]
+      const label = nextTierLabel(info, level)
       btn.classList.toggle('is-hidden', label === null)
       if (label !== null) {
         effectEl.textContent = label
+        // The offered tier is one past the current level (0-based) — so tier 1, 2, or 3.
+        tierEl.textContent = String(level + 1)
       }
     }
   }
@@ -3368,6 +3668,13 @@ function element(tag: string, className: string): HTMLElement {
   return node
 }
 
+// Render an averaged 1–5 rating as filled/empty stars plus the decimal, e.g. 4.2 → "★★★★☆ 4.2".
+// The star count rounds to nearest; the number keeps the precision the glyphs lose.
+function ratingStars(rating: number): string {
+  const filled = Math.max(1, Math.min(5, Math.round(rating)))
+  return `${'★'.repeat(filled)}${'☆'.repeat(5 - filled)} ${rating.toFixed(1)}`
+}
+
 // Restart a one-shot CSS animation on `el`: drop the class, force a reflow so the animation
 // resets, then re-add it — lets the same element replay its keyframes back-to-back instead
 // of freezing after the first play.
@@ -3383,6 +3690,17 @@ function restartAnimation(el: HTMLElement, className: string): void {
 function powerIcon(className: string): HTMLImageElement {
   const img = document.createElement('img')
   img.src = powerUrl
+  img.className = className
+  img.alt = ''
+  img.setAttribute('aria-hidden', 'true')
+  return img
+}
+
+// A fresh <img> for the yellow points star (top-right counter). Like powerIcon, every
+// instance shares the one imported (fingerprinted) URL, so it downloads a single time.
+function starIcon(className: string): HTMLImageElement {
+  const img = document.createElement('img')
+  img.src = starUrl
   img.className = className
   img.alt = ''
   img.setAttribute('aria-hidden', 'true')

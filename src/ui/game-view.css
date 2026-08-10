@@ -41,13 +41,32 @@
   pointer-events: none;
 }
 
+/* The star icon + number, right-aligned on one row. The swell transform rides THIS row
+ * (see updatePointsCounter) so the star pumps with the count as a unit — pinned to the
+ * right edge so a big swell never pushes off-screen. */
+.hud-points__row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  transform-origin: 100% 50%;
+}
+
+/* The yellow points star, sized to sit just under the number's cap height. */
+.hud-points__star {
+  height: 30px;
+  width: auto; /* square asset — keep it square */
+  display: block;
+  flex: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
 .hud-points__count {
   display: inline-block;
   font: 800 34px system-ui, -apple-system, sans-serif;
   color: #ffffff;
   /* No pill any more — a strong dark shadow keeps the white legible over any felt. */
   text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7), 0 0 3px rgba(0, 0, 0, 0.85);
-  transform-origin: 100% 50%; /* swell toward the pinned right edge, never off-screen */
 }
 
 /* High scores shrink by digit count (data-len set in updatePointsCounter) so the
@@ -158,6 +177,76 @@
   border-color: rgba(184, 250, 244, 0.9);
   background: radial-gradient(circle at 35% 30%, rgba(150, 246, 236, 0.98), rgba(96, 220, 210, 0.98));
   box-shadow: 0 0 16px rgba(116, 236, 224, 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
+}
+
+/* The final scoreboard's page pager (‹ • • ›): a holo-cyan control row, its left/top set inline
+ * from the band coords (syncScorePager) and centred on that anchor. Fixed just below the summary
+ * band, so it holds still as the two pages' differing heights change the board above it. */
+.hud-score-pager {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none; /* only the arrows capture taps */
+  z-index: 4;
+}
+
+.hud-score-pager.is-hidden {
+  display: none;
+}
+
+.hud-score-pager__btn {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.9), rgba(12, 26, 30, 0.9));
+  color: rgba(196, 246, 241, 0.96);
+  font: 700 22px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+
+.hud-score-pager__btn:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+}
+
+.hud-score-pager__btn:active {
+  transform: scale(0.92);
+}
+
+.hud-score-pager__btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  box-shadow: none;
+}
+
+.hud-score-pager__dots {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hud-score-pager__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(116, 236, 224, 0.28);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hud-score-pager__dot.is-active {
+  background: rgba(150, 246, 236, 0.95);
+  box-shadow: 0 0 8px rgba(116, 236, 224, 0.7);
 }
 
 /* Only the game-over banner uses this now (the win/loss/push result is drawn on
@@ -538,6 +627,7 @@ button.is-hidden,
 
 .upgrade-btn {
   --upgrade-color: #888888;
+  position: relative; /* anchors the top-right tier badge */
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -585,6 +675,25 @@ button.is-hidden,
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 
+/* The tier badge (1 / 2 / 3) pinned to the button's top-right corner: a small dark
+ * disc so the number reads clearly over any of the three path colours. */
+.upgrade-btn__tier {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  font: 800 14px system-ui, -apple-system, sans-serif;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
 /* Mobile: smaller buttons + tighter padding; keep the action bar to one row so
  * it stays a thin strip below the raised powerup column. */
 @media (max-width: 560px) {
@@ -603,6 +712,10 @@ button.is-hidden,
   .hud-points {
     top: 8px;
     right: 10px;
+  }
+
+  .hud-points__star {
+    height: 24px;
   }
 
   .hud-points__count {
@@ -727,12 +840,25 @@ button.is-hidden,
 
   .upgrade-btn__effect {
     font-size: 13px;
+    padding-right: 22px; /* clear the top-right tier badge in the single-row layout */
+  }
+
+  .upgrade-btn__tier {
+    top: 6px;
+    right: 8px;
+    width: 21px;
+    height: 21px;
+    font-size: 12px;
   }
 }
 
 /* Larger screens: scale the points counter + its "+N" delta up so the score reads big
  * from across the room (the base sizes suit a laptop; a desktop monitor can take more). */
 @media (min-width: 1200px) {
+  .hud-points__star {
+    height: 38px;
+  }
+
   .hud-points__count {
     font-size: 44px;
   }
@@ -743,6 +869,10 @@ button.is-hidden,
 }
 
 @media (min-width: 1700px) {
+  .hud-points__star {
+    height: 48px;
+  }
+
   .hud-points__count {
     font-size: 56px;
   }

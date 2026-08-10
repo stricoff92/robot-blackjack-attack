@@ -111,6 +111,37 @@ describe('Session', () => {
     expect(session.snapshot().run.tokens).toBe(before)
   })
 
+  it('tallies performance at resolution: a busting hit counts a bust and rates the (recorded) hand', () => {
+    const session = new Session(3)
+    session.deal()
+    expect(session.snapshot().phase).toBe('playing')
+
+    session.hit() // busts this hand → resolves the round → settle_ → tallyPerformance
+
+    const run = session.snapshot().run
+    expect(run.busts).toBe(1)
+    expect(run.ratedHands).toBe(1) // the hit was captured as the terminal decision
+    expect(run.ratingSum).toBeGreaterThanOrEqual(1)
+    expect(run.ratingSum).toBeLessThanOrEqual(5)
+    expect(run.blackjackWins).toBe(0)
+  })
+
+  it('rates a stood hand and leaves the bust/blackjack tallies clear', () => {
+    const session = new Session(9)
+    session.deal()
+    expect(session.snapshot().phase).toBe('playing')
+
+    while (session.snapshot().phase === 'playing') {
+      session.stand()
+    }
+
+    const run = session.snapshot().run
+    expect(run.busts).toBe(0) // standing never busts
+    expect(run.ratedHands).toBe(1) // the stand was captured + rated
+    expect(run.ratingSum).toBeGreaterThanOrEqual(1)
+    expect(run.ratingSum).toBeLessThanOrEqual(5)
+  })
+
   it('grows the combo by the hit risk (not the score) and records the risk when a hit survives', () => {
     const session = new Session(9)
     session.deal()
@@ -641,12 +672,18 @@ describe('Session startDealer dev override', () => {
     expect(new Session(1, { startDealer: 6 }).snapshot().run.integrity).toBe(getShift(6).maxIntegrity)
   })
 
-  it('re-applies the override on a New run', () => {
-    const session = new Session(1, { startDealer: 3 })
+  it('FORGETS the override on a New run — a clean default first-dealer run', () => {
+    // A New run ignores every dev URL override, so a debug-seeded run can't re-seed the same
+    // (possibly broken) state on restart. It starts at the first dealer with no kills.
+    const session = new Session(1, { startDealer: 3, startChips: 1, startScore: 14343, startTokens: 500 })
     session.restart()
     const run = session.snapshot().run
-    expect(run.shiftIndex).toBe(3)
-    expect(run.kills).toEqual([1, 2])
+    expect(run.shiftIndex).toBe(1)
+    expect(run.kills).toEqual([])
+    // …and the other overrides are gone too — default chips, zero score, default tokens.
+    expect(run.chips).toBe(new Session(1).snapshot().run.chips)
+    expect(run.score).toBe(0)
+    expect(run.tokens).toBe(new Session(1).snapshot().run.tokens)
   })
 })
 
@@ -723,6 +760,39 @@ describe('Session Banker coda', () => {
     expect(prompt.phase).toBe('coda')
     expect(prompt.round).toBeNull()
     expect(prompt.run.score).toBe(score) // dismissing the killing hand does NOT double it
+  })
+
+  it('respects ?playerBlackjack in the coda — the gamble deals the player a natural', () => {
+    // Reach a coda prompt with the dev switch on, then gamble: like the main deal, the coda hand
+    // must open the PLAYER on a natural 21 (an instant coda win), not just normal main-game deals.
+    for (let seed = 1; seed < 4000; seed += 1) {
+      const session = new Session(seed, {
+        startDealer: 6,
+        dealerHealth: 1,
+        startChips: 100000,
+        startTokens: 500,
+        forcePlayerNatural: true,
+      })
+      let reached = false
+      for (let guard = 0; guard < 60; guard += 1) {
+        const phase = session.snapshot().phase
+        if (phase === 'coda') { reached = true; break }
+        if (phase === 'over') break
+        if (phase === 'betting') { session.deal(); continue }
+        if (phase === 'resolved') { session.nextHand(); continue }
+        if (phase === 'choosing-upgrade') { session.chooseUpgrade('tokenEco'); continue }
+        session.stand()
+      }
+      if (!reached) continue
+
+      session.codaResolveNext() // dismiss the killing hand → the prompt
+      session.codaGamble()
+      const round = session.snapshot().round!
+      // The player's opening two are a natural — the whole point of the dev switch.
+      expect(isBlackjack([round.hands[0].cards[0], round.hands[0].cards[1]])).toBe(true)
+      return
+    }
+    throw new Error('no seed reached the coda with forcePlayerNatural')
   })
 
   it('never deals the Banker a natural 21, across many double-or-nothing hands', () => {
@@ -834,5 +904,47 @@ describe('Session Banker coda', () => {
     const after = session.snapshot()
     expect(after.run.tokens).toBe(before - CODA_MULLIGAN_COST)
     expect(after.round!.mulliganed).toBe(true)
+  })
+})
+
+describe('Session bankruptcy coda', () => {
+  // Resume a deep, nearly-broke run (Dealer 3, one all-in bet from zero, a score worth taxing)
+  // and play the hand out simply. A losing hand empties the bankroll → the redemption coda. Loop
+  // seeds until one deals a loss (a push/win keeps the stack, so it just tries the next seed).
+  function bankruptcyEntry(): Session {
+    for (let seed = 1; seed < 500; seed += 1) {
+      const session = new Session(seed)
+      session.adoptRun({ ...startRun(seed), shiftIndex: 3, kills: [1, 2], integrity: 90, chips: 10, score: 1000 })
+      session.deal()
+      for (let guard = 0; session.snapshot().phase === 'playing' && guard < 12; guard += 1) {
+        session.stand()
+      }
+      const snap = session.snapshot()
+      if (snap.phase === 'coda' && snap.run.bankruptcyCoda) {
+        return session
+      }
+    }
+    throw new Error('no seed produced a deep bankruptcy')
+  }
+
+  it('a deep bankruptcy enters the coda phase with the score taxed, not game over', () => {
+    const snap = bankruptcyEntry().snapshot()
+    expect(snap.phase).toBe('coda')
+    expect(snap.run.coda).toBe(true)
+    expect(snap.run.bankruptcyCoda).toBe(true)
+    expect(snap.run.over).toBe(false)
+    expect(snap.run.chips).toBe(0)
+    expect(snap.run.score).toBe(170) // 1000 with the 83% bankruptcy tax
+  })
+
+  it('cashing out of the bankruptcy coda banks the taxed score through the single seam', () => {
+    const session = bankruptcyEntry()
+    session.codaResolveNext() // dismiss the losing hand → the DOUBLE / CASH OUT prompt
+    expect(session.snapshot().round).toBeNull()
+    session.codaCashOut()
+    const snap = session.snapshot()
+    expect(snap.phase).toBe('over')
+    expect(snap.run.cashedOut).toBe(true)
+    expect(snap.run.score).toBe(170)
   })
 })

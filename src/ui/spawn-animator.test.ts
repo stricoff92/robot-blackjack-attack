@@ -102,18 +102,12 @@ describe('SpawnAnimation', () => {
     expect(withDeck).toBeGreaterThan(withoutDeck)
   })
 
-  it('runs a longer, grander ceremony for the final dealer', () => {
-    const grand = new SpawnAnimation().begin(0, 3, true, true)
-    const normal = new SpawnAnimation().begin(0, 3, true, false)
-    // The grand fresh-deck fly + unwrap beats are stretched, so the whole thing ends later.
-    expect(grand).toBeGreaterThan(normal)
-  })
-
-  it('still unwraps fully by the end of the grand ceremony', () => {
+  it('exposes the shred end (cards chewed) at or before the full ceremony end', () => {
+    // shredEnd is the moment the shredding finishes (last card chewed + sfx tail); the Banker's
+    // laugh is timed off it. It lands at or before endAt, which also waits on the lingering chunks.
     const anim = new SpawnAnimation()
-    anim.begin(0, 3, true, true)
-    const st = anim.deckState(DONE)
-    expect(st?.fly).toBe(1)
-    expect(st?.unwrap).toBe(1)
+    const end = anim.begin(0, 3, true, true) // shredOnly: cards + old deck, no fresh deck (Banker entry)
+    expect(anim.shredEnd).toBeGreaterThan(0)
+    expect(anim.shredEnd).toBeLessThanOrEqual(end)
   })
 })

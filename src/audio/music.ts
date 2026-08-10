@@ -20,6 +20,7 @@ import machinationsUrl from '../assets/Kevin-MacLeod-Machinations.ogg'
 import getawayUrl from '../assets/Kevin MacLeod-Mistake the Getaway.ogg'
 import bustUrl from '../assets/Kevin MacLeod Trio for Piano Violin and Viola.ogg'
 import cashoutUrl from '../assets/Kevin MacLeod-Enigma.ogg'
+import decisionsUrl from '../assets/KevinMacLeodDecisions.ogg'
 
 export type TrackName =
   | 'cannery'
@@ -29,6 +30,7 @@ export type TrackName =
   | 'getaway'
   | 'bust'
   | 'cashout'
+  | 'decisions'
 
 interface TrackDef {
   url: string
@@ -49,6 +51,7 @@ const TRACKS: Record<TrackName, TrackDef> = {
   getaway: { url: getawayUrl, baseVolume: 1 },
   bust: { url: bustUrl, baseVolume: 1 },
   cashout: { url: cashoutUrl, baseVolume: 1 },
+  decisions: { url: decisionsUrl, baseVolume: 1 },
 }
 
 const ALL_TRACKS = Object.keys(TRACKS) as TrackName[]
@@ -56,13 +59,17 @@ const ALL_TRACKS = Object.keys(TRACKS) as TrackName[]
 //   • CODA_TRACK ("Mistake the Getaway") — the double-or-nothing theme (codaHand).
 //   • BUST_TRACK (piano/violin/viola trio) — the sting for LOSING the coda (codaBust).
 //   • CASHOUT_TRACK ("Enigma") — the sting for CASHING OUT of the coda (codaCashOut).
+//   • DECISIONS_TRACK ("Decisions") — the Banker-approach theme, plays ONCE while the player
+//     weighs double-or-nothing vs cash out (codaDecisions), then falls silent.
 const CODA_TRACK: TrackName = 'getaway'
 const BUST_TRACK: TrackName = 'bust'
 const CASHOUT_TRACK: TrackName = 'cashout'
+const DECISIONS_TRACK: TrackName = 'decisions'
 // End stings: play exactly ONCE and then the soundtrack goes silent until a new run.
 const END_TRACKS: TrackName[] = [BUST_TRACK, CASHOUT_TRACK]
 const ROTATION_TRACKS = ALL_TRACKS.filter(
-  (name) => name !== CODA_TRACK && name !== BUST_TRACK && name !== CASHOUT_TRACK,
+  (name) =>
+    name !== CODA_TRACK && name !== BUST_TRACK && name !== CASHOUT_TRACK && name !== DECISIONS_TRACK,
 )
 // Coda transitions are FAST — a slow fade would mush the sharp attacks. Whatever's playing
 // ducks out over CODA_FADE_OUT_MS; the coda THEME itself hard-starts (fadeIn 0) so its opening
@@ -70,6 +77,9 @@ const ROTATION_TRACKS = ALL_TRACKS.filter(
 // (prefetchCoda decodes the buffers ahead of time, so there's no download gap behind the fade.)
 const CODA_FADE_OUT_MS = 140
 const CODA_FADE_IN_MS = 60
+// The "Decisions" (Banker-approach) theme rises from the coda-entry silence, so it fades IN
+// gently rather than hard-starting — nothing's playing under it to duck against.
+const DECISIONS_FADE_IN_MS = 500
 // "The Cannery" always plays first.
 const OPENING_TRACK: TrackName = 'cannery'
 
@@ -200,12 +210,37 @@ class MusicService {
     void this.getBuffer_(CODA_TRACK).catch(() => {})
     void this.getBuffer_(BUST_TRACK).catch(() => {})
     void this.getBuffer_(CASHOUT_TRACK).catch(() => {})
+    void this.getBuffer_(DECISIONS_TRACK).catch(() => {})
+  }
+
+  // The Banker's entry shred has just finished (fired from game-view once the shred completes):
+  // play the "Decisions" theme ONCE while the player weighs double-or-nothing vs cash out,
+  // filling what used to be the coda-entry silence. It never loops or auto-advances — when it
+  // ends the soundtrack simply falls silent again, and the player's choice starts the coda theme
+  // (codaHand) or an end sting (codaCashOut). prefetchCoda has the buffer decoded, so no gap.
+  codaDecisions(): void {
+    const ctx = this.context_()
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    this.started_ = true
+    this.codaActive_ = false
+    this.endSilence_ = false
+    // Fade out whatever remains of the coda-entry fade-to-silence (usually already gone) and
+    // bring "Decisions" up gently from underneath.
+    const outgoing = this.current_
+    this.current_ = null
+    this.queued_ = null
+    if (outgoing) {
+      this.fadeOutAndStop_(outgoing, CODA_FADE_OUT_MS)
+    }
+    void this.playTrack_(DECISIONS_TRACK, DECISIONS_FADE_IN_MS)
   }
 
   // Dealer 6 has been defeated (the winning hand is revealed): fade the fight music out to
-  // SILENCE and hold there. Nothing plays through the Banker's walk-in / the prompt — the
-  // soundtrack only resumes when the player chooses double-or-nothing (codaHand → the coda
-  // theme) or cash out (codaCashOut → the cash-out sting).
+  // SILENCE and hold there. The quiet holds through the Banker's walk-in + entry shred — the
+  // "Decisions" theme (codaDecisions) rises once the shred completes — until the player chooses
+  // double-or-nothing (codaHand → the coda theme) or cash out (codaCashOut → the cash-out sting).
   enterCodaSilence(fadeMs = 1500): void {
     this.codaActive_ = false
     this.endSilence_ = false
@@ -319,6 +354,13 @@ class MusicService {
     // An END sting (bust / cash out) plays exactly ONCE — when it ends the soundtrack falls
     // silent (no auto-advance) until a new run calls resumeAfterEnd().
     if (END_TRACKS.includes(justEnded)) {
+      this.stopCurrent_()
+      return
+    }
+    // The Banker-approach "Decisions" theme also plays exactly ONCE — if the player is still
+    // weighing the coda when it ends, fall silent (no rotation track) until their choice starts
+    // the next music. No endSilence latch: this is mid-coda, not a run-end sting.
+    if (justEnded === DECISIONS_TRACK) {
       this.stopCurrent_()
       return
     }

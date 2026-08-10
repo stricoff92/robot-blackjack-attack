@@ -723,11 +723,50 @@ function holoGlowStyle(now: number): GlowStyle {
 }
 
 // A box a holo ray fan targets — the on-felt region of one projected readout number.
+// `clampToNexus` OPTS IN to the SCOREBOARD-ONLY fan restriction (holoFanBase): keep the fan left of
+// the lens so a centred board's rays never spill right of the nexus. Leave it off for readouts that
+// legitimately sit near/right of the nexus (e.g. the player chip count) — they fan onto their box
+// as-is. The restriction is opt-in precisely so it can't affect anything but the scoreboards.
 export interface HoloRayTarget {
   left: number
   right: number
   top: number
   bottom: number
+  clampToNexus?: boolean
+}
+
+// The horizontal geometry of a SCOREBOARD's holo ray fan (only boxes with `clampToNexus`): where its
+// triangle bases (and the gradient's far end) sit. The lens is on the RIGHT of the felt, so a centred
+// board's fan must only ever open LEFT. Two right-edge rules, both about NOT lighting bare felt on
+// the way to the device:
+//   1. Never past the lens — no base vertex may land RIGHT of the apex, or light spills out the
+//      right of the nexus.
+//   2. Never past the TEXT toward the lens — each ray base normally runs a `pad` past the box for a
+//      soft overshoot, but when that padded right would cross the lens the pad is dropped and the
+//      fan ends at box.right (the text edge). Without this, a wide board that ends well left of the
+//      nexus got its fan stretched all the way to the device (a vertical "straight up" edge at the
+//      nexus, lighting the empty gap) — the pad is 25% of the box WIDTH, so a wide box on a narrow
+//      (mobile) screen overshoots hard.
+// A scoreboard's centre is ≤ lensX (they're centred or left-of-centre), so box.left stays < lensX and
+// the base never collapses. Pure + exported so the invariant is unit-tested (nexus.test.ts) and can't
+// silently regress. NOT applied to non-scoreboard readouts — see drawHoloRays.
+export interface HoloFanGeom {
+  baseLeft: number // left end of the triangle bases
+  baseRight: number // right end of the triangle bases (≤ lensX, and ≤ box.right when the pad would cross)
+  midX: number // the gradient's far end (≤ lensX)
+  lensX: number // the lens (apex) x — the fan's hard right bound
+}
+
+export function holoFanBase(l: Layout, now: number, box: HoloRayTarget): HoloFanGeom {
+  const lensX = nexusHoloLight(l, now).x
+  const pad = (box.right - box.left) * 0.25
+  const paddedRight = box.right + pad
+  // Use the soft padded overshoot only while it stays left of the lens; otherwise end the fan at the
+  // text edge (box.right), capped at the lens for the degenerate "box entirely right of it" case.
+  const baseRight = paddedRight <= lensX ? paddedRight : Math.min(box.right, lensX)
+  const baseLeft = Math.min(box.left - pad, baseRight) // guard the degenerate "box entirely right" case
+  const midX = Math.min((box.left + box.right) / 2, lensX)
+  return { baseLeft, baseRight, midX, lensX }
 }
 
 // The holo projector casting one readout: `count` faint WHITE light rays from the holo
@@ -745,7 +784,16 @@ export function drawHoloRays(
 ): void {
   const src = nexusHoloLight(l, now)
   const pad = (box.right - box.left) * 0.25
-  const midX = (box.left + box.right) / 2
+
+  // SCOREBOARDS (box.clampToNexus) keep their fan left of the lens (holoFanBase), so a centred board's
+  // rays never spill out the RIGHT of the nexus. EVERY OTHER readout fans onto its box as-is — the
+  // base runs a soft `pad` past each edge, and the gradient fades toward the box centre. This is
+  // deliberately NOT clamped: readouts like the player chip count sit near/right of the nexus and
+  // must project onto themselves, not get yanked left of the lens.
+  const { baseLeft, baseRight, midX } = box.clampToNexus
+    ? holoFanBase(l, now, box)
+    : { baseLeft: box.left - pad, baseRight: box.right + pad, midX: (box.left + box.right) / 2 }
+
   const span = box.bottom - box.top
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
@@ -767,8 +815,8 @@ export function drawHoloRays(
     ctx.fillStyle = grad
     ctx.beginPath()
     ctx.moveTo(src.x, src.y)
-    ctx.lineTo(box.left - pad, baseY)
-    ctx.lineTo(box.right + pad, baseY)
+    ctx.lineTo(baseLeft, baseY)
+    ctx.lineTo(baseRight, baseY)
     ctx.closePath()
     ctx.fill()
   }

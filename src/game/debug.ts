@@ -7,6 +7,8 @@
 //   ?forcePairs=8      — ...specifically a pair of that rank (2-10, J, Q, K, A)
 //   ?tokens=200        — start the run with this many tokens (test powerups without grinding)
 //   ?chips=5000        — start the run with this many chips (test the wealth-floor bet)
+//   ?points=50000      — start the run with this many score points (test the coda stake + the
+//                        bankruptcy tax reveal without grinding a real score first)
 //   ?dealerHealth=50   — start the first dealer at this % health (1-100), e.g. to see the
 //                        low-health eye flicker without playing a dealer down
 //   ?dealer=6          — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
@@ -36,6 +38,8 @@ export interface DebugFlags {
   startTokens: number | null
   /** Start the run with this many chips; null = the normal starting balance (400). */
   startChips: number | null
+  /** Start the run with this many score points; null = the normal starting score (0). */
+  startScore: number | null
   /** Start the first dealer at this % health (1-100); null = full. */
   dealerHealth: number | null
   /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
@@ -57,6 +61,7 @@ const OFF: DebugFlags = {
   forcePairRank: null,
   startTokens: null,
   startChips: null,
+  startScore: null,
   dealerHealth: null,
   startDealer: null,
   sabotageUpgrade: null,
@@ -79,6 +84,7 @@ export function readDebugFlags(): DebugFlags {
     forcePairRank,
     startTokens: parseStartTokens(params.get('tokens')),
     startChips: parseStartChips(params.get('chips')),
+    startScore: parseStartScore(params.get('points')),
     dealerHealth: parseDealerHealth(params.get('dealerHealth')),
     startDealer: parseStartDealer(params.get('dealer')),
     sabotageUpgrade: parseUpgradeTier(params.get('sabotageUpgrade')),
@@ -106,6 +112,15 @@ function parseStartChips(raw: string | null): number | null {
   }
   const n = Number(raw)
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null
+}
+
+// A non-negative integer starting score, or null if the param is absent/empty/invalid.
+function parseStartScore(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
 }
 
 // A health percentage clamped to 1..100, or null if absent/empty/invalid. Clamped

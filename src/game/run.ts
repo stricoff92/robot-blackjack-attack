@@ -1,7 +1,8 @@
+import { isBlackjack } from './hand'
 import { damageForRound } from './integrity'
 import type { Rng } from './random'
 import { handReward } from './rewards'
-import { isWinningHand, payout, type Round, type Soft17Rule } from './round'
+import { isWinningHand, payout, type PlayerHand, type Round, type Soft17Rule } from './round'
 import {
   bumpUpgrade,
   emptyUpgrades,
@@ -60,7 +61,11 @@ import {
 //      applied to the won-hand chip score and the kill bounty, so deep runs are worth
 //      exponentially more (feeding the double-or-nothing Banker coda). The per-shift
 //      scoreMultiplier field is removed — bet size + this now carry the score curve.
-export const RULES_VERSION = 25
+// v27: more game-over score-screen tallies (busts, blackjackWins, and a per-hand star rating
+//      accumulator ratingSum/ratedHands — see tallyPerformance) for the scoreboard's "page 2".
+//      Display only, no effect on resolution maths. Bumped so an in-progress v26 save (which
+//      lacks the fields) is discarded on load rather than resumed missing them.
+export const RULES_VERSION = 27
 export const STARTING_CHIPS = 400
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
@@ -69,6 +74,15 @@ export const STARTING_TOKENS = 100
 export const TOTAL_DEALERS = 6
 
 export const DESTROY_TOKEN = 40
+
+// Bankruptcy redemption: going broke normally ends the run, but once the player has downed at
+// least BANKRUPTCY_MIN_SHIFT dealers the Banker steps in with a last-chance double-or-nothing —
+// at a punishing "bankruptcy tax". The run enters the coda staking only (1 − tax) of the earned
+// score instead of ending. 0.83 → the player climbs back from 17%.
+export const BANKRUPTCY_TAX = 0.83
+// The player must be fighting at least this deep (shiftIndex > this) to be offered the redemption
+// coda — no bailout for a run that barely started. `> 1` means Dealer 2 onward (≥1 kill).
+export const BANKRUPTCY_MIN_SHIFT = 1
 
 // A surviving hit pays tokens scaled by how risky it was: the base for a safe
 // hit, climbing to base+bonus for a hit that was very likely to bust but landed
@@ -159,6 +173,12 @@ export interface Shift {
 
 export interface RunState {
   seed: number
+  // The deal RNG's stream position (its mulberry32 `.state`), checkpointed at each save so a resume
+  // deals the SAME upcoming shoe on every reload — reloading can't reroll the opening cards. Kept in
+  // sync with the live deal RNG by Session.deal; restored via createRng(deckState) in adoptRun.
+  // Distinct from `seed` (the run's fixed origin, which also derives the Analyze/heal streams): this
+  // is the evolving position that seed has advanced to.
+  deckState: number
   chips: number
   score: number
   tokens: number
@@ -184,11 +204,28 @@ export interface RunState {
   handsLost: number
   tokensSpent: number
   freeDoubleWins: number
+  // Player-performance tallies for the score screen's "page 2" (tallyPerformance, display only,
+  // never gameplay inputs). Counted per ROUND, so a split counts once — like handsPlayed. Coda
+  // hands are excluded (they resolve outside applyRound/tallyPerformance).
+  //   busts         — rounds where the player busted (any hand). Feeds BUST %.
+  //   blackjackWins — rounds with a 'blackjack' outcome (a real natural OR a hijacked dealer 21,
+  //                   per the metric's "including hijacks"). Feeds BLACKJACK %.
+  //   ratingSum/ratedHands — running sum + count of per-round star ratings (1..5); their quotient
+  //                   is the averaged star rating. A split's sub-hands are each rated then averaged
+  //                   into one round rating; a round with no rateable decision isn't counted.
+  busts: number
+  blackjackWins: number
+  ratingSum: number
+  ratedHands: number
   over: boolean
   won: boolean
   // The Banker coda: set true (in place of `won`) when the 6th dealer is destroyed, so the run
   // enters the double-or-nothing endgame instead of ending. Stays true through the coda.
   coda: boolean
+  // The coda was entered by going BANKRUPT (vs. clearing the 6th dealer) — the run's score was
+  // taxed by BANKRUPTCY_TAX on entry. Drives the entry ceremony (dealer walk-off + tax reveal,
+  // not a boss death) and can flavour the score screen. Implies `coda`.
+  bankruptcyCoda: boolean
   // Set when the player cashes OUT of the coda (vs. busting it) — drives the score-screen title.
   cashedOut: boolean
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
@@ -214,6 +251,8 @@ const SHIFT_TABLE: readonly Shift[] = [
 export function startRun(seed: number): RunState {
   return {
     seed,
+    // The deal RNG opens at the seed; Session.deal advances this as it draws each shoe.
+    deckState: seed >>> 0,
     chips: STARTING_CHIPS,
     score: 0,
     tokens: STARTING_TOKENS,
@@ -229,9 +268,14 @@ export function startRun(seed: number): RunState {
     handsLost: 0,
     tokensSpent: 0,
     freeDoubleWins: 0,
+    busts: 0,
+    blackjackWins: 0,
+    ratingSum: 0,
+    ratedHands: 0,
     over: false,
     won: false,
     coda: false,
+    bankruptcyCoda: false,
     cashedOut: false,
     upgrades: emptyUpgrades(),
   }
@@ -353,6 +397,70 @@ export function spendTokens(run: RunState, amount: number): RunState {
   return { ...run, tokens: run.tokens - amount, tokensSpent: run.tokensSpent + amount }
 }
 
+// The player's TERMINAL decision on a hand — the last hit-or-stand call, captured live in
+// Session (the odds can't be reconstructed after the deck advances). `bustChance` is the
+// exact chance the hand busts if hit; `standLoseChance` the Monte-Carlo chance the dealer
+// beats the current total if the player stands. Both are read from public cards.
+export interface HandDecision {
+  action: 'hit' | 'stand'
+  bustChance: number
+  standLoseChance: number
+}
+
+// The per-hand star rating (1..5), or null if the hand can't be rated. It rewards the RIGHT
+// CALL and the OUTCOME independently: hitting is "right" when the bust risk is lower than the
+// risk of losing by standing, and standing is "right" when it isn't (the EV crossover). A right
+// call scores 5/4/3 on a win/push/loss; a wrong call 3/2/1 — so a correct-but-unlucky bust (hit
+// a stiff, lost) still beats a reckless bust (hit a pat hand), and a lucky wrong call (hit 18 and
+// won) is only middling. A genuine two-card natural is a flat 5 (no decision to judge). Returns
+// null when the player never got to act (e.g. a dealer natural off the deal) — an unrateable hand.
+export function ratePlayerHand(hand: PlayerHand, decision: HandDecision | undefined): number | null {
+  // A real natural blackjack (not a hijacked dealer 21) — top marks, no decision involved.
+  if (hand.outcome === 'blackjack' && isBlackjack(hand.cards)) {
+    return 5
+  }
+  if (!decision) {
+    return null
+  }
+  const won = hand.outcome === 'win' || hand.outcome === 'blackjack'
+  const push = hand.outcome === 'push' || hand.outcome === 'voided'
+  const shouldHit = decision.bustChance < decision.standLoseChance
+  const rightCall = (decision.action === 'hit') === shouldHit
+  if (rightCall) {
+    return won ? 5 : push ? 4 : 3
+  }
+  return won ? 3 : push ? 2 : 1
+}
+
+// Fold a resolved round's PLAYER-PERFORMANCE tallies into the run: the bust / blackjack counts
+// (for the score screen's percentages) and the averaged per-hand star rating. Kept OUT of
+// applyRound so the pure resolution maths never depend on the live odds snapshots this needs —
+// Session calls it right after applyRound (so coda hands, which resolve elsewhere, are excluded).
+// A split's sub-hands are each rated then averaged into ONE round rating; the round counts once
+// toward every denominator, matching handsPlayed. `decisions` is aligned to round.hands by index.
+export function tallyPerformance(run: RunState, round: Round, decisions: readonly (HandDecision | undefined)[]): RunState {
+  const playerBusted = round.hands.some((hand) => hand.outcome === 'bust')
+  // BLACKJACK % counts EVERY 'blackjack' outcome — a real natural AND a hijacked dealer 21
+  // (Sabotage T3) — per the metric's "including hijacks".
+  const blackjackWin = round.hands.some((hand) => hand.outcome === 'blackjack')
+  const stars = round.hands
+    .map((hand, i) => ratePlayerHand(hand, decisions[i]))
+    .filter((star): star is number => star !== null)
+  let ratingSum = run.ratingSum
+  let ratedHands = run.ratedHands
+  if (stars.length > 0) {
+    ratingSum += stars.reduce((sum, star) => sum + star, 0) / stars.length
+    ratedHands += 1
+  }
+  return {
+    ...run,
+    busts: run.busts + (playerBusted ? 1 : 0),
+    blackjackWins: run.blackjackWins + (blackjackWin ? 1 : 0),
+    ratingSum,
+    ratedHands,
+  }
+}
+
 // `rng` sources the heal-on-win roll (only consumed on a dealer-won hand at a
 // healing dealer). It defaults to the mid-roll so callers that don't care — the
 // early dealers never heal — stay deterministic.
@@ -406,6 +514,7 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
   let won = false
   // The 6th kill enters the Banker coda (double-or-nothing) instead of winning outright.
   let coda = run.coda
+  let bankruptcyCoda = run.bankruptcyCoda
 
   if (integrity <= 0) {
     // The kill bounty scales with the Token eco multiplier, like every other reward.
@@ -427,12 +536,27 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     handsThisDealer = 0
     integrity = getShift(shiftIndex).maxIntegrity
     if (kills.length >= TOTAL_DEALERS) {
-      // The final dealer is down — enter the Banker coda rather than ending the run. `won`
-      // is never set now; the coda's outcome (cash out / bust) ends the run via Session.
+      // The final dealer is down — enter the Banker coda rather than ending the run: this is the
+      // doorway to the VICTORY banker scoreboard (docs/scoreboards.md). `won` is never set now;
+      // the coda's outcome (cash out / bust) ends the run via Session.
       coda = true
     } else {
       chips += KILL_REWARD_RATIO * getShift(shiftIndex).minBet
     }
+  }
+
+  // Bankruptcy redemption: a losing hand that empties the bankroll normally ends the run, but
+  // once the player is deep enough (shiftIndex > BANKRUPTCY_MIN_SHIFT, i.e. Dealer 2+) the Banker
+  // offers a last-chance double-or-nothing instead — the doorway to the BANKRUPTCY banker
+  // scoreboard (docs/scoreboards.md). The run enters the coda with the score taxed to
+  // (1 − BANKRUPTCY_TAX) rather than ending. A losing hand never scores, so `score` here is the
+  // untaxed gross the scoreboard reveals as its "Points" row. (A kill is a win, so this can never
+  // collide with the 6th-kill coda above — chips only hit 0 on a loss.) Broke at Dealer 1 gets
+  // no coda — the run just ends and the final scoreboard reads BANKRUPT.
+  if (!won && !coda && chips <= 0 && shiftIndex > BANKRUPTCY_MIN_SHIFT) {
+    bankruptcyCoda = true
+    coda = true
+    score = Math.floor(score * (1 - BANKRUPTCY_TAX))
   }
 
   return {
@@ -453,7 +577,9 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     kills,
     won,
     coda,
-    over: won || chips <= 0,
+    bankruptcyCoda,
+    // A bankruptcy that routes into the coda is NOT over — the coda's own outcome ends the run.
+    over: won || (chips <= 0 && !bankruptcyCoda),
   }
 }
 

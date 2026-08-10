@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { encodeSaveKeys } from './keymap'
 import { pack } from './obfuscate'
-import { RULES_VERSION, startRun } from './run'
+import { RULES_VERSION, startRun, type RunState } from './run'
 
 // Mirror what saveRun writes: fields coded (keymap) before the pack() envelope. Used by the
 // setup that seeds the store directly instead of going through saveRun.
@@ -37,6 +37,22 @@ describe('persistence', () => {
     const run = { ...startRun(7), chips: 500, score: 1234, shiftIndex: 2, kills: [1] }
     saveRun(run)
     expect(loadRun()).toEqual(run)
+  })
+
+  it('round-trips the deal-stream position (deckState)', () => {
+    const run = { ...startRun(7), deckState: 0xabcdef12 }
+    saveRun(run)
+    expect(loadRun()!.deckState).toBe(0xabcdef12)
+  })
+
+  it('backfills deckState from the seed for a legacy save (pre deck-state persistence)', () => {
+    // A save written before deckState existed: strip the field, then load-path backfill fills it.
+    const legacy = { ...startRun(7) } as Partial<RunState>
+    delete legacy.deckState
+    store.set(RUN_KEY, packed({ version: RULES_VERSION, run: legacy }))
+    const loaded = loadRun()
+    expect(loaded).not.toBeNull()
+    expect(loaded!.deckState).toBe(7) // resumed from the run's origin seed — never undefined/NaN
   })
 
   it('returns null when nothing is saved', () => {

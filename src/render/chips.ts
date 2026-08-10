@@ -93,7 +93,7 @@ export function playerAnchor(l: Layout): Point {
 // capped so the circle never drops into the bottom action bar (which is a fixed
 // number of px from the screen bottom, unlike the fraction-based felt positions).
 // Shared by betAnchor and the table decal so the chips and circle stay together.
-function betRowY(l: Layout): number {
+export function betRowY(l: Layout): number {
   const feltTop = l.edgeY
   const feltH = l.height - feltTop
   const cardH = cardSize(l).h

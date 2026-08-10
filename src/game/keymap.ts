@@ -27,6 +27,7 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   run: 'rn',
   // RunState
   seed: 'sd',
+  deckState: 'dk',
   chips: 'ch',
   score: 'sc',
   tokens: 'tk',
@@ -42,9 +43,14 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   handsLost: 'hl',
   tokensSpent: 'sp',
   freeDoubleWins: 'fw',
+  busts: 'bu',
+  blackjackWins: 'bj',
+  ratingSum: 'rs',
+  ratedHands: 'rh',
   over: 'ov',
   won: 'wn',
   coda: 'cd',
+  bankruptcyCoda: 'bc',
   cashedOut: 'co',
   upgrades: 'ug',
   // RunUpgrades
