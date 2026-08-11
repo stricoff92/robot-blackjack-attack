@@ -1,7 +1,8 @@
 import { sfx } from './audio/sfx'
 import { music } from './audio/music'
 import { voice } from './audio/voice'
-import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, onMuteChange } from './platform/crazygames'
+import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange } from './platform/crazygames'
+import { bootAllowed, renderLock } from './platform/sitelock'
 import { mountGameView } from './ui/game-view'
 
 const root = document.querySelector<HTMLDivElement>('#app')
@@ -44,6 +45,20 @@ await Promise.race([
   }),
 ])
 
+// Dev-only: report whether the run-persistence store actually persists. iOS Safari can make
+// localStorage throw or go ephemeral (Private tab / Block All Cookies / in-app webview), which
+// otherwise silently drops every save — this surfaces it in Web Inspector at startup.
+logStorageHealth()
+
+// Production sitelock: only boot on a genuine CrazyGames host. Runs after SDK init so the hybrid
+// check can consult the SDK's environment. A no-op in dev / preview-unlock builds; on a foreign
+// prod host it blanks the screen and halts here (before any loading event or game mount) with a
+// never-resolving await — no thrown error, nothing for a thief to see. See platform/sitelock.ts.
+if (!bootAllowed()) {
+  renderLock(root)
+  await new Promise<never>(() => {})
+}
+
 // Signal the loading window to CrazyGames (must be after init). Our assets are small and mostly
 // lazy, so this brackets the synchronous mount; the first gameplayStart (the first deal) closes the
 // initial-download size-budget window.
@@ -63,3 +78,11 @@ onMuteChange(applyMute)
 // action buttons and HUD live in the stage overlay.
 mountGameView(root)
 loadingStop()
+
+// Dev-only audio audition hook: `window.sfx` lets you fire a sound straight from the console so
+// tweaks can be heard without playing to their trigger. Handy for the robotic Banker clap — A/B
+// `sfx.playHandClap()` against the raw `sfx.play('hand-clap')`, edit the HAND_CLAP_* constants in
+// audio/sfx.ts, and HMR reloads them live. Compiled out of the production build.
+if (import.meta.env.DEV) {
+  ;(window as unknown as { sfx: typeof sfx }).sfx = sfx
+}

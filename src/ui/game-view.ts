@@ -18,6 +18,7 @@ import { ANALYSIS_STRIKE_MS, dealerCountAnchor, drawAnalysis, drawBustBlock, dra
 import { onChipImageReady } from '../render/chip-sprite'
 import { drawChips, drawPlayerPile, drawTableMarkings } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
+import { abbreviateCount } from '../render/format'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
 import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
@@ -400,6 +401,13 @@ class GameView {
   // Whether the current coda prompt follows a HAND WIN — the banker-hand-win scoreboard (left-
   // justified, offer last, slow-clap sfx). false = the plain centred entry offer.
   private codaWonHand_ = false
+  // Wall-clock until which the prompt's Double-or-nothing / Cash-out stay disabled after a coda
+  // WIN — long enough for BOTH the top-right score roll and the glass-pot grow/colour-up to settle,
+  // so the player can't gamble or cash out mid-scoreboard-update. 0 = no lock (past = unlocked).
+  private codaChoiceReadyAt_ = 0
+  // Was the coda choice-lock active last frame? Drives a falling-edge re-sync so the buttons
+  // re-enable on the exact frame codaChoiceReadyAt passes (syncOverlay isn't called every frame).
+  private lastCodaChoiceLocked_ = false
   // The Banker coda's glass winnings counters: physical markers that make the pot tangible.
   // codaCrystalValue is the ENTRY score (the base unit); codaWins is how many coda hands have
   // been won. The pot is 2^wins × base, rendered as codaPerTier(wins) markers of codaTier(wins)
@@ -1686,7 +1694,7 @@ class GameView {
       sfx.playPointsRoll(this.scoreTicker_.remainingMs(now))
     }
     this.pointsRolling_ = rolling
-    const text = String(this.scoreTicker_.value(now))
+    const text = abbreviateCount(this.scoreTicker_.value(now))
     if (text !== this.lastPointsText_) {
       this.pointsCountEl_.textContent = text
       // Shrink the counter by digit count so the double-or-nothing coda's big totals don't
@@ -2212,6 +2220,16 @@ class GameView {
       this.syncOverlay_(timestamp)
     }
 
+    // A coda WIN freezes the prompt's Double-or-nothing / Cash-out until the scoreboard settles
+    // (codaChoiceReadyAt). Re-sync each frame through that window — plus once more on the unlock
+    // edge — so the buttons re-enable the instant it passes; nothing else re-syncs here (the
+    // auto-advance already fired and the win's gather has long since settled).
+    const codaChoiceLocked = timestamp < this.codaChoiceReadyAt_
+    if (codaChoiceLocked || this.lastCodaChoiceLocked_) {
+      this.syncOverlay_(timestamp)
+    }
+    this.lastCodaChoiceLocked_ = codaChoiceLocked
+
     // The table nexus floats in a perpetual hover (render/nexus.ts), so its bob +
     // contact shadow always need repainting: the loop never fully parks. Every
     // other system (sequence, health, tokens, counters, dealer, Analyze, the RGB
@@ -2499,12 +2517,12 @@ class GameView {
     return btn
   }
 
-  // The help button: a small circular "H" stacked just above the info button. A click opens
+  // The help button: a small circular "?" at the bottom of the powerup column. A click opens
   // the full-screen ability guide; a tap anywhere on that guide closes it (see buildHelpPanel_).
   private buildHelpButton_(): HTMLButtonElement {
     const btn = document.createElement('button')
     btn.className = 'hud-help'
-    btn.textContent = 'H'
+    btn.textContent = '?'
     btn.title = 'What each ability does'
     btn.setAttribute('aria-label', 'Show what each ability does')
     btn.addEventListener('click', () => this.openHelp_())
@@ -2536,7 +2554,18 @@ class GameView {
     hint.textContent = 'tap anywhere to close'
     card.appendChild(hint)
     panel.appendChild(card)
-    panel.addEventListener('pointerdown', () => this.closeHelp_())
+    // Dismiss on CLICK, not pointerdown. Hiding the panel on pointerdown removes it
+    // before iOS dispatches the follow-up click, so that click falls through to whatever
+    // button sat beneath the modal and fires it too. Closing on click keeps the panel
+    // (topmost, full-screen) as the event's target, so nothing underneath ever sees it.
+    // The pointerdown handler only stops the press leaking to the stage container behind
+    // (spec-sheet dismiss / table); the CSS gives the panel cursor:pointer so iOS reliably
+    // fires the click on this non-interactive div.
+    panel.addEventListener('pointerdown', (e) => e.stopPropagation())
+    panel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.closeHelp_()
+    })
     return panel
   }
 
@@ -2682,9 +2711,11 @@ class GameView {
     // wait, on the coda offer / scoreboards, and at game over.
     const inPlay = s.phase === 'playing' || (s.phase === 'coda' && !!s.round && s.round.status === 'player-turn')
     this.infoBtnEl_.classList.toggle('is-hidden', !(inPlay || this.specShownAt_ !== null))
-    // The help button rides with the info button (in-play only), but hides while another modal —
-    // the spec sheet or the choose-upgrade card — owns the screen.
-    this.helpBtnEl_.classList.toggle('is-hidden', !inPlay || modal)
+    // The help button lives INSIDE the main powerup column, so it only belongs in normal play:
+    // during the coda that column is dormant (its powerups collapse) but stays mounted at the
+    // same top-left spot as the coda ability column, which paints over it — so a coda-visible
+    // help button would flash behind the coda abilities. Normal play only, hidden behind modals.
+    this.helpBtnEl_.classList.toggle('is-hidden', s.phase !== 'playing' || modal)
   }
 
   // The choose-upgrade card: a title and one big coloured button per upgrade path,
@@ -2816,16 +2847,25 @@ class GameView {
       this.ensureLoop_()
       return
     }
-    if (prevRound && !this.state_.round) {
+    // Enter this block on a round-clearing transition (Next hand, or a losing/coda-bust hand) AND
+    // on a New run restart from game-over — which can arrive with NO prior round: a Banker-coda
+    // CASH OUT ends at the prompt (round already null), so `prevRound` is null there. Gating on
+    // `prevRound` alone skipped the whole reset on a cash-out, leaving the dealer un-spawned, no
+    // deal queued, and a stale collectRound_ painting a ghost "bet" once run.coda clears.
+    if ((prevRound || prevPhase === 'over') && !this.state_.round) {
       // Next hand called: settle the deferred chips now (winners collect, losers pay
       // the house). What follows depends on whether the DEALER CHANGES. A same-dealer
       // hand gathers the spent cards back into the deck + riffles; a dealer SPAWN — a
       // kill, or a New run's reset — instead shreds the old cards into the new
       // dealer's mouth and flies in a fresh shrink-wrapped deck (the ceremony).
       this.collectRound_ = prevRound
-      this.chips_.clear(prevRound, t)
-      this.clearEnd_ = this.chips_.animEnd
-      this.clearPending_ = true
+      // A cash-out restart has no hand on the table (prevRound null) — no bet chips to sweep, and
+      // chips.clear(null) would throw — so only settle chips when a round actually resolved.
+      if (prevRound) {
+        this.chips_.clear(prevRound, t)
+        this.clearEnd_ = this.chips_.animEnd
+        this.clearPending_ = true
+      }
       // The win tokens were already awarded on the resolve (they flew in behind the
       // won chips). A New run (from 'over') just drops the withheld final reward.
       this.heldTokens_ = 0
@@ -2875,12 +2915,15 @@ class GameView {
         this.codaWins_ = 0
         this.codaCrystalValue_ = 0
         this.codaStakeTax_ = null
+        this.codaChoiceReadyAt_ = 0
       }
 
-      if (this.pendingAttack_ && prevPhase === 'resolved') {
+      if (this.pendingAttack_ && prevPhase === 'resolved' && prevRound) {
         // A win: the won chips first collect from the bet area into the player's stack
         // (chips.clear, above), THEN the laser fires — and only after that does the
-        // deck reset play, so the payout never animates during the attack.
+        // deck reset play, so the payout never animates during the attack. (`prevRound` is
+        // always set here — a 'resolved' prevPhase means a hand existed — but the check also
+        // narrows it non-null for TS now the block admits the round-less cash-out restart.)
         const pa = this.pendingAttack_
         this.pendingAttack_ = null
         const attackStart = this.chips_.animEnd + LASER_GAP
@@ -2926,9 +2969,10 @@ class GameView {
         // The old run's cards + deck were already shredded at game over — shred nothing,
         // just fly the fresh deck in.
         this.dealAfter_ = this.beginSpawn_(shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, false)
-      } else {
+      } else if (prevRound) {
         // No deferred damage (a losing/pushing hand): gather the cards right away and
-        // refresh the health + dealer state now.
+        // refresh the health + dealer state now. (Reached only with a round in hand — a
+        // round-less restart always took the `newRun` branch above; the guard narrows for TS.)
         this.anim_.collect(prevRound, t)
         this.pendingAttack_ = null
         this.dealAfter_ = 0
@@ -3553,21 +3597,25 @@ class GameView {
       if (gained > 0) {
         // A coda WIN just doubled the stake — the banker-hand-win scoreboard appears (left-
         // justified), the projected number ticks up to the new doubled total, and the Banker gives
-        // a slow hand-clap as it shows.
+        // a slow hand-clap as it shows — robotically re-voiced (playHandClap) to a metallic clank
+        // so it reads as the machine's mock applause, not a soundboard clip.
         this.holdScoreReward_(prevScore, gained, 1, this.anim_.animEnd)
         this.codaWonHand_ = true
-        sfx.play('hand-clap')
+        sfx.playHandClap()
         // Grow the glass pile in lockstep with the score roll: within a tier the banker slides
         // matching markers in (1→2→4→8), and on every 4th win the eight fuse into ONE marker of
         // the next, higher denomination (colour up) rather than overflowing the felt.
         const prevWins = this.codaWins_
         this.codaWins_ = prevWins + 1
         const start = this.anim_.animEnd
-        if (codaTier(this.codaWins_) > codaTier(prevWins)) {
-          this.codaCounters_.colourUp(codaPerTier(prevWins), codaTier(prevWins), codaTier(this.codaWins_), start)
-        } else {
-          this.codaCounters_.grow(codaPerTier(prevWins), codaPerTier(this.codaWins_), codaTier(this.codaWins_), start)
-        }
+        const counterEnd =
+          codaTier(this.codaWins_) > codaTier(prevWins)
+            ? this.codaCounters_.colourUp(codaPerTier(prevWins), codaTier(prevWins), codaTier(this.codaWins_), start)
+            : this.codaCounters_.grow(codaPerTier(prevWins), codaPerTier(this.codaWins_), codaTier(this.codaWins_), start)
+        // Freeze the prompt's choices until the scoreboard finishes: the top-right counter's roll
+        // (released at `start`, running rollDurationMs) AND the glass pot's grow/colour-up. Whichever
+        // ends later governs — a colour-up (implode + bloom) outlasts the number roll.
+        this.codaChoiceReadyAt_ = Math.max(counterEnd, start + CountTicker.rollDurationMs(gained))
       }
     }
 
@@ -3676,7 +3724,11 @@ class GameView {
       // swap the cost pill for a red ✕ (via the is-locked class, styled in CSS).
       const duelLocked = def.group === 'power' && s.abilitiesLocked
       button.classList.toggle('is-locked', duelLocked)
-      button.disabled = animating || duelLocked || (visible && !def.enabled(s))
+      // After a coda WIN, freeze the prompt's Double-or-nothing / Cash-out until the score roll +
+      // glass-pot animation settle (codaChoiceReadyAt) — no acting on a mid-update scoreboard.
+      const codaChoiceLocked =
+        (def.key === 'coda-double' || def.key === 'coda-cash') && timestamp < this.codaChoiceReadyAt_
+      button.disabled = animating || duelLocked || codaChoiceLocked || (visible && !def.enabled(s))
       // Flag a priced-out move (Double/Split disabled only for lack of chips). Hidden
       // while animating, or when the move is illegal for any other reason.
       const badge = this.nsfBadges_[def.key]

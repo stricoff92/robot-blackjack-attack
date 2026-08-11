@@ -17,6 +17,7 @@ import type { HandOutcome, Round } from '../game/round'
 import { BOTTOM_HUD_RESERVE, cardSize, COUNT_HOLO, drawHoloText, handCenterX, holoCountBox, playerCardBox, PLAYER_ROW } from './cards'
 import { chipImage } from './chip-sprite'
 import { smoothStep } from './easing'
+import { abbreviateCount } from './format'
 import type { HoloRayTarget } from './nexus'
 import { clampRightX, dealerBox, type Layout } from './scene'
 
@@ -207,7 +208,7 @@ export function drawChips(
   // decorative stacks still animate; only their numbers wait.
   if (!hideCounts) {
     const bl = bankrollLabelAnchor(l)
-    drawChipLabel(ctx, String(data.chips), bl.x, bl.y, now, bl.size, data.chipsScale ?? 1)
+    drawChipLabel(ctx, abbreviateCount(data.chips), bl.x, bl.y, now, bl.size, data.chipsScale ?? 1)
     projected.push(holoCountBox(bl.x, bl.y, bl.size))
   }
   // Where flying bet/winnings chips land and fade in: the crown of the pile.
@@ -259,8 +260,8 @@ function drawHandChips(
   // font) so they never touch, with rx*2.6 kept as the floor for small amounts.
   ctx.save()
   ctx.font = 'bold 18px system-ui, sans-serif'
-  const betLabelW = ctx.measureText(String(amount)).width
-  const winLabelW = ctx.measureText(String(winAmount)).width
+  const betLabelW = ctx.measureText(abbreviateCount(amount)).width
+  const winLabelW = ctx.measureText(abbreviateCount(winAmount)).width
   ctx.restore()
   const winGap = Math.max(m.rx * 2.6, betLabelW / 2 + winLabelW / 2 + 26)
   const winSpot: Point = { x: bet.x + winGap, y: bet.y }
@@ -272,14 +273,14 @@ function drawHandChips(
   const paintBet = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, betCount, m, CHIP_STYLE, alpha)
     if (label && !hideCounts) {
-      drawChipLabel(ctx, String(amount), x, belowY(y), now, 18)
+      drawChipLabel(ctx, abbreviateCount(amount), x, belowY(y), now, 18)
       boxes.push(holoCountBox(x, belowY(y), 18)) // ray target = exactly where this label was drawn
     }
   }
   const paintWin = (x: number, y: number, alpha: number, label = false): void => {
     drawChipStack(ctx, x, y, winCount, m, CHIP_STYLE, alpha)
     if (label && !hideCounts) {
-      drawChipLabel(ctx, String(winAmount), x, belowY(y), now, 18)
+      drawChipLabel(ctx, abbreviateCount(winAmount), x, belowY(y), now, 18)
       boxes.push(holoCountBox(x, belowY(y), 18))
     }
   }

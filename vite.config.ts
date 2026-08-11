@@ -10,6 +10,10 @@ export default defineConfig({
     host: true,
     port: 5173,
     strictPort: true,
+    // Vite's Host-header allow-list. `host: true` binds the LAN, but Vite still rejects an
+    // arbitrary hostname in the Host header — add the dev machine's LAN name so http://ra:5173
+    // works (default only permits localhost / IPs). Add 'ra.local' too if reaching it via mDNS.
+    allowedHosts: ['ra'],
   },
   build: {
     outDir: 'dest',

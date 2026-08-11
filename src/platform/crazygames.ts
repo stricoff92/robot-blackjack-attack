@@ -174,6 +174,48 @@ export function onMuteChange(listener: (muted: boolean) => void): void {
 
 const memoryStore = new Map<string, string>()
 
+// One-time guard so the "localStorage blew up" warning doesn't spam (saveValue runs every action).
+let storageWarned = false
+
+function warnStorageLost(op: string, e: unknown): void {
+  if (storageWarned) {
+    return
+  }
+  storageWarned = true
+  devLog(
+    `[crazygames] localStorage ${op} threw (${String(e)}) — falling back to an in-memory store, so the ` +
+      `in-progress run will NOT survive a reload. On iOS this is usually a Private Browsing tab, ` +
+      `Settings→Safari→Block All Cookies being ON, or opening the page in an in-app/webview browser ` +
+      `instead of Safari itself.`,
+  )
+}
+
+// Dev diagnostic: confirm the durable store actually persists, logged once at startup so a device
+// that silently drops saves (see warnStorageLost) is obvious in Web Inspector rather than presenting
+// as a mysterious missing Continue button. No-op in the production build.
+export function logStorageHealth(): void {
+  if (!import.meta.env.DEV) {
+    return
+  }
+  if (platformStore()) {
+    devLog('[crazygames] durable storage = SDK.data (on-platform)')
+    return
+  }
+  const probeKey = 'rba.__probe'
+  try {
+    window.localStorage.setItem(probeKey, '1')
+    const ok = window.localStorage.getItem(probeKey) === '1'
+    window.localStorage.removeItem(probeKey)
+    devLog(
+      ok
+        ? '[crazygames] durable storage = localStorage (OK — runs will persist across reloads)'
+        : '[crazygames] localStorage readback FAILED — saves will NOT persist (in-memory fallback)',
+    )
+  } catch (e) {
+    warnStorageLost('probe', e)
+  }
+}
+
 function platformStore(): CrazyDataStore | null {
   const s = sdk()
   return sdkReady && s?.environment === 'crazygames' ? s.data : null
@@ -190,7 +232,8 @@ export function loadValue(key: string): string | null {
   }
   try {
     return window.localStorage.getItem(key)
-  } catch {
+  } catch (e) {
+    warnStorageLost('getItem', e)
     return memoryStore.get(key) ?? null
   }
 }
@@ -207,7 +250,8 @@ export function saveValue(key: string, value: string): void {
   }
   try {
     window.localStorage.setItem(key, value)
-  } catch {
+  } catch (e) {
+    warnStorageLost('setItem', e)
     memoryStore.set(key, value)
   }
 }
@@ -224,7 +268,8 @@ export function removeValue(key: string): void {
   }
   try {
     window.localStorage.removeItem(key)
-  } catch {
+  } catch (e) {
+    warnStorageLost('removeItem', e)
     memoryStore.delete(key)
   }
 }

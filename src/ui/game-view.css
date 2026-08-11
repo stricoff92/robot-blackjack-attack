@@ -179,12 +179,12 @@
   box-shadow: 0 0 16px rgba(116, 236, 224, 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
 }
 
-/* The help button: an "H" twin of the info button, but it rides at the BOTTOM of the powerup
+/* The help button: a "?" twin of the info button, but it rides at the BOTTOM of the powerup
  * column as its last child, so it always sits right under the lowest visible ability button no
  * matter how many are showing. Scoped under .hud-powerups so it overrides the generic ability-
  * button chrome (.hud-powerups button); align-self keeps it a left-aligned circle instead of
  * stretching to the column width. Same teal-energy chrome as the info button; upright bold sans
- * so the H reads as a label, not the serif "i". Opens the ability guide (.help-panel). */
+ * so the "?" reads as a label, not the serif "i". Opens the ability guide (.help-panel). */
 .hud-powerups .hud-help {
   position: relative;
   align-self: flex-start;
@@ -208,6 +208,15 @@
   transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
 }
 
+/* Let the JS `is-hidden` toggle actually hide the help button. The base rule above is
+ * `.hud-powerups .hud-help` (specificity 0,2,0), which OUTRANKS the generic
+ * `button.is-hidden { display: none }` (0,1,1) — so without this the button's display:flex
+ * always won and is-hidden was a no-op, leaving it visible in the coda (over the banker's
+ * ability column) and other non-play contexts. This scoped rule (0,3,0) restores the hide. */
+.hud-powerups .hud-help.is-hidden {
+  display: none;
+}
+
 .hud-powerups .hud-help:hover {
   background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
   box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
@@ -229,6 +238,10 @@
   justify-content: center;
   padding: 20px;
   pointer-events: auto;
+  /* The whole panel is a tap-to-close target. cursor:pointer also makes iOS Safari treat
+     this non-interactive <div> as clickable so its `click` handler fires reliably (the
+     click, not pointerdown, is what dismisses it — see buildHelpPanel_). */
+  cursor: pointer;
   background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
   opacity: 1;
   transition: opacity 200ms ease;

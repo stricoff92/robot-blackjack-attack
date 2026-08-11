@@ -32,6 +32,13 @@
       #app {
         position: fixed;
         inset: 0;
+        /* Kill the mobile double-tap-to-zoom gesture across the whole game. iOS
+           Safari ignores viewport `user-scalable=no`, so this is what actually
+           stops a double-tap on a button/HUD element from zooming the page.
+           `manipulation` still allows normal taps/scroll; touch-action resolves up
+           the DOM ancestor chain, so this one rule covers every overlay control.
+           The canvas narrows it further to `none` in its own rule below. */
+        touch-action: manipulation;
       }
       canvas {
         display: block;

@@ -117,7 +117,9 @@ const SFX: Record<SfxName, SfxDef> = {
   // machine-stamped identical.
   footstep: { url: footstepUrl, gain: 0.6, rateVariance: 0.25 },
   // A slow hand-clap the Banker gives when the player wins a coda hand — fired as the
-  // banker-hand-win scoreboard appears. One distinct one-shot, so no rate jitter.
+  // banker-hand-win scoreboard appears. Played through playHandClap (a robotic re-voicing,
+  // see HAND_CLAP_*), NOT the plain play() path — this def just gets the sample decoded up
+  // front. gain/rateVariance here only apply if play('hand-clap') is used for A/B comparison.
   'hand-clap': { url: handClapUrl, gain: 0.7, rateVariance: 0 },
 }
 
@@ -132,6 +134,26 @@ const HEAL_GAIN = 0.2
 // the score counter as it climbs. Sustained, so kept quiet under the token-land pings.
 const POINTS_ROLL_GAIN = 0.15
 
+// The Banker's slow clap — a ROBOTIC re-voicing (playHandClap). The raw sample reads as a cheap
+// soundboard clap that doesn't fit the game, so each slap is run through a filter chain into a
+// metallic, servo-driven CLANK that matches the robot dealers. Every value is tunable — nudge to
+// taste (there's no way to A/B this by ear from code):
+//   RATE     — playback speed; < 1 pitches DOWN → heavier, slower, more mechanical.
+//   HP_HZ    — highpass cutoff; raise to strip the organic "boxy" body, lower to keep weight.
+//   BAND_HZ  — centre of the resonant metal body; BAND_Q — its ring (higher = more tin/clank).
+//   RING_HZ  — ring-modulator carrier, i.e. the robot timbre. Low (~120) = deep clank, high (~400) = buzzy.
+//   RING_MIX — 0 = filtered clap only, 1 = fully ring-modulated (most alien). ~0.5 keeps it a readable clap.
+//   DRIVE    — soft-clip grit for a digital edge; 0 = clean.
+// To hear the untreated sample for comparison, call sfx.play('hand-clap') instead of playHandClap().
+const HAND_CLAP_GAIN = 0.85
+const HAND_CLAP_RATE = 0.82
+const HAND_CLAP_HP_HZ = 320
+const HAND_CLAP_BAND_HZ = 1250
+const HAND_CLAP_BAND_Q = 6
+const HAND_CLAP_RING_HZ = 200
+const HAND_CLAP_RING_MIX = 0.5
+const HAND_CLAP_DRIVE = 0.2
+
 class SfxService {
   private ctx_: AudioContext | null = null
   // A master gain every sound routes through, so the platform mute (CrazyGames settings.muteAudio)
@@ -145,6 +167,9 @@ class SfxService {
   // held live so they can be ramped down — unlike the fire-and-forget one-shots.
   private shredVoices_: { gain: GainNode; sources: AudioScheduledSourceNode[] }[] = []
   private noise_: AudioBuffer | null = null
+  // Cached soft-clip curve for the robotic hand-clap's grit stage (HAND_CLAP_DRIVE is constant).
+  // Typed over ArrayBuffer (not ArrayBufferLike) to satisfy WaveShaperNode.curve's signature.
+  private clapCurve_: Float32Array<ArrayBuffer> | null = null
 
   constructor() {
     for (const name of Object.keys(SFX) as SfxName[]) {
@@ -374,6 +399,102 @@ class SfxService {
       osc.start(at)
       osc.stop(at + 0.34)
     })
+  }
+
+  // The Banker's slow clap, re-voiced ROBOTIC. Plays the decoded sample through a filter chain
+  // (see HAND_CLAP_*) so each slap lands as a metallic, servo-driven clank rather than the cheap
+  // organic clap of the raw file: pitched down for weight, high-passed + band-passed to a resonant
+  // metal body, part of it RING-MODULATED (multiply by a sine carrier — the classic robot timbre),
+  // with a touch of soft-clip grit. No-op until the sample has decoded. `delaySeconds` leads it.
+  playHandClap(delaySeconds = 0): void {
+    const ctx = this.ctx_
+    const buffer = this.buffers_.get('hand-clap')
+    if (!ctx || !buffer) {
+      return
+    }
+    if (ctx.state === 'suspended') {
+      void ctx.resume()
+    }
+    const t0 = ctx.currentTime + Math.max(0, delaySeconds)
+
+    const source = ctx.createBufferSource()
+    source.buffer = buffer
+    source.playbackRate.value = HAND_CLAP_RATE // < 1 → pitched down, heavier + more mechanical
+
+    // Strip the organic low "boxy" body, then band to a resonant metallic ring.
+    const hp = ctx.createBiquadFilter()
+    hp.type = 'highpass'
+    hp.frequency.value = HAND_CLAP_HP_HZ
+    const band = ctx.createBiquadFilter()
+    band.type = 'bandpass'
+    band.frequency.value = HAND_CLAP_BAND_HZ
+    band.Q.value = HAND_CLAP_BAND_Q
+
+    // A mild soft-clip for a harsh, digital edge (skipped when DRIVE = 0).
+    const shaper = ctx.createWaveShaper()
+    shaper.curve = this.clapDriveCurve_()
+    shaper.oversample = '2x'
+
+    // Output bus (mute-aware via master).
+    const out = ctx.createGain()
+    out.gain.value = HAND_CLAP_GAIN
+    out.connect(this.master_ ?? ctx.destination)
+
+    // Parallel dry + ring-modulated paths, crossfaded by RING_MIX. Ring modulation multiplies
+    // the signal by a sine carrier — implemented as a gain node whose gain (base 0) is driven by
+    // the oscillator's ±1 output, so its output = signal × carrier. That inharmonic product is the
+    // metallic "robot" timbre; the dry path keeps enough of the clap that it still reads as one.
+    const dry = ctx.createGain()
+    dry.gain.value = 1 - HAND_CLAP_RING_MIX
+    dry.connect(out)
+
+    const ring = ctx.createGain()
+    ring.gain.value = 0
+    const carrier = ctx.createOscillator()
+    carrier.type = 'sine'
+    carrier.frequency.value = HAND_CLAP_RING_HZ
+    carrier.connect(ring.gain)
+    const ringLevel = ctx.createGain()
+    ringLevel.gain.value = HAND_CLAP_RING_MIX
+    ring.connect(ringLevel).connect(out)
+
+    source.connect(hp)
+    hp.connect(band)
+    band.connect(shaper)
+    shaper.connect(dry)
+    shaper.connect(ring)
+
+    const stopAt = t0 + buffer.duration / HAND_CLAP_RATE + 0.05
+    carrier.start(t0)
+    carrier.stop(stopAt)
+    carrier.onended = () => carrier.disconnect()
+    source.start(t0)
+    source.onended = () => {
+      source.disconnect()
+      hp.disconnect()
+      band.disconnect()
+      shaper.disconnect()
+      dry.disconnect()
+      ring.disconnect()
+      ringLevel.disconnect()
+      out.disconnect()
+    }
+  }
+
+  // The waveshaper curve for the hand-clap's grit, built once and reused. A standard soft-clip:
+  // DRIVE 0 → effectively linear (no colour), higher → harder saturation.
+  private clapDriveCurve_(): Float32Array<ArrayBuffer> {
+    if (!this.clapCurve_) {
+      const n = 1024
+      const curve = new Float32Array(n)
+      const k = HAND_CLAP_DRIVE * 100
+      for (let i = 0; i < n; i += 1) {
+        const x = (i / (n - 1)) * 2 - 1
+        curve[i] = ((1 + k) * x) / (1 + k * Math.abs(x))
+      }
+      this.clapCurve_ = curve
+    }
+    return this.clapCurve_
   }
 
   // Begin the shredding bed: the shredder clip on a loop (so it covers a shred of any
