@@ -121,10 +121,9 @@ export function cardSize(l: Layout): { w: number; h: number } {
   return { w: h * CARD_RATIO, h }
 }
 
-// The player's card-box decal — the white rounded-rectangle outline on the felt that
-// the dealt cards sit in (drawn by chips.ts drawTableMarkings). Single source of truth
-// so the outline, and anything that aligns to it (the Analyze readout left-aligns to
-// its left edge), never drift apart.
+// The player's card-box region — the rectangle on the felt the dealt cards sit in.
+// No longer painted as a decal; kept as the single source of truth for anything that
+// aligns to the seat (the Analyze readout left-aligns to its left edge).
 export function playerCardBox(l: Layout): { x: number; y: number; w: number; h: number } {
   const { w: cardW, h: cardH } = cardSize(l)
   const cardTopY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW

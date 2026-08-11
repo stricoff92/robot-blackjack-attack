@@ -14,7 +14,7 @@
 // `ChipView` (the animator) reports. It never owns timing.
 
 import type { HandOutcome, Round } from '../game/round'
-import { BOTTOM_HUD_RESERVE, cardSize, COUNT_HOLO, drawHoloText, handCenterX, holoCountBox, playerCardBox, PLAYER_ROW } from './cards'
+import { BOTTOM_HUD_RESERVE, cardSize, COUNT_HOLO, drawHoloText, handCenterX, holoCountBox, PLAYER_ROW } from './cards'
 import { chipImage } from './chip-sprite'
 import { smoothStep } from './easing'
 import { abbreviateCount } from './format'
@@ -119,32 +119,6 @@ export function bankrollLabelAnchor(l: Layout): { x: number; y: number; size: nu
   const m = chipMetrics(l)
   const p = playerAnchor(l)
   return { x: p.x, y: p.y + m.ry + 30, size: 22 }
-}
-
-// White table markings, drawn on the table layer (under the chips + cards): a
-// betting circle where the bet chips sit, and a box where the player's cards are
-// dealt — the fixed markings of the single player seat (centered).
-export function drawTableMarkings(ctx: CanvasRenderingContext2D, l: Layout): void {
-  const cx = l.width / 2
-  const { w: cardW } = cardSize(l)
-
-  ctx.save()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.32)'
-  ctx.lineWidth = Math.max(3, cardW * 0.055)
-
-  // Card box: rounded rectangle around the dealt-card area.
-  const box = playerCardBox(l)
-  ctx.beginPath()
-  ctx.roundRect(box.x, box.y, box.w, box.h, cardW * 0.12)
-  ctx.stroke()
-
-  // Betting circle: an ellipse (matching the chips' perspective) at the bet base.
-  const m = chipMetrics(l)
-  const betY = betRowY(l)
-  ctx.beginPath()
-  ctx.ellipse(cx, betY, m.rx * 1.9, m.rx * 0.95, 0, 0, Math.PI * 2)
-  ctx.stroke()
-  ctx.restore()
 }
 
 // Every bet/winnings disc is worth CHIP_UNIT, so those stacks' heights reflect the

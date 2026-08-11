@@ -611,7 +611,8 @@
 
 button.is-hidden,
 .hud-powerups.is-hidden,
-.hud-actions.is-hidden {
+.hud-actions.is-hidden,
+.hud-points.is-hidden {
   display: none;
 }
 
@@ -814,12 +815,14 @@ button.is-hidden,
   .hud-tokens {
     top: 8px;
     left: 10px;
-    gap: 6px;
-    font-size: 21px;
+    gap: 5px;
+    padding: 4px 12px 2px 9px;
+    border-radius: 8px;
+    font-size: 18px;
   }
 
   .hud-tokens__icon {
-    height: 26px;
+    height: 22px;
     width: auto;
   }
 
@@ -829,15 +832,15 @@ button.is-hidden,
   }
 
   .hud-points__star {
-    height: 24px;
+    height: 20px;
   }
 
   .hud-points__count {
-    font-size: 27px;
+    font-size: 23px;
   }
 
   .hud-points__delta {
-    font-size: 23px;
+    font-size: 20px;
   }
 
   .hud-info {
@@ -894,9 +897,9 @@ button.is-hidden,
   }
 
   .hud-powerups button {
-    font-size: 12px;
-    padding: 4px 7px 19px; /* tighter top/side; bottom still clears the corner pill */
-    min-height: 38px;
+    font-size: 10.5px;
+    padding: 3px 5px 15px; /* tighter top/side; bottom still clears the corner pill */
+    min-height: 30px;
     border-radius: 8px;
   }
 
@@ -911,23 +914,23 @@ button.is-hidden,
   }
 
   .hud-coda-powers button {
-    font-size: 12px;
-    padding: 4px 7px 19px;
+    font-size: 10.5px;
+    padding: 3px 5px 15px;
     min-width: 96px;
-    min-height: 38px;
+    min-height: 30px;
     border-radius: 8px;
   }
 
   .cost-pill {
     right: 0;
     bottom: 0;
-    padding: 1px 5px;
-    font-size: 12px;
+    padding: 1px 4px;
+    font-size: 10px;
     border-radius: 8px 0 8px 0; /* match the mobile button's 8px corner */
   }
 
   .cost-pill__icon {
-    height: 15px;
+    height: 12px;
     width: auto;
   }
 

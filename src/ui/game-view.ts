@@ -14,9 +14,9 @@ import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../p
 import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, dealerCountAnchor, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, playerCountAnchor, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { onChipImageReady } from '../render/chip-sprite'
-import { drawChips, drawPlayerPile, drawTableMarkings } from '../render/chips'
+import { drawChips, drawPlayerPile } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
 import { abbreviateCount } from '../render/format'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
@@ -24,7 +24,7 @@ import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } fro
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
-import { drawScoreSheet, drawScoreTitle, SCORE_LEFT_SHIFT, type ScoreReadout } from '../render/score-sheet'
+import { drawScoreSheet, drawScoreTitle, scoreBoardPlacement, SCORE_LEFT_SHIFT, type ScoreReadout } from '../render/score-sheet'
 import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
 import { drawCodaStake, type CodaTaxBreakdown } from '../render/coda-stake'
 import { drawCodaCounters } from '../render/coda-counters'
@@ -530,6 +530,9 @@ class GameView {
   // the "+N" delta that flashes underneath each time it starts ticking.
   private pointsCountEl_!: HTMLElement
   private pointsDeltaEl_!: HTMLElement
+  // The points counter's outer container (top-right), toggled hidden during the Banker coda —
+  // the score is fixed once the coda starts, so the corner readout just adds clutter there.
+  private pointsEl_!: HTMLElement
   // The star + number row — the swell transform rides this so the star pumps with the count
   // (and the delta, a sibling of the row, isn't dragged by it).
   private pointsRowEl_!: HTMLElement
@@ -891,13 +894,11 @@ class GameView {
     this.syncScorePager_()
   }
 
-  // Repaint the table layer (felt + rail + betting-spot markings), optionally
-  // with the static deck.
+  // Repaint the table layer (felt + rail), optionally with the static deck.
   private paintTable_(canvas: LayeredCanvas, layout: Layout, withDeck: boolean): void {
     const ctx = canvas.layers.table.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
     this.scene_.drawTable(ctx, layout)
-    drawTableMarkings(ctx, layout)
     // The nexus device (damage + tokens originate from it) floats in a hover, so it's
     // NOT drawn here on the static table — it rides the per-frame fx layer (drawFx).
     if (withDeck) {
@@ -2625,10 +2626,10 @@ class GameView {
   }
 
   // Show/position the page pager and reflect the current page. Called on every overlay sync, on
-  // resize, and on a page flip. The pager is anchored to a FIXED y — just below the summary band's
-  // lower edge, which is page-independent (the board always fits within the band) — so it never
-  // shifts as the two pages' differing row counts change the board's height. Centred under the
-  // board (matching its slight left shift on the coda-ending boards). Position is written only
+  // resize, and on a page flip. The pager anchors to scoreBoardPlacement().pagerY — the slot the
+  // board reserves just beneath itself — which is page-independent (placed off the taller page), so
+  // it never shifts as the two pages' differing row counts change the board's height. Centred under
+  // the board (matching its slight left shift on the coda-ending boards). Position is written only
   // when it changes, like the counters, so a settled screen isn't rewriting layout each sync.
   private syncScorePager_(): void {
     if (!this.scorePagerEl_) {
@@ -2646,10 +2647,8 @@ class GameView {
       ;(dots[i] as HTMLElement).classList.toggle('is-active', i === this.scorePage_)
     }
     const layout = computeLayout(this.stage_.canvas.width, this.stage_.canvas.height)
-    const dc = dealerCountAnchor(layout)
-    const bandBottom = playerCountAnchor(layout, 1, 0).y - dc.size * 0.7
     const cx = layout.width / 2 - (this.state_.run.coda ? Math.min(layout.width, layout.height) * SCORE_LEFT_SHIFT : 0)
-    const top = bandBottom + dc.size * 0.6
+    const top = scoreBoardPlacement(layout).pagerY
     const pos = `${Math.round(cx)},${Math.round(top)}`
     if (pos !== this.lastPagerPos_) {
       this.scorePagerEl_.style.left = `${cx}px`
@@ -2705,6 +2704,10 @@ class GameView {
     const over = s.phase === 'over' && this.scoreRevealed_
     this.powersEl_.classList.toggle('is-hidden', modal || over)
     this.actionsEl_.classList.toggle('is-hidden', modal)
+    // The top-right score counter hides for the whole Banker coda: the score is locked in by then
+    // (the coda only stakes it double-or-nothing), so the corner readout is redundant there — the
+    // stake panel already shows the number in play. It returns on the game-over score screen.
+    this.pointsEl_.classList.toggle('is-hidden', s.phase === 'coda')
     // The info button rides with the Hit/Stand prompt ONLY — visible while the player has a live
     // hand to act on (main play, or a coda double-or-nothing hand at player-turn), or while its own
     // spec sheet is still open (so it can be toggled off). Hidden between rounds, at the betting
@@ -2788,6 +2791,7 @@ class GameView {
   // the delta is a sibling, so it isn't dragged by the count's swell transform.
   private buildPointsCounter_(): HTMLElement {
     const el = element('div', 'hud-points')
+    this.pointsEl_ = el
     this.pointsRowEl_ = element('div', 'hud-points__row')
     this.pointsCountEl_ = element('div', 'hud-points__count')
     // Star TRAILS the number as its points unit ("512,000 ★") — matches the coda banner, and

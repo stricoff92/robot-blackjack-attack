@@ -4,16 +4,19 @@
 // double-or-nothing offer, render/coda-stake.ts), which are still mid-run.
 //
 // Once the ending hand's cards have been sucked into the dealer's mouth and shredded, the table
-// nexus's holo projector casts a run summary into the clear band between the two hands' counts —
-// the same projection the RULES spec sheet and Analyze readout use. A "GAME OVER" heading over a
-// stack of label/value rows (points, hands played, win/loss, tokens spent, free doubles), all
-// projected LIGHT: no panel or frame. It flickers in on a strike ramp, shrinks to fit the band,
-// and returns its text box so drawHoloProjection fans the holo lens's rays onto it.
+// nexus's holo projector casts a run summary onto the clear felt — the same projection the RULES
+// spec sheet and Analyze readout use. A "GAME OVER" heading over a stack of label/value rows
+// (points, hands played, win/loss, tokens spent, free doubles), all projected LIGHT: no panel or
+// frame. It flickers in on a strike ramp and returns its text box so drawHoloProjection fans the
+// holo lens's rays onto it. Type is sized to match the BANKER scoreboards (coda-stake.ts): the old
+// board floored rows at 12px and then shrank them to fit the thin gap between the two hand counts,
+// so it read at ~half the coda's size (worst on iOS); scoreBoardPlacement now spans the whole clear
+// felt during 'over' (the cards are gone) so the rows keep their full, coda-parity size.
 //
 // Render-only, mirroring spec-sheet.ts: the game builds the ScoreReadout (pure strings,
 // import-free of the run types) and this paints it.
 
-import { dealerCountAnchor, drawHoloText, holoFlicker, playerCountAnchor, type HoloTextStyle } from './cards'
+import { BOTTOM_HUD_RESERVE, dealerCountAnchor, drawHoloText, holoFlicker, type HoloTextStyle } from './cards'
 import { nexusHoloLight, type HoloRayTarget } from './nexus'
 import { feltTopEdgeY, type Layout } from './scene'
 import { measureTitleWidest, titleFont, TITLE_LINES, TITLE_RED } from './title-font'
@@ -57,6 +60,59 @@ function monoFont(px: number, weight = 700): string {
 // pager (game-view) can sit under the same shifted centre.
 export const SCORE_LEFT_SHIFT = 0.08
 
+// The DOM score pager (‹ • • ›) sits just under the board; reserve its button height (game-view.css
+// .hud-score-pager__btn) so the board leaves room for it. Kept in sync with that CSS.
+export const SCORE_PAGER_H = 34
+
+// Coda-parity type sizes: rows track the banker scoreboards (coda-stake.ts rows are
+// clamp(scale*0.03, 17, 32)); the heading a step larger. The old board used scale*0.02 floored at
+// 12px — under the coda's 17px floor on every phone — then shrank further to fit the count gap.
+function scoreSizes(scale: number): { titlePx: number; heroPx: number; rowPx: number } {
+  return {
+    titlePx: clamp(scale * 0.041, 20, 34),
+    heroPx: clamp(scale * 0.035, 18, 30),
+    rowPx: clamp(scale * 0.03, 17, 24),
+  }
+}
+
+// The natural (pre-fit) height of a board with `rows` label/value rows and an optional hero line —
+// the heading block, its gap, the hero block + gap, then the rows. Mirrors the vertical stack drawn
+// in drawScoreSheet, so scoreBoardPlacement can reserve exactly the room the board will occupy.
+function scoreContentH(rows: number, hasHero: boolean, s: { titlePx: number; heroPx: number; rowPx: number }): number {
+  const titleBlock = s.titlePx * 1.5
+  const titleGap = s.rowPx * 0.9
+  const heroBlock = hasHero ? s.heroPx * 1.5 : 0
+  const heroGap = hasHero ? s.rowPx * 0.8 : 0
+  const rowH = s.rowPx * 1.7
+  return titleBlock + titleGap + heroBlock + heroGap + rows * rowH
+}
+
+// Where the final scoreboard sits vertically, and how much it's scaled to fit. The old board squeezed
+// into the thin gap BETWEEN the two hand counts, leaving the lower half of the felt unused; this uses
+// the whole clear felt during 'over' (the cards are gone): from just under the game-title wordmark
+// down to the bottom action bar, reserving room for the DOM pager beneath the board.
+//
+// The board + pager are centred as one group in that region, so the whitespace above and below reads
+// evenly. Both are placed off a REFERENCE height (the taller of the two pager pages), NOT the live
+// page's — so `centerY` / `pagerY` don't shift when the player flips ‹ ›. `f` (≤ 1) only shrinks on a
+// short felt (e.g. a landscape phone); on every portrait phone it's 1, so rows render at full size.
+// Exported so the DOM pager (game-view) anchors to the same `pagerY` the board leaves room for.
+export function scoreBoardPlacement(l: Layout): { centerY: number; f: number; pagerY: number } {
+  const dc = dealerCountAnchor(l)
+  const scale = Math.min(l.width, l.height)
+  const s = scoreSizes(scale)
+  const regionTop = dc.y + dc.size * 0.7 // just below the wordmark's home (drawScoreTitle)
+  const regionBottom = l.height - BOTTOM_HUD_RESERVE // clear of the bottom action bar ("New run")
+  const available = Math.max(1, regionBottom - regionTop)
+  // Reference = the taller page, so placement is page-independent. Mirrors game-view's two pages:
+  // buildSummary_ (5 rows, no hero) and buildPerformance_ (a hero line + 3 rows) — keep in sync.
+  const refH = Math.max(scoreContentH(5, false, s), scoreContentH(3, true, s))
+  const pagerGap = dc.size * 0.7
+  const f = Math.min(1, (available - pagerGap - SCORE_PAGER_H) / refH)
+  const groupTop = regionTop + (available - (refH * f + pagerGap + SCORE_PAGER_H)) / 2
+  return { centerY: groupTop + (refH * f) / 2, f, pagerY: groupTop + refH * f + pagerGap }
+}
+
 // Draw the score summary and RETURN its text box (one ray-target, so the holo lens fans
 // one clean beam onto it). `age` is ms since it appeared (the strike-in), `fade` winds it
 // out on dismiss, `now` positions the shared flicker. `shiftLeft` nudges the board slightly
@@ -70,30 +126,21 @@ export function drawScoreSheet(
   now = 0,
   shiftLeft = false,
 ): HoloRayTarget[] {
-  // The clear band between the two counts — the same one the Analyze / RULES readouts use.
-  const dc = dealerCountAnchor(l)
-  const pc = playerCountAnchor(l, 1, 0)
-  const countPx = dc.size
-  const bandTop = dc.y + countPx * 0.7
-  const bandBottom = pc.y - countPx * 0.7
-  const bandH = Math.max(1, bandBottom - bandTop)
-  const bandMid = (bandTop + bandBottom) / 2
-  const cx = l.width / 2 - (shiftLeft ? Math.min(l.width, l.height) * SCORE_LEFT_SHIFT : 0)
-
   const scale = Math.min(l.width, l.height)
-  const titlePx = clamp(scale * 0.03, 16, 28)
-  const rowPx = clamp(scale * 0.02, 12, 19)
-  // The centered hero line (if any) sits between the heading and the rows — larger than a row.
-  const heroPx = clamp(scale * 0.026, 14, 24)
-  // Size the row column to its CONTENT — the widest label, a readable gap, the widest value
-  // — rather than a fixed slab of screen width. The old fixed column (70% of width) left a
-  // cavern between the short labels and shorter values, and on mobile pushed the board's
-  // right edge up against the mid-right table nexus, so the holo lens raked its rays across
-  // a box that nearly touched it. A snug column both closes that gap and pulls the right
-  // edge inward, clear of the nexus, so the projected ray fan reads cleanly. Widths are
-  // measured at the unscaled rowPx/titlePx — text width scales linearly, so the ×f below
-  // stays exact. The column also stays wide enough to span the centred heading (so its ray
-  // fan covers the whole readout), and is capped so it can't clip on a very narrow screen.
+  const s = scoreSizes(scale)
+  // Vertical home + shared shrink factor, centred on the clear felt and page-independent (so a ‹ ›
+  // flip doesn't nudge the board). `f` is 1 on every portrait phone (rows at full size).
+  const { centerY, f } = scoreBoardPlacement(l)
+  const cx = l.width / 2 - (shiftLeft ? scale * SCORE_LEFT_SHIFT : 0)
+
+  // Type sizes: the shared vertical fit `f`, then a WIDTH fit (`fw`) so the row column never
+  // overruns the felt — measured at these sizes (text width scales linearly). The column is sized to
+  // its CONTENT (widest label, a readable gap, widest value), not a fixed slab, and capped at the
+  // same width the old board used so the box stays clear of the mid-right nexus and its ray fan reads
+  // cleanly. `fw` shrinks the type (rather than clipping the column) if the content is too wide.
+  let titlePx = s.titlePx * f
+  let heroPx = s.heroPx * f
+  let rowPx = s.rowPx * f
   ctx.font = monoFont(rowPx)
   let labelW = 0
   let valueW = 0
@@ -108,55 +155,48 @@ export function drawScoreSheet(
     ctx.font = monoFont(heroPx, 800)
     heroW = ctx.measureText(readout.hero).width
   }
-  const rowsW = labelW + rowPx * LABEL_VALUE_GAP + valueW
-  const contentW = Math.min(Math.max(rowsW, titleW, heroW), l.width * 0.9, 360)
+  const naturalW = Math.max(labelW + rowPx * LABEL_VALUE_GAP + valueW, titleW, heroW)
+  const widthBudget = Math.min(l.width * 0.9, 360)
+  const fw = Math.min(1, widthBudget / Math.max(1, naturalW))
+  titlePx *= fw
+  heroPx *= fw
+  rowPx *= fw
+  const cW = naturalW * fw
 
-  // Vertical budget: the heading block, a gap, an optional centered hero line + its gap, then the
-  // label/value rows. Shrink to fit the band so it never spills into the counts.
+  // Vertical stack: the heading block, a gap, an optional centered hero line + its gap, then the
+  // label/value rows — centred on `centerY` (must mirror scoreContentH, which reserves its room).
   const titleBlock = titlePx * 1.5
   const titleGap = rowPx * 0.9
   const heroBlock = readout.hero ? heroPx * 1.5 : 0
   const heroGap = readout.hero ? rowPx * 0.8 : 0
   const rowH = rowPx * 1.7
-  const contentH = titleBlock + titleGap + heroBlock + heroGap + readout.rows.length * rowH
-  const f = Math.min(1, bandH / contentH)
-
-  const tPx = titlePx * f
-  const hPx = heroPx * f
-  const rPx = rowPx * f
-  const tBlock = titleBlock * f
-  const tGap = titleGap * f
-  const hBlock = heroBlock * f
-  const hGap = heroGap * f
-  const rH = rowH * f
-  const cW = contentW * f
-  const totalH = tBlock + tGap + hBlock + hGap + readout.rows.length * rH
+  const totalH = titleBlock + titleGap + heroBlock + heroGap + readout.rows.length * rowH
 
   const presence = clamp01(age / SCORE_STRIKE_MS) * fade
 
   ctx.save()
   ctx.globalAlpha = presence
 
-  let y = bandMid - totalH / 2
-  holoCentered(ctx, readout.title, cx, y + tBlock / 2, tPx, HEAD, now, 800)
-  y += tBlock + tGap
+  const top = centerY - totalH / 2
+  let y = top
+  holoCentered(ctx, readout.title, cx, y + titleBlock / 2, titlePx, HEAD, now, 800)
+  y += titleBlock + titleGap
 
   // The centered hero line (e.g. the star rating), drawn label-less in the amber value tone.
   if (readout.hero) {
-    holoCentered(ctx, readout.hero, cx, y + hBlock / 2, hPx, AMBER, now, 800)
-    y += hBlock + hGap
+    holoCentered(ctx, readout.hero, cx, y + heroBlock / 2, heroPx, AMBER, now, 800)
+    y += heroBlock + heroGap
   }
 
   const left = cx - cW / 2
   const right = cx + cW / 2
   for (const row of readout.rows) {
-    drawRow(ctx, left, right, y + rH / 2, rPx, row, now)
-    y += rH
+    drawRow(ctx, left, right, y + rowH / 2, rowPx, row, now)
+    y += rowH
   }
 
   ctx.restore()
 
-  const top = bandMid - totalH / 2
   // clampToNexus: the final scoreboard — keep its fan left of the lens (no right-of-nexus spill).
   return [{ left, right, top, bottom: top + totalH, clampToNexus: true }]
 }
