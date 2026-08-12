@@ -309,6 +309,122 @@
   color: rgba(150, 236, 226, 0.6);
 }
 
+/* Viewport guard: a full-screen blocker shown when the screen is too SHORT to fit the control
+ * layout (the ability column + its "?" help button + the "i" info button). Sits above EVERYTHING —
+ * the title menu (z 20), the upgrade card (5), the help panel (6) — and eats all pointer input so
+ * play can't continue behind a clipped UI. Two states (rotate / too-small) share this shell; the
+ * JS swaps the glyph + text. See src/ui/viewport-guard.ts. */
+.viewport-guard {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto; /* block the canvas + HUD underneath */
+  /* Opaque: a solid base under a teal-tinted vignette, so the (bright) canvas world it's covering is
+     fully hidden — a blocker that let the broken UI show through would defeat its own purpose. Kept
+     as separate color + image (not the `<gradient>, <color>` shorthand, which some engines drop). */
+  background-color: #05080c;
+  background-image: radial-gradient(ellipse at center, rgba(9, 18, 24, 0.7), rgba(3, 6, 9, 0.85));
+  opacity: 1;
+  transition: opacity 220ms ease;
+}
+
+.viewport-guard.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.viewport-guard__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: min(420px, 88vw);
+  padding: 30px 26px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1.5px solid rgba(116, 236, 224, 0.4);
+  background: linear-gradient(rgba(16, 34, 39, 0.94), rgba(9, 20, 25, 0.94));
+  box-shadow: 0 0 30px rgba(116, 236, 224, 0.3), inset 0 0 20px rgba(116, 236, 224, 0.08);
+}
+
+.viewport-guard__glyph {
+  width: 72px;
+  height: 72px;
+  color: rgba(150, 246, 236, 0.95);
+  filter: drop-shadow(0 0 10px rgba(116, 236, 224, 0.5));
+}
+
+.viewport-guard__glyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-guard__title {
+  font: 800 22px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.08em;
+  color: rgba(200, 248, 243, 0.98);
+  text-shadow: 0 0 12px rgba(116, 236, 224, 0.5);
+}
+
+.viewport-guard__body {
+  font: 500 15px system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+  color: rgba(214, 240, 238, 0.86);
+}
+
+/* Escape hatch: intentionally muted (a small underlined link) so it reads as a last resort, not the
+ * primary action — but always present so a guard misfire / rotation-locked device can never lock a
+ * player out entirely. */
+.viewport-guard__dismiss {
+  margin-top: 2px;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: rgba(150, 236, 226, 0.55);
+  font: 600 12.5px system-ui, -apple-system, sans-serif;
+  letter-spacing: 0.03em;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 0.12s ease;
+}
+
+.viewport-guard__dismiss:hover {
+  color: rgba(184, 246, 238, 0.92);
+}
+
+/* Short screens (the very case this modal exists for): shrink so the card itself never overflows. */
+@media (max-height: 430px) {
+  .viewport-guard__card {
+    gap: 10px;
+    padding: 18px 22px;
+  }
+
+  .viewport-guard__glyph {
+    width: 48px;
+    height: 48px;
+  }
+
+  .viewport-guard__title {
+    font-size: 18px;
+  }
+
+  .viewport-guard__body {
+    font-size: 13px;
+  }
+
+  .viewport-guard__dismiss {
+    font-size: 12px;
+    padding: 4px 12px;
+  }
+}
+
 /* The final scoreboard's page pager (‹ • • ›): a holo-cyan control row, its left/top set inline
  * from the band coords (syncScorePager) and centred on that anchor. Fixed just below the summary
  * band, so it holds still as the two pages' differing heights change the board above it. */
@@ -783,9 +899,14 @@ button.is-hidden,
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-/* Mobile: smaller buttons + tighter padding; keep the action bar to one row so
- * it stays a thin strip below the raised powerup column. */
-@media (max-width: 560px) {
+/* Compact layout: smaller buttons + tighter padding. Applies when the viewport is NARROW (portrait
+ * phones) OR SHORT (a wide-but-short window / landscape phone). A short viewport can't fit the roomy
+ * desktop column; shrinking to this compact layout lets it play in that orientation without a
+ * rotate / too-small prompt. The 620px height is comfortably above the ~580px the desktop column
+ * needs, so the roomy layout is only used when it genuinely fits. The viewport guard measures the
+ * resulting column and mirrors this same breakpoint, so the two stay in sync. Keep the action bar to
+ * one row so it stays a thin strip below the raised powerup column. */
+@media (max-width: 560px), (max-height: 620px) {
   .hud-tokens {
     top: 8px;
     left: 10px;

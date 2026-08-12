@@ -42,9 +42,19 @@ export function shoeStackExtent(w: number, h: number): { dx: number; dy: number 
   return { dx: w * SHOE_DX * SHOE_LAYERS, dy: h * SHOE_DY * SHOE_LAYERS }
 }
 
-// Player cards' top edge, as a fraction of felt height below the felt top. Lowered to 0.55 now that
-// chips are gone (freed bottom space) — this also grows the mid-table band the readouts project in.
-export const PLAYER_ROW = 0.55
+// Player cards' top edge, as a fraction of felt height below the felt top. 0.55 on a roomy screen
+// (chips are gone, so the lower felt is free and the cards sit low-centre, which also grows the
+// mid-table band the readouts project in). On a SHORT screen it eases UP toward 0.50 — an iPhone SE
+// in Safari loses ~110px of height to the URL + toolbar, and the Banker-coda winnings pot (up to 2
+// rows of markers, bottom-aligned above the action bar) then rides up under the cards. Lifting the
+// cards a touch opens that room back up so the pot clears them. Tall screens (desktop, a phone in a
+// fullscreen game) keep the exact 0.55 — the ease only engages once height gets scarce.
+const PLAYER_ROW_TALL_H = 640
+const PLAYER_ROW_SHORT_H = 500
+export function playerRow(l: Layout): number {
+  const t = clamp((PLAYER_ROW_TALL_H - l.height) / (PLAYER_ROW_TALL_H - PLAYER_ROW_SHORT_H), 0, 1)
+  return 0.55 - 0.05 * t
+}
 
 // The dealer cards' top edge. Anchored to the CURVED felt top near the dealer (not to
 // edgeY, the felt's SIDE edge — which sits a whole curveDepth lower, leaving the cards
@@ -75,9 +85,19 @@ export function handBandCenterY(l: Layout): number {
 
 // Bottom-of-felt reservation the player cards must sit clear ABOVE: the HTML action bar (Hit/Stand/…
 // at bottom:20px + ~56px button ≈ 76px) plus a small margin. Chips are gone, so this no longer
-// reserves a bet-stack band. Also lifts the game-over scoreboard + coda counters off the bottom
-// (score-sheet.ts / coda-counters.ts read it).
+// reserves a bet-stack band. Also lifts the game-over scoreboard off the bottom (score-sheet.ts).
 export const BOTTOM_HUD_RESERVE = 84
+
+// The REAL height the bottom action bar occupies, which is what the Banker-coda winnings pot bottom-
+// aligns just above (coda-counters.ts). The compact (phone) CSS makes the bar much shorter than the
+// desktop one — bottom:12 + 32px min-height ≈ 44px, vs bottom:20 + 40px ≈ 60px — so the fat
+// BOTTOM_HUD_RESERVE (sized for the scoreboard, with generous margin) wastes ~30px of felt on a
+// phone, exactly where the coda pot is starved for room. Mirror the game-view.css compact breakpoint
+// (max-width:560 OR max-height:620) so the pot reclaims that space where the bar is actually small.
+export function actionBarReserve(l: Layout): number {
+  const compact = l.width <= 560 || l.height <= 620
+  return compact ? 56 : BOTTOM_HUD_RESERVE
+}
 
 // Per-card animation state, supplied by the deal animator.
 export interface CardState {
@@ -124,7 +144,7 @@ export function cardSize(l: Layout): { w: number; h: number } {
   const byWidth = (l.width * 0.14) / CARD_RATIO
   // Third limit — the vertical budget: the player cards must fit ABOVE the reserved action-bar band
   // at the bottom. Binds only on wide/short screens (elsewhere byHeight/byWidth bind).
-  const playerY = l.edgeY + feltH * PLAYER_ROW
+  const playerY = l.edgeY + feltH * playerRow(l)
   const byBottom = l.height - BOTTOM_HUD_RESERVE - playerY
   const h = clamp(Math.min(byHeight, byWidth, byBottom), 48, 180)
   return { w: h * CARD_RATIO, h }
@@ -135,7 +155,7 @@ export function cardSize(l: Layout): { w: number; h: number } {
 // aligns to the seat (the Analyze readout left-aligns to its left edge).
 export function playerCardBox(l: Layout): { x: number; y: number; w: number; h: number } {
   const { w: cardW, h: cardH } = cardSize(l)
-  const cardTopY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const cardTopY = l.edgeY + (l.height - l.edgeY) * playerRow(l)
   const w = cardW * 1.85
   const h = cardH * 1.18
   return { x: l.width / 2 - w / 2, y: cardTopY + cardH / 2 - h / 2, w, h }
@@ -181,7 +201,7 @@ export function playerCardCenter(l: Layout, round: Round, handIndex: number, car
   const scale = handCardScale(l, count)
   const w = cardW * scale
   const h = cardH * scale
-  const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const playerY = l.edgeY + (l.height - l.edgeY) * playerRow(l)
   const centerX = handCenterX(l, handIndex, count)
   const xs = rowXs(centerX, round.hands[handIndex].cards.length, w)
   const left = xs[cardIndex] ?? centerX - w / 2
@@ -194,7 +214,7 @@ export function playerHandCenter(l: Layout, round: Round, handIndex: number): { 
   const count = round.hands.length
   const { h: cardH } = cardSize(l)
   const h = cardH * handCardScale(l, count)
-  const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const playerY = l.edgeY + (l.height - l.edgeY) * playerRow(l)
   return { x: handCenterX(l, handIndex, count), y: playerY + h / 2 }
 }
 
@@ -223,7 +243,7 @@ export function tableCards(l: Layout, round: Round): TableCard[] {
     out.push({ card, cx: dealerXs[i] + cardW / 2, cy: dealerY + cardH / 2, w: cardW, h: cardH })
   })
 
-  const playerY = feltTop + feltHeight * PLAYER_ROW
+  const playerY = feltTop + feltHeight * playerRow(l)
   const count = round.hands.length
   const scale = handCardScale(l, count)
   const w = cardW * scale
@@ -278,7 +298,7 @@ export function drawHands(
   }
 
   // Player hand(s): the total goes ABOVE the cards.
-  const playerY = feltTop + feltHeight * PLAYER_ROW
+  const playerY = feltTop + feltHeight * playerRow(l)
   const count = round.hands.length
   const scale = handCardScale(l, count)
   const w = cardW * scale
@@ -526,7 +546,7 @@ export function playerCountAnchor(l: Layout, count: number, hi: number): { x: nu
   const feltTop = l.edgeY
   const feltHeight = l.height - feltTop
   const { h: cardH } = cardSize(l)
-  return { x: handCenterX(l, hi, count), y: feltTop + feltHeight * PLAYER_ROW - cardH * 0.34, size: clamp(cardH * 0.2, 20, 28) }
+  return { x: handCenterX(l, hi, count), y: feltTop + feltHeight * playerRow(l) - cardH * 0.34, size: clamp(cardH * 0.2, 20, 28) }
 }
 
 // A hand's total, big and centered on `centerX` (so the two hands' counts line
@@ -789,7 +809,7 @@ export function drawMulliganDiscard(ctx: CanvasRenderingContext2D, l: Layout, fr
   }
   const dpr = deviceDpr()
   const { w, h } = cardSize(l)
-  const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const playerY = l.edgeY + (l.height - l.edgeY) * playerRow(l)
   const xs = rowXs(l.width / 2, frames.length, w)
   // Sweep target: the dealer figure's torso (centred), as a top-left for the card
   // size so the card lands centred on the dealer.
@@ -862,7 +882,7 @@ export function drawBustBlock(
   const scale = handCardScale(l, count)
   const w = cardW * scale
   const h = cardH * scale
-  const playerY = l.edgeY + (l.height - l.edgeY) * PLAYER_ROW
+  const playerY = l.edgeY + (l.height - l.edgeY) * playerRow(l)
   const centerX = handCenterX(l, handIndex, count)
   // Slot it among the hand's cards, matching rowXs' overlap — but extended so the
   // index can sit one past the last card (rowXs itself stops at the hand's end).

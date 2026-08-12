@@ -12,7 +12,7 @@
 
 import { deviceDpr } from './canvas'
 import { smoothEnd3, smoothStart2, smoothStep } from './easing'
-import { BOTTOM_HUD_RESERVE, cardSize } from './cards'
+import { actionBarReserve, cardSize, playerRow } from './cards'
 import type { Point } from './tokens'
 import { dealerBox, type Layout } from './scene'
 import { createSpriteCanvas } from './sprite-canvas'
@@ -54,10 +54,15 @@ const BOTTOM_MARGIN = 10 // gap kept above the HTML action bar
 const HORIZ_BUDGET = 0.9 // max fraction of the felt width a row may span (tightened only if huge)
 // How much the rows' GLASS bodies overlap vertically (fraction of the crystal-body height): the
 // front row tucks up over the back one by this much. Measured on the glass, not the base+glass
-// footprint. Full-size either way — never shrink.
+// footprint.
 const GLASS_OVERLAP = 0.33
 const TIER_GROWTH = 0.14 // each tier is this much larger (capped a few tiers up)
 const TIER_MULT = 16 // one marker of tier t is worth 16^t base units (fill-to-8 colour-up)
+// The vertical gap kept between the player-card row above and the top of a full two-row pot.
+const FIT_GAP = 6
+// A uniform per-tier shrink (fitScale) never drops a marker below this fraction of full size — on an
+// extreme short viewport it's better for the pot to kiss the cards than become an unreadable speck.
+const FIT_FLOOR = 0.62
 
 interface Dims {
   bodyW: number
@@ -73,9 +78,33 @@ function tierScale(tier: number): number {
   return 1 + TIER_GROWTH * Math.min(tier, 4)
 }
 
-function crystalDims(l: Layout, tier: number): Dims {
+// A UNIFORM shrink applied to every marker of a tier so a FULL two-row pot (up to 8 markers = 2 rows
+// of 4) clears the player-card row above it, even where the usable height is short (Safari's URL +
+// menu bars eat ~110px on an iPhone SE). Keyed on the LAYOUT + TIER ONLY — never the live marker
+// count — so a tier's markers are always the SAME size whether the pot currently shows 1 or 8; the
+// size never jumps as the pot fills within a tier (the "don't shrink 8-to-fit-the-count" rule the
+// two-rows-of-4 layout was built for). Returns 1.0 (full size) whenever the two rows already fit —
+// which, thanks to the lifted cards + reclaimed action-bar band, they do at an iPhone SE's real
+// Safari height — so this only bites on a genuinely tiny viewport, and even then no lower than
+// FIT_FLOOR. Sizing for TWO rows regardless of the current count is what keeps the size stable.
+function fitScale(l: Layout, tier: number): number {
   const { h: cardH } = cardSize(l)
   const s = tierScale(tier)
+  // Natural (unshrunk) two-row grid height for this tier — mirrors crystalDims + codaCounterGrid.
+  const bodyH = cardH * BODY_W_OVER_CARD_H * s * BODY_H_OVER_W
+  const baseH = bodyH * BASE_H_OVER_BODY
+  const footprintH = bodyH + baseH - baseH * 0.4
+  const twoRowH = bodyH * (1 - GLASS_OVERLAP) + footprintH
+  // Room between the player cards' bottom edge and the top of the action-bar band.
+  const cardBottom = l.edgeY + (l.height - l.edgeY) * playerRow(l) + cardH
+  const bandBottom = l.height - actionBarReserve(l) - BOTTOM_MARGIN
+  const avail = bandBottom - cardBottom - FIT_GAP
+  return avail >= twoRowH ? 1 : Math.max(FIT_FLOOR, avail / twoRowH)
+}
+
+function crystalDims(l: Layout, tier: number): Dims {
+  const { h: cardH } = cardSize(l)
+  const s = tierScale(tier) * fitScale(l, tier)
   const bodyW = cardH * BODY_W_OVER_CARD_H * s
   const bodyH = bodyW * BODY_H_OVER_W
   const baseW = bodyW * BASE_W_OVER_BODY
@@ -115,7 +144,7 @@ export function codaCounterGrid(l: Layout, count: number, tier: number): { cente
   const w = d.w
   const h = d.h
   const anchorX = l.width / 2
-  const bandBottom = l.height - BOTTOM_HUD_RESERVE - BOTTOM_MARGIN
+  const bandBottom = l.height - actionBarReserve(l) - BOTTOM_MARGIN
   const gridH = (rows - 1) * pitchY + h
   const top = bandBottom - gridH // bottom-align: the last row rides just above the buttons
 

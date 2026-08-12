@@ -1,5 +1,6 @@
 import './game-view.css'
 
+import { FLAGS } from '../flags'
 import { readDebugFlags } from '../game/debug'
 import type { Card } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
@@ -48,6 +49,7 @@ import { HeartAnimation } from './heart-animator'
 import { ReturnAnimation } from './return-animator'
 import { FLY_MS, TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
+import { ViewportGuard } from './viewport-guard'
 import { sfx } from '../audio/sfx'
 import { music } from '../audio/music'
 import { angryGrowlPattern, clownifyLaugh, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
@@ -608,6 +610,9 @@ class GameView {
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
   private powersEl_!: HTMLElement
   private actionsEl_!: HTMLElement
+  // Blocks play behind a "rotate / screen too small" modal when the viewport is too short to fit the
+  // ability column + help + info buttons. Null when the feature flag is off. See viewport-guard.ts.
+  private viewportGuard_: ViewportGuard | null = null
   // The choose-upgrade card (shown after a non-final kill) and its three path buttons.
   private upgradeEl_!: HTMLElement
   private upgradeButtons_!: { info: UpgradePathInfo; btn: HTMLButtonElement; effectEl: HTMLElement; tierEl: HTMLElement }[]
@@ -653,6 +658,14 @@ class GameView {
     this.buildOverlay_()
     this.syncOverlay_(now())
     this.buildIntroScreen_() // tap-to-play gate: unlocks audio + releases the opening on first tap
+    // Mount the too-short-screen guard once the overlay + ability column exist. It measures the
+    // column and blocks play behind a rotate / screen-too-small modal when there isn't the height
+    // to show it. Off entirely when the flag is down.
+    if (FLAGS.viewportGuard) {
+      // Mount on the stage container (not the HUD overlay, which fades out during the intro) so the
+      // modal shows above everything — including the title menu — regardless of the overlay's opacity.
+      this.viewportGuard_ = new ViewportGuard(this.stage_.container, () => this.measureControlColumn_())
+    }
     this.ensureLoop_() // drive the opening ceremony, then auto-deal the first hand
   }
 
@@ -891,6 +904,9 @@ class GameView {
     this.powersEl_.classList.remove('opening-hidden')
     this.actionsEl_.classList.remove('opening-hidden')
     this.infoBtnEl_.classList.remove('opening-hidden')
+    // The full column (now including the help button, hidden during the intro) is live — re-measure
+    // so the guard trips on a too-short screen even if the player never resizes after the deal.
+    this.viewportGuard_?.evaluate()
   }
 
   // Arm the opening ceremony but hold it: park the dealer off-screen (so the initial
@@ -944,6 +960,44 @@ class GameView {
     this.drawFx_(canvas, layout, t)
     // Re-anchor the score pager to the new layout (it reads band coords from the current size).
     this.syncScorePager_()
+    // A resize / orientation change reaches here via the stage ResizeObserver — re-check whether the
+    // control layout still fits the (new) viewport height.
+    this.viewportGuard_?.evaluate()
+  }
+
+  // Height (viewport px) the whole left-edge control layout needs so nothing clips or overlaps: the
+  // top-anchored ability column PLUS its "?" ability-help button (the column's last child) must clear
+  // the bottom-anchored "i" rules button, which sits at the same left edge. Returns null when the
+  // column isn't laid out (hidden behind a modal / at game over) so the guard keeps its last good
+  // measurement rather than assuming everything fits.
+  //
+  // Help and info each toggle with the phase (help shows only in 'playing', info only mid-hand), so
+  // to keep the requirement STABLE across the hand cycle we reserve a fixed block for whichever isn't
+  // currently rendered: help is already inside the column's bottom when visible (else add its block);
+  // info is reserved from the viewport bottom when visible (else its block). The blocks are the real
+  // measured sizes per CSS breakpoint, so the reserved and measured cases agree — no flapping.
+  private measureControlColumn_(): number | null {
+    const el = this.powersEl_
+    if (!el.isConnected) {
+      return null
+    }
+    const rect = el.getBoundingClientRect()
+    if (rect.height <= 0) {
+      return null
+    }
+    // Mirror the CSS compact breakpoint (game-view.css) — narrow OR short both switch to the compact
+    // button sizes — so these reserve blocks match the layout that's actually rendered.
+    const compact = window.matchMedia('(max-width: 560px), (max-height: 620px)').matches
+    // Help "?" block = row gap + its margin-top + button height; info "i" block = its height + bottom
+    // inset. (Roomy 38px buttons / compact 32px, per game-view.css .hud-help + .hud-info.)
+    const HELP_BLOCK = compact ? 40 : 48
+    const INFO_BLOCK = compact ? 42 : 52
+    const GAP = 12 // clear air we insist on between the column's bottom and the info button
+    const help = this.helpBtnEl_.getBoundingClientRect()
+    const helpReserve = help.height > 0 ? 0 : HELP_BLOCK // 0 when it's already in rect.bottom
+    const info = this.infoBtnEl_.getBoundingClientRect()
+    const infoReserve = info.height > 0 ? Math.max(0, window.innerHeight - info.top) : INFO_BLOCK
+    return rect.bottom + helpReserve + GAP + infoReserve
   }
 
   // Repaint the table layer (felt + rail), optionally with the static deck.
@@ -3611,6 +3665,15 @@ class GameView {
     // the fresh one lands + commits (frame settle). Draw it resting there right away.
     this.spawnHasOldDeck_ = shredOldDeck
     this.deckHidden_ = true
+    // Arm the settle edge so the ceremony-end commit (deckColorShift + deckHidden=false, in the
+    // frame loop's `!sequenceAnimating && lastAnimating_` block) runs when the ceremony finishes —
+    // that's the ONLY place the fresh deck hands back to the static table. The New-run/kill callers
+    // reach this via run_, which recomputes lastAnimating_ to the same true afterward (spawn is now
+    // animating), so this is a no-op for them. But a WINDOW-OUT arrival (playWindowArrival_, fired
+    // from the frame loop, not run_) would otherwise leave it false: the settle would never fire, the
+    // deck would never commit, and it would VANISH the instant the next hand deals (deckHidden stays
+    // true, and the spawn-deck stops drawing once it lands). Setting it here covers every path.
+    this.lastAnimating_ = true
     const canvas = this.stage_.canvas
     this.paintTable_(canvas, computeLayout(canvas.width, canvas.height), false)
     // The table cards to shred are whatever `collectRound` holds (null on a game-over New
