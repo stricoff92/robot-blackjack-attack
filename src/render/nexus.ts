@@ -32,6 +32,12 @@ export function nexusAnchor(l: Layout): Point {
   return { x: l.width, y: l.edgeY + (l.height - l.edgeY) * 0.45 }
 }
 
+// How far above the anchor the device floats, in base-scale (s) units. Kept below 1 so the whole
+// device sits a little lower: a full base-scale lift crowded it up against the dealer's deck (the
+// shoe, at the top of the felt) on short/near-square screens. Because s is clamped [54,84], this
+// drops the device a consistent ~16–25px on every screen size — a uniform, slight nudge down.
+const NEXUS_ANCHOR_LIFT = 0.7
+
 // Shared body geometry, so the drawn device and the two emitter-light positions never
 // drift apart. The body is a narrow rounded box seating a vertical column of two lenses;
 // lens i (0=top utility, 1=bottom holo) sits at (a.x, a.y + (i − 0.5)·gap).
@@ -65,11 +71,11 @@ function nexusGeom(l: Layout): NexusGeom {
   const w = socket * 2 + lensR * 0.9 // narrow body: one lens wide + side padding
   const h = gap + socket * 2 + lensR // two stacked lenses + top/bottom padding
   // Hug the screen's right edge (a small margin in), so the narrow stack sits at the far
-  // right; keep the same vertical centre (a full base-scale above the anchor). On very wide
-  // screens clampRightX reels the far-right position back toward centre so the device stays
-  // related to the middle of the table.
+  // right; float it NEXUS_ANCHOR_LIFT base-scales above the anchor (a little lower than a full
+  // scale, to keep clear of the deck on short screens). On very wide screens clampRightX reels the
+  // far-right position back toward centre so the device stays related to the middle of the table.
   const rightMargin = Math.max(10, l.width * 0.02)
-  const a = { x: clampRightX(l, l.width - rightMargin - w / 2), y: base.y - s }
+  const a = { x: clampRightX(l, l.width - rightMargin - w / 2), y: base.y - s * NEXUS_ANCHOR_LIFT }
   cachedGeom = { a, w, h, r: w * 0.3, lensR, gap, bob: s }
   cachedGeomKey = key
   return cachedGeom
@@ -540,7 +546,9 @@ export function drawStrikeFx(
 // toward the dealer, so it reads as flowing nourishing energy rather than a weapon.
 // A gentle aura blooms on the dealer once it lands. Drawn additively but kept low-alpha
 // and wide. `travel` advances the head nexus → dealer; `alpha` fades it on the wind-down.
-function drawHealBeam(
+// Exported so the player-hearts VFX (render/hearts.ts) can fire the same restorative band from the
+// nexus lens to a heart-chip slot on a heal, reusing this exact look.
+export function drawHealBeam(
   ctx: CanvasRenderingContext2D,
   from: Point,
   to: Point,
@@ -638,7 +646,9 @@ function drawHealBeam(
 // A red energy beam: an outer glow plus a hot white core, drawn additively so it
 // reads as light. The head advances with `travel` (the strike-on), the whole
 // thing fading as `alpha` drops (the strike-off).
-function drawBeam(ctx: CanvasRenderingContext2D, from: Point, to: Point, travel: number, alpha: number, scale: number): void {
+// Exported so the player-hearts VFX (render/hearts.ts) can fire the same red laser from the nexus
+// lens to a heart-chip slot when a heart pops on a loss, reusing this exact look.
+export function drawBeam(ctx: CanvasRenderingContext2D, from: Point, to: Point, travel: number, alpha: number, scale: number): void {
   const hx = from.x + (to.x - from.x) * travel
   const hy = from.y + (to.y - from.y) * travel
   const outer = clamp(scale * 0.02, 5, 16)
@@ -733,6 +743,9 @@ export interface HoloRayTarget {
   top: number
   bottom: number
   clampToNexus?: boolean
+  /** 0..1 opacity for the projected fan, so a readout fading in/out dims its rays with it. Defaults
+   *  to 1 (fully lit) — readouts that don't fade (the always-on projections) leave it unset. */
+  fade?: number
 }
 
 // The horizontal geometry of a SCOREBOARD's holo ray fan (only boxes with `clampToNexus`): where its
@@ -795,6 +808,7 @@ export function drawHoloRays(
     : { baseLeft: box.left - pad, baseRight: box.right + pad, midX: (box.left + box.right) / 2 }
 
   const span = box.bottom - box.top
+  const fadeMul = box.fade ?? 1
   ctx.save()
   ctx.globalCompositeOperation = 'lighter'
   for (let i = 0; i < count; i++) {
@@ -802,7 +816,7 @@ export function drawHoloRays(
     // Each ray owns one horizontal slice of the box and jumps within it — so the fan
     // always SPANS the number (never leaves it un-lit) while still shimmering.
     const baseY = box.top + (span * (i + hash(now, seed))) / count
-    const alpha = 0.02 + 0.03 * hash(now, seed + 500)
+    const alpha = (0.02 + 0.03 * hash(now, seed + 500)) * fadeMul
     // Fade the ray along a 1 − smoothStart2(t) curve (t: apex → base), so it holds near
     // full for most of its length and only drops off near the END — more of the ray reads
     // as light. Approximated with a few evenly-spaced stops (canvas lerps between them).

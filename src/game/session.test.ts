@@ -6,7 +6,7 @@ import { bustChanceOnHit } from './odds'
 import { clearRun, saveSession, type PersistedSession } from './persistence'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
-import { comboGain, getShift, hitTokens, powerupCost, startRun } from './run'
+import { getShift, hitTokens, powerupCost, SABOTAGE_DEALER21_ENERGY, STARTING_TOKENS, startRun } from './run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session } from './session'
 
 // recordRun submits to CrazyGames + updates the personal best (real storage/SDK); mock it so the
@@ -24,12 +24,12 @@ function bettingResume(run: import('./run').RunState): PersistedSession {
 }
 
 describe('Session', () => {
-  it('opens in the betting phase with the starting bankroll', () => {
+  it('opens in the betting phase with the starting resources', () => {
     const snapshot = new Session(12345).snapshot()
 
     expect(snapshot.phase).toBe('betting')
-    expect(snapshot.run.chips).toBe(400)
     expect(snapshot.run.tokens).toBe(100) // STARTING_TOKENS buffer for the early powerups
+    expect(snapshot.run.score).toBe(0)
   })
 
   it('deals a hand and plays it through to resolution', () => {
@@ -72,14 +72,13 @@ describe('Session', () => {
 
   it('adoptSession resumes a saved betting run', () => {
     const session = new Session(1)
-    const saved = bettingResume({ ...startRun(999), chips: 555, score: 4200, tokens: 40, shiftIndex: 3, integrity: 80, kills: [1, 2] })
+    const saved = bettingResume({ ...startRun(999), score: 4200, tokens: 40, shiftIndex: 3, integrity: 5, kills: [1, 2] })
 
     session.adoptSession(saved)
 
     const snap = session.snapshot()
     expect(snap.phase).toBe('betting')
     expect(snap.round).toBeNull()
-    expect(snap.run.chips).toBe(555)
     expect(snap.run.score).toBe(4200)
     expect(snap.run.shiftIndex).toBe(3)
     expect(snap.run.kills).toEqual([1, 2])
@@ -145,87 +144,6 @@ describe('Session', () => {
     expect(run.ratedHands).toBe(1) // the stand was captured + rated
     expect(run.ratingSum).toBeGreaterThanOrEqual(1)
     expect(run.ratingSum).toBeLessThanOrEqual(5)
-  })
-
-  it('grows the combo by the hit risk (not the score) and records the risk when a hit survives', () => {
-    const session = new Session(9)
-    session.deal()
-
-    const snap = session.snapshot()
-    expect(snap.lastHitRisk).toBeNull()
-    const risk = bustChanceOnHit(snap.round!)
-    const beforeScore = snap.run.score
-    const beforeCombo = snap.run.combo
-
-    session.hit()
-
-    const after = session.snapshot()
-    expect(after.round!.hands.some((hand) => hand.busted)).toBe(false)
-    expect(after.run.score).toBe(beforeScore) // hits earn NO score
-    expect(after.run.combo).toBeCloseTo(beforeCombo + comboGain(risk)) // ...only combo
-    expect(after.lastHitRisk).toBe(risk)
-  })
-
-  it('resets the combo and leaves the score untouched when a hit busts', () => {
-    const session = new Session(3)
-    session.deal()
-    const before = session.snapshot().run.score
-
-    session.hit()
-
-    const after = session.snapshot()
-    expect(after.round!.hands.some((hand) => hand.busted)).toBe(true)
-    expect(after.run.score).toBe(before)
-    expect(after.run.combo).toBe(0) // the busting hit wiped the streak
-    expect(after.lastHitRisk).toBeNull()
-  })
-
-  it('builds the combo by each hit risk-gain and resets it on a bust', () => {
-    // Seed 9's opening hand survives at least one hit before busting — walk it up, watching the
-    // combo climb by comboGain(risk) each time, then bust and confirm it snaps back to 0.
-    const session = new Session(9)
-    session.deal()
-    expect(session.snapshot().run.combo).toBe(0)
-
-    let last = 0
-    while (session.snapshot().phase === 'playing') {
-      const risk = bustChanceOnHit(session.snapshot().round!)
-      const before = session.snapshot().run.combo
-      session.hit()
-      const snap = session.snapshot()
-      if (snap.round!.hands.some((h) => h.busted)) {
-        expect(snap.run.combo).toBe(0) // the busting hit reset it
-        break
-      }
-      expect(snap.run.combo).toBeCloseTo(before + comboGain(risk)) // grows by the hit's risk gain
-      last = snap.run.combo
-    }
-    expect(last).toBeGreaterThan(0) // at least one surviving hit built the combo before the bust
-  })
-
-  it('carries the combo across a non-losing hand into the next hand', () => {
-    const session = new Session(9)
-    session.deal()
-    // Build some combo with one surviving hit, then stand it out.
-    session.hit()
-    const combo = session.snapshot().run.combo
-    expect(combo).toBeGreaterThan(0)
-
-    while (session.snapshot().phase === 'playing') {
-      session.stand()
-    }
-    // Seed 9's hand isn't a total loss, so resolution keeps the combo (a LOST hand would
-    // wipe it — that reset path is covered deterministically in run.test).
-    const resolved = session.snapshot()
-    expect(resolved.round!.hands.every((h) => h.outcome === 'lose' || h.outcome === 'bust')).toBe(false)
-    expect(resolved.run.combo).toBe(combo)
-
-    // ...and across the next hand.
-    session.nextHand()
-    if (session.snapshot().phase === 'betting') {
-      session.deal()
-    }
-    expect(session.snapshot().run.combo).toBe(combo)
   })
 
   it('ignores powerup buys the player cannot afford', () => {
@@ -362,6 +280,44 @@ describe('Session', () => {
       const snap = session.snapshot()
       expect(isBlackjack(snap.round!.hands[0].cards.slice(0, 2))).toBe(true)
       expect(isBlackjack(snap.round!.dealer.slice(0, 2))).toBe(true)
+    })
+  })
+
+  describe('Sabotage dealer-21 energy (T1)', () => {
+    // A fresh session sits on Dealer 1's first hand, where the opening-deal guard forbids the PLAYER a
+    // natural — so forceDealerNatural cleanly produces a dealer 21 the player faces without one.
+    const sabotaged = (antiDealer: number) =>
+      new Session(4242, { forceDealerNatural: true, startUpgrades: { antiDealer, chipEco: 0, tokenEco: 0 } })
+
+    it('pays a flat +20 energy on a loss to a dealer natural (T1)', () => {
+      const session = sabotaged(1)
+      session.deal()
+      const snap = session.snapshot()
+      expect(snap.round!.hands[0].outcome).toBe('lose') // the dealer's natural beat the player
+      expect(snap.run.tokens).toBe(STARTING_TOKENS + SABOTAGE_DEALER21_ENERGY)
+    })
+
+    it('does not pay without the Sabotage upgrade', () => {
+      const session = new Session(4242, { forceDealerNatural: true })
+      session.deal()
+      expect(session.snapshot().run.tokens).toBe(STARTING_TOKENS)
+    })
+
+    it('still pays on a T2-voided dealer 21 (the hand washes but the energy lands)', () => {
+      const session = sabotaged(2)
+      session.deal()
+      const snap = session.snapshot()
+      expect(snap.round!.hands[0].outcome).toBe('voided')
+      expect(snap.run.tokens).toBe(STARTING_TOKENS + SABOTAGE_DEALER21_ENERGY)
+    })
+
+    it('stacks on a T3 hijack — the blackjack reward plus the +20 energy', () => {
+      const session = sabotaged(3)
+      session.deal()
+      const snap = session.snapshot()
+      expect(snap.round!.hands[0].outcome).toBe('blackjack') // the dealer's natural is hijacked into a player win
+      // 21 blackjack-win tokens + the flat sabotage bonus, both banked on the same resolve
+      expect(snap.run.tokens).toBe(STARTING_TOKENS + 21 + SABOTAGE_DEALER21_ENERGY)
     })
   })
 
@@ -674,19 +630,18 @@ describe('Session startDealer dev override', () => {
   it('opens the jumped-to dealer at its own full health', () => {
     // Regression: a jump used to leave integrity at Dealer 1's 100, so Dealer 6
     // (max 220) opened at ~45% instead of full.
-    expect(new Session(1, { startDealer: 6 }).snapshot().run.integrity).toBe(getShift(6).maxIntegrity)
+    expect(new Session(1, { startDealer: 6 }).snapshot().run.integrity).toBe(getShift(6).maxHits)
   })
 
   it('FORGETS the override on a New run — a clean default first-dealer run', () => {
     // A New run ignores every dev URL override, so a debug-seeded run can't re-seed the same
     // (possibly broken) state on restart. It starts at the first dealer with no kills.
-    const session = new Session(1, { startDealer: 3, startChips: 1, startScore: 14343, startTokens: 500 })
+    const session = new Session(1, { startDealer: 3, startScore: 14343, startTokens: 500 })
     session.restart()
     const run = session.snapshot().run
     expect(run.shiftIndex).toBe(1)
     expect(run.kills).toEqual([])
-    // …and the other overrides are gone too — default chips, zero score, default tokens.
-    expect(run.chips).toBe(new Session(1).snapshot().run.chips)
+    // …and the other overrides are gone too — zero score, default tokens.
     expect(run.score).toBe(0)
     expect(run.tokens).toBe(new Session(1).snapshot().run.tokens)
   })
@@ -697,7 +652,7 @@ describe('Session Banker coda', () => {
   // to land the 6th kill. The killing hand is still on the table (a real bet), awaiting the
   // entry ceremony. Fat chips so a cold streak rarely busts out first; null if it busts out.
   function codaEntry(seed: number): Session | null {
-    const session = new Session(seed, { startDealer: 6, dealerHealth: 1, startChips: 100000, startTokens: 500 })
+    const session = new Session(seed, { startDealer: 6, dealerHealth: 1, startTokens: 500 })
     for (let guard = 0; guard < 60; guard += 1) {
       const phase = session.snapshot().phase
       if (phase === 'coda') return session
@@ -774,7 +729,6 @@ describe('Session Banker coda', () => {
       const session = new Session(seed, {
         startDealer: 6,
         dealerHealth: 1,
-        startChips: 100000,
         startTokens: 500,
         forcePlayerNatural: true,
       })
@@ -912,44 +866,3 @@ describe('Session Banker coda', () => {
   })
 })
 
-describe('Session bankruptcy coda', () => {
-  // Resume a deep, nearly-broke run (Dealer 3, one all-in bet from zero, a score worth taxing)
-  // and play the hand out simply. A losing hand empties the bankroll → the redemption coda. Loop
-  // seeds until one deals a loss (a push/win keeps the stack, so it just tries the next seed).
-  function bankruptcyEntry(): Session {
-    for (let seed = 1; seed < 500; seed += 1) {
-      const session = new Session(seed)
-      session.adoptSession(bettingResume({ ...startRun(seed), shiftIndex: 3, kills: [1, 2], integrity: 90, chips: 10, score: 1000 }))
-      session.deal()
-      for (let guard = 0; session.snapshot().phase === 'playing' && guard < 12; guard += 1) {
-        session.stand()
-      }
-      const snap = session.snapshot()
-      if (snap.phase === 'coda' && snap.run.bankruptcyCoda) {
-        return session
-      }
-    }
-    throw new Error('no seed produced a deep bankruptcy')
-  }
-
-  it('a deep bankruptcy enters the coda phase with the score taxed, not game over', () => {
-    const snap = bankruptcyEntry().snapshot()
-    expect(snap.phase).toBe('coda')
-    expect(snap.run.coda).toBe(true)
-    expect(snap.run.bankruptcyCoda).toBe(true)
-    expect(snap.run.over).toBe(false)
-    expect(snap.run.chips).toBe(0)
-    expect(snap.run.score).toBe(170) // 1000 with the 83% bankruptcy tax
-  })
-
-  it('cashing out of the bankruptcy coda banks the taxed score through the single seam', () => {
-    const session = bankruptcyEntry()
-    session.codaResolveNext() // dismiss the losing hand → the DOUBLE / CASH OUT prompt
-    expect(session.snapshot().round).toBeNull()
-    session.codaCashOut()
-    const snap = session.snapshot()
-    expect(snap.phase).toBe('over')
-    expect(snap.run.cashedOut).toBe(true)
-    expect(snap.run.score).toBe(170)
-  })
-})

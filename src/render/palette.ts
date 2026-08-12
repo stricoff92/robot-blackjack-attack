@@ -81,6 +81,15 @@ export function isRgbDealer(shiftIndex: number): boolean {
   return shiftIndex >= RGB_DEALER && shiftIndex !== BANKER_SHIFT
 }
 
+// The FULL-INTENSITY RGB colour for `now` — the same spectrum cycle the RGB dealer's bowtie
+// rides, but WITHOUT the pastel desaturation the dealer's kit applies (RGB_SATURATION). The
+// clown sidekick wears this: the identical hue as the dealer 6 bowtie at every instant, only
+// pure/saturated rather than washed out. `dark` is a shaded variant for the bowtie knot.
+export function rgbFullColor(now: number): { color: string; dark: string } {
+  const rgb = cycleRgb(now, RGB_PERIOD_MS)
+  return { color: rgbCss(rgb), dark: rgbCss(scale(rgb, 0.72)) }
+}
+
 // The fixed dealers' colour kits are constant per shiftIndex, but dealerColors is
 // called several times per frame (deck colour, bowtie, spawn cross-fade), so they're
 // built once and reused. The RGB dealer is time-varying and never cached here. Bounded

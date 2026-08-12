@@ -1,9 +1,7 @@
-import { handReward } from './rewards'
-import type { Round } from './round'
+import { roundTally, type Round } from './round'
 
-// Integrity the dealer loses this round: the sum of each won hand's damage, which
-// scales with how the win was earned (see rewards.ts — a dealer bust is the
-// weakest win, beating a standing 20 the strongest). Losses and pushes deal none.
-export function damageForRound(round: Round): number {
-  return round.hands.reduce((total, hand) => total + handReward(hand, round).damage, 0)
+// Hits the dealer takes this round: the weighted count of the player's winning hands — each win
+// lands 1 hit, a doubled win 2 (see round.roundTally / run.handWeight). Losses and pushes land none.
+export function hitsForRound(round: Round): number {
+  return roundTally(round).hits
 }

@@ -3,49 +3,54 @@ import './game-view.css'
 import { readDebugFlags } from '../game/debug'
 import type { Card } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, handNet, isDealerHijacked, isWinningHand, type PlayerHand, type Round, type RoundRules } from '../game/round'
+import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, isDealerHijacked, isWinningHand, roundTally, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
-import { BANKRUPTCY_TAX, comboMultiplier, dealerHardHitCeiling, DESTROY_TOKEN, getShift, isLastCall, maxIntegrityFor, nextBet, powerupCost, tokenMultiplier, TOTAL_DEALERS } from '../game/run'
+import { dealerHardHitCeiling, DESTROY_TOKEN, getShift, maxHitsFor, powerupCost, SABOTAGE_DEALER21_ENERGY, tokenMultiplier, TOTAL_DEALERS, winPointDeltas } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
 import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
 import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../platform/crazygames'
-import { nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
+import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
 import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
-import { onChipImageReady } from '../render/chip-sprite'
-import { drawChips, drawPlayerPile } from '../render/chips'
 import { drawDamageFx } from '../render/damage-fx'
 import { abbreviateCount } from '../render/format'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
-import { drawHoloRays, drawStrikeFx, nexusUtilityLight, type HoloRayTarget } from '../render/nexus'
+import { drawClown } from '../render/clown'
+import { drawHoloRays, drawStrikeFx, nexusHoloLight, nexusUtilityLight, type HoloRayTarget } from '../render/nexus'
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
+import { smoothEnd2, smoothStart2 } from '../render/easing'
 import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
 import { drawScoreSheet, drawScoreTitle, scoreBoardPlacement, SCORE_LEFT_SHIFT, type ScoreReadout } from '../render/score-sheet'
-import { drawComboProjection, type ComboProjection } from '../render/combo-projection'
-import { drawCodaStake, type CodaTaxBreakdown } from '../render/coda-stake'
+import { drawCodaStake } from '../render/coda-stake'
 import { drawCodaCounters } from '../render/coda-counters'
+import { CASH_IN_REVEAL_MS, CASH_IN_STAGGER, drawHandSummary, type HandSummaryView, type SummarySlot } from '../render/hand-summary'
+import { drawHearts } from '../render/hearts'
 import { drawTapToStart } from '../render/tap-to-start'
 import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
+import { DELTA_FLY_MS, drawScoreDeltas } from '../render/score-deltas'
 import { drawTokens, type Point } from '../render/tokens'
+import { ScoreDeltaFly } from './score-delta-animator'
 import { ChipAnimation } from './chip-animator'
 import { CodaCounterAnimation } from './coda-counter-animator'
 import { CountTicker } from './count-ticker'
 import { BustBlockAnimation } from './bust-block-animator'
 import { DealAnimation } from './deal-animator'
 import { DealerAnimation, HIT_TOTAL_MS, KILL_ARRIVE_MS, KILL_DEATH_LEAD_MS, KILL_DEATH_MS, KILL_DYING_MS, KILL_TOTAL_MS, STRIKE_TRAVEL_MS } from './dealer-animator'
+import { ClownAnimation } from './clown-animator'
 import { SpawnAnimation } from './spawn-animator'
 import { MulliganAnimation } from './mulligan-animator'
 import { NexusAnimation } from './nexus-animator'
+import { HeartAnimation } from './heart-animator'
 import { ReturnAnimation } from './return-animator'
 import { FLY_MS, TokenAnimation } from './token-animator'
 import { createStage, type Stage } from './stage'
 import { sfx } from '../audio/sfx'
 import { music } from '../audio/music'
-import { angryGrowlPattern, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
+import { angryGrowlPattern, clownifyLaugh, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
 
 // The token icon, imported once so Vite fingerprints the URL and the browser
 // fetches it a single time on load; every <img> that references it (the token
@@ -73,7 +78,10 @@ const UPGRADE_ICONS: Record<UpgradePath, string> = {
 // that fly up to the counter). The 'mask' layer is on top of everything: a darkness
 // that the Analyze projection lights through, and the dealer's emissive eye glow
 // (the HTML button/counter overlay sits above it, so those stay bright).
-const LAYERS = ['back', 'dealer', 'table', 'cards', 'chips', 'fx', 'tokens', 'mask'] as const
+// The 'clown' layer sits right beside 'dealer' (both below the felt/rail, so their lower bodies
+// tuck behind the table): the dealer-6 clown sidekick, drawn there so it can slide in/out on its
+// own without disturbing the dealer's layer.
+const LAYERS = ['back', 'dealer', 'clown', 'table', 'cards', 'chips', 'fx', 'hearts', 'tokens', 'deltas', 'mask'] as const
 
 // The final scoreboard has two pages (run summary + performance stats), flipped by the ‹ › pager.
 const SCORE_PAGES = 2
@@ -99,21 +107,38 @@ const ANALYSIS_FADE_MS = 300
 // (mirror of the strike-on; see specRender + render/spec-sheet.ts).
 const SPEC_FADE_MS = 320
 
-// The nexus's combo-multiplier projection (middle of the felt, on a hit): how long the
-// number rolls from its old value to the new one, how long it holds, and the fade-out.
-const COMBO_TICK_MS = 380
-const COMBO_HOLD_MS = 780
-const COMBO_PROJ_FADE_MS = 340
 
 // How many light rays the holo projector fans onto each number it projects.
 const HOLO_RAYS_PER = 5
 
-// Beat after the won chips collect into the player's stack before the nexus fires
-// its damage laser — so the payout finishes landing before the attack, never during.
+// Beat after a resolved hand settles (its reward tokens fly, the hand-summary shows) before the
+// nexus fires its damage laser — so the reward lands before the attack, never during.
 const LASER_GAP = 180
+// Sabotage T1: a dealer 21 flies a +20 ENERGY burst (SABOTAGE_DEALER21_ENERGY). The nexus attack —
+// the heart-pop laser on a loss, or the dealer laser on a hijack win — is held until that burst has
+// fully LANDED plus this gap, so the energy reward reads as a clean, complete beat before the strike.
+const ENERGY_ATTACK_GAP = 300
+// Beat after a dealer that SURVIVED its window strides off before its replacement walks in.
+const WINDOW_WALKIN_DELAY = 300
+// The dealer hand-summary: the whole board's ease-IN on appearance, how long it then holds the OLD
+// state before the new slots start cascading in (render/hand-summary.ts owns the per-slot cascade
+// timing, CASH_IN_STAGGER apart), and the whole board's fade-OUT on Next hand. The fade-in settles
+// WELL before the appear-hold ends, so the board is fully present by the time the cascade begins.
+const SUMMARY_FADE_IN_MS = 260
+const SUMMARY_APPEAR_HOLD = 360
+const SUMMARY_FADE_MS = 300
+// Minimum time the FULLY-REVEALED summary stays put before it may fade out — but ONLY when the
+// player pre-clicked Next hand (before the summary appeared): the deferred proceed then waits this
+// long past the reveal so the board reads as [fade in] → [hold ≥ this] → [fade out] instead of
+// snapping straight from reveal to fade. A click AFTER the summary is up ignores it (the player has
+// already seen the result and is dismissing it).
+const SUMMARY_MIN_HOLD = 400
 // Beat after a lost hand's cards settle before the yellow heal beam lifts off (a
 // late dealer repairing itself on a win) — so the repair reads as its own moment.
 const HEAL_GAP = 220
+// How long the nexus lens flares red as it fires the heart-pop laser on a loss (no dealer laser
+// competes for the muzzle then, so it can flash for the strike).
+const HEART_MUZZLE_MS = 260
 // Beat after the nexus attack (and any death → walk-in) finishes before the spent
 // cards gather back into the deck — the winning hand's final beat.
 const GATHER_GAP = 220
@@ -128,10 +153,10 @@ const BANKER_LAUGH_DELAY = 300
 // A kill that grants an upgrade pick is played in two halves so the selector sits in
 // the middle: the dealer is destroyed, then after this beat the upgrade card appears;
 // once the player picks, the replacement's walk-in ceremony begins after this beat.
-// Dealer gone → upgrade card. Sized to outlast the +40 bounty token, which lifts off
-// at the death and flies to the counter (FLY_MS ≈ 665ms) — so the reward animation has
-// landed and settled before the selector takes over the screen, plus a breath.
-const UPGRADE_REVEAL_LEAD = 1400
+// The dealer already shattered (and its +40 bounty already flew) back on the resolve laser, so the
+// selector just needs a short breath AFTER the hand-summary fades out of the way before it surfaces
+// over the now-empty table.
+const UPGRADE_REVEAL_LEAD = 350
 const CEREMONY_LEAD = 800 // upgrade picked → new dealer walks in
 // The Banker coda's timing: the beat after the entry ceremony before the prompt appears, and
 // the beat a resolved double-or-nothing hand holds (so its result reads) before it doubles/ends.
@@ -146,13 +171,11 @@ const CODA_PUSH_HOLD = 450
 const CODA_NATURAL_HOLD = 1250
 // Beat after the boss is fully gone before the Banker strides in (a clear pause).
 const CODA_WALKIN_DELAY = 500
-// The bankruptcy coda's stake panel leads with the tax seizure (Points → −tax% → Net) folded in
-// above the double-or-nothing offer — see drawCodaStake's `tax` path. Every row of that combined
-// panel cascades in this far apart; the top-right score counter ticks DOWN from the gross to the
-// taxed net as the Net row (index 3) lands, i.e. 3 · this after the panel appears.
-const CODA_STAKE_ROW_STAGGER = 340
-// How long the player's chip stack takes to fade out once the last dealer dies (the coda).
-const CODA_CHIPS_FADE_MS = 700
+// Extra hold once dealer 6's clown has fully walked off screen, before the Banker's entrance —
+// so the two exits/entrances never overlap. Gated dynamically on the clown in the frame loop
+// (its walk-off completes ~460ms AFTER codaArrivalAt_ alone would have fired), not baked into
+// codaArrivalAt_, since the clown's walk-off clock isn't known when beginCoda_ schedules that.
+const CODA_CLOWN_CLEAR_MS = 300
 // How long the stake projection takes to fade out when the prompt closes (DOUBLE / cash-out).
 const CODA_STAKE_FADE_MS = 260
 // The coda pot renders as glass markers that COLOUR UP: 2^wins decomposes into perTier(wins)
@@ -167,7 +190,7 @@ function codaPerTier(wins: number): number {
 }
 // The Banker figure's shift sentinel — one past the last real dealer. drawFigure/dealerColors
 // key off it for the Banker's look; the coda run sits at run.shiftIndex 7 too, so the health
-// math (integrity / maxIntegrityFor(7)) reads full.
+// math (integrity / maxHitsFor(7)) reads full.
 const BANKER_SHIFT = TOTAL_DEALERS + 1
 // The Banker's amused-cackle identity: a fixed seed (same voice every run) and a mid-shift
 // laugh — lighter + quicker than the menacing final-boss cackle. He's entertained, not
@@ -176,6 +199,14 @@ const BANKER_VOICE_SEED = 0x8a17c30d
 const BANKER_LAUGH_SHIFT = 3
 // The Banker's cackle plays louder than the dealers' voices (a gain scale on voice.play).
 const BANKER_LAUGH_GAIN = 1.6
+// The dealer-6 clown's voice: a fixed seed (a stable clown laugh, pitched up by clownifyLaugh)
+// for its own death cackle; it plays a touch quieter than the dealer (a smaller sidekick), and
+// echoes the dealer's laughs CLOWN_LAUGH_DELAY_MS behind them. CLOWN_LAUGH_LEAD is the little
+// lead on its stand-alone death laugh (so it lands just after the killing blow reads).
+const CLOWN_VOICE_SEED = 0x5c107a11
+const CLOWN_LAUGH_GAIN = 0.7
+const CLOWN_LAUGH_DELAY_MS = 600
+const CLOWN_LAUGH_LEAD = 0.2
 // Tolerance (ms) for matching a walk-in/off's derived start stamp frame-to-frame, so its
 // entrance voice fires once. Far above the ~1ms float jitter, far below the seconds between
 // two real entrances.
@@ -184,12 +215,15 @@ const VOICE_START_EPS = 200
 // still above this integrity fraction (a healthy house savouring a desperate gamble).
 const ALLIN_LAUGH_HEALTH = 0.25
 // "On the ropes": a dealer walking in laughs (mocks) instead of growling when the player would
-// go bankrupt within this many losing hands AND is holding fewer than this many tokens.
-const ROPES_HANDS = 3
+// is holding fewer than this many tokens (the incoming dealer mocks a token-poor player).
 const ROPES_TOKENS = 250
 // After the tap-to-start tap, the "TAP TO START" projection fades out over this window before
 // the scene starts (walk-in + HUD + first deal) — a short beat so the tap doesn't snap the game in.
 const TAP_FADE_MS = 300
+// The player hearts ease IN over this window once the scene starts (they're hidden on the
+// tap-to-start / title screen) — matched to the HUD overlay's 0.5s opacity transition so the
+// hearts and the counters fade up together.
+const HEARTS_FADE_MS = 500
 // Game over: beat after the ending hand's cards settle before the dealer sucks them up
 // and shreds them (a win → laser death; a loss → walk-off), then projects the score.
 const END_SHRED_GAP = 200
@@ -207,14 +241,17 @@ interface ButtonDef {
   cost?: number
   /** Coda ability whose `cost` is inflation-adjusted (powerupCost) rather than flat. */
   inflated?: boolean
+  /**
+   * Explicit tiebreak among equal-cost powerups (lower = higher in the column).
+   * Only set where source order isn't the wanted display order; unset → 0, so
+   * ties without an `order` still fall back to source order (stable sort).
+   */
+  order?: number
   act: () => void
   visible: (s: SessionState) => boolean
   enabled: (s: SessionState) => boolean
   /** When true, the button glows to show the powerup is currently armed. */
   active?: (s: SessionState) => boolean
-  /** When true, the move is legal but disabled purely for lack of chips to cover
-   *  the extra bet — flags a red "not enough chips" badge (Double/Split only). */
-  shortFunds?: (s: SessionState) => boolean
 }
 
 export function mountGameView(root: HTMLElement): void {
@@ -225,17 +262,32 @@ class GameView {
   private readonly session_: Session
   // Assigned in the constructor via seedVisualsFromState() (before any use).
   private state_!: SessionState
-  // The payout is deferred: `run.chips` updates the instant the round settles,
-  // but the chips don't move until the next hand is called. While a payout is
-  // pending, the bankroll shows the frozen pre-settle value (`heldChips`) and is
-  // released to the real total once the chips finish flying in/out (`clearEnd`).
-  private heldChips_: number | null = null
-  private clearEnd_ = 0
-  private clearPending_ = false
+  // The dealer hand-summary shown between hands (the maxHands window slots + the newest reveal), and
+  // when its fade-out began (0 = showing). Built in run_, painted by drawChips_/summaryView_.
+  //  • appearAt — when the board starts easing IN. Set once the resolve knows its laser timing: AFTER
+  //    the laser lands on a win (the summary follows the attack), or at the card-settle on a loss.
+  //    0 until scheduled (nothing drawn yet).
+  //  • playedCount — how many new slots are the real result (1 single, 2 split/double); the rest (on
+  //    a kill) are the green cash-in cascade, timed from cashInAt.
+  private summary_: {
+    slots: SummarySlot[]
+    revealFrom: number
+    playedCount: number
+    appearAt: number
+    cashInAt: number
+  } | null = null
+  private summaryFadeAt_ = 0
   private readonly scene_ = new Scene()
   private readonly anim_ = new DealAnimation()
   private readonly chips_ = new ChipAnimation()
   private readonly dealer_ = new DealerAnimation()
+  // The clown sidekick that shadows dealer 6 (the RGB final dealer) — follows it in, stands to
+  // its right, laughs when it laughs, and strides off when it dies or leaves. Derived entirely
+  // from the dealer's state each frame (clown_.observe), so it needs no action-sequencing hooks.
+  private readonly clown_ = new ClownAnimation()
+  // The dealer emote (start stamp) the clown has already mirrored onto its own grin — so a laugh
+  // is echoed exactly once, not re-fired every frame it stays armed.
+  private lastClownEmoteStart_ = -1
   private readonly tokens_ = new TokenAnimation()
   private readonly mulligan_ = new MulliganAnimation()
   private readonly returnAnim_ = new ReturnAnimation()
@@ -248,13 +300,12 @@ class GameView {
   // The table nexus's twin emitter lights: dim at rest, glowing while the nexus
   // pays out its reward tokens and fires its damage laser (see run()).
   private readonly nexus_ = new NexusAnimation()
-  // The two number readouts roll from their old value to the new one (ticking
-  // through the integers) and swell while they roll, rather than snapping: the
-  // token count as rewards land, the bankroll as a payout merges into the pile.
-  // The token counter rolls in BOTH directions (rewards tick up, spends tick down);
-  // the bankroll snaps on a decrease (a bet/loss is an instant cost).
+  private readonly hearts_ = new HeartAnimation()
+  // The two number readouts roll from their old value to the new one (ticking through the integers)
+  // and swell while they roll, rather than snapping: the token count as rewards land, the score as
+  // points tick up. The token counter rolls in BOTH directions (rewards up, spends down); the score
+  // counter (below) rolls UP only.
   private readonly tokenTicker_ = new CountTicker(0, true)
-  private readonly bankrollTicker_ = new CountTicker()
   // The points counter rolls UP only. It's held at its pre-resolve value (heldScore)
   // from the moment a hand resolves until that hand's reward tokens land at the token
   // counter, then released to run.score — so points always rise AFTER the token reward,
@@ -263,24 +314,21 @@ class GameView {
   private readonly scoreTicker_ = new CountTicker()
   private heldScore_: number | null = null
   private pendingScoreDelta_ = 0
-  // The combo multiplier that produced this reward — carried to the release so the middle-
-  // of-felt projection can show "base +N / ×mult" as the effective points tick into the
-  // total top-right. 1 = no combo (projection just shows the base).
+  // Reward multiplier carried to the score-release flash. Always 1 now (the hit combo was removed) —
+  // kept so holdScoreReward_/flashPointsDelta_ still show a plain "+N".
   private pendingMult_ = 1
   private scoreReleaseAt_ = 0
-  // The combo multiplier the nexus is projecting into the middle of the felt on a HIT, or
-  // null when nothing is up. It ticks `from`→`to` up (tone 'up') on a survived hit, or back
-  // to ×1.00 ('down') when a lost hand (busted or beaten) resets it. Nothing shows until `startAt` — the drawn card's settle
-  // (anim.animEnd) — so it never reveals the outcome before the flip. From startAt it ticks
-  // over COMBO_TICK_MS, holds to `hideAt`, then fades COMBO_PROJ_FADE_MS. (Hand-end points
-  // are NOT projected — that read as chips; they show as the top-right "+base ×mult" delta.)
-  private comboProj_: {
-    from: number
-    to: number
-    tone: ComboProjection['tone']
-    startAt: number
-    hideAt: number
-  } | null = null
+  // The fly-in score deltas (normal play): each winning green check launches a "+N" that arcs to a
+  // stacked row below the counter, ticking it as it lands. While these fly the counter is held at
+  // `deltaHoldBase` (the pre-resolve score) and climbs by `deltaLandedSum` as each lands — so it
+  // never runs ahead of the deltas. `deltaPending` is the launch schedule (one per green check, fired
+  // as its check reveals in drawCards_); `deltaLandIndex` steps the arrival tone's pitch up the run.
+  private readonly scoreDeltas_ = new ScoreDeltaFly()
+  private deltaHoldBase_: number | null = null
+  private deltaLandedSum_ = 0
+  private deltaPending_: { value: number; slotIndex: number; spawnAt: number; rowIndex: number }[] = []
+  private deltaEmitted_ = 0
+  private deltaLandIndex_ = 0
   // Edge tracker: true while the points counter is mid-roll, so the ticking sound fires
   // once when a roll starts (not every frame it runs).
   private pointsRolling_ = false
@@ -302,24 +350,30 @@ class GameView {
   // The busting card the Bust Block shield caught, with the hand + slot it's shown
   // on. Drawn (over the settled hand) while `bustBlock` animates.
   private bustBlockData_: { handIndex: number; cardIndex: number; card: Card } | null = null
-  // Damage/kill deferred from the resolve to the Next-hand click: the laser fires
-  // AFTER the token reward flies, and the cards gather back into the deck only once
-  // it's done. `dealAfter` is the timestamp the next deal waits for while the laser
-  // (and any death → walk-in), then the card gather + shuffle, play out.
-  private pendingAttack_: { fromIntegrity: number; fromShift: number; toIntegrity: number; toShift: number } | null = null
+  // The winning hand's attack. The nexus laser now AUTO-FIRES on the resolve (after the reward
+  // tokens + points), NOT on the Next-hand click: a `damage` hit drops the dealer's health, a
+  // `kill` shatters it on impact (the +40 bounty flies with the death), a `windowOut` gets no laser
+  // (the survivor just strides off). `kind` is still read by the Next-hand block to route the
+  // table's advance (gather / walk-in+upgrade / walk-off). `dealAfter` is when the next deal waits.
+  private pendingAttack_: { fromIntegrity: number; fromShift: number; toIntegrity: number; toShift: number; kind: 'kill' | 'windowOut' | 'damage' } | null = null
+  // The resolve choreography's finish line — the earliest the Next-hand consent may act (the laser
+  // has landed AND the summary's result mark/cash-in has revealed). A click before this doesn't
+  // fast-forward: it arms `proceedPending`, which the frame loop fires once this passes.
+  private resolveAttackEnd_ = 0
+  private proceedPending_ = false
+  // A heart-death (last hit point lost) is entering the coda: the losing summary + final heart pop
+  // play FIRST, then the deferred coda entry fires. While set, the summary/hearts keep drawing over
+  // the 'coda' phase, and the coda counters hold back. Consumed by the frame loop at heartDeathAt_.
+  private heartDeathPending_ = false
+  private heartDeathAt_ = 0
+  private heartDeathEntry_: { prevScore: number; prevIntegrity: number; prevShift: number; integrity: number } | null = null
   private dealAfter_ = 0
-  // On a winning hand the utility light shoots the reward tokens (pulsing yellow) FIRST,
-  // and only once they've landed does it transition to the red laser charge — one light,
-  // one effect at a time. This is when that token flight finishes: the Next-hand button
-  // stays disabled until then, and the red charge (anticipate) is scheduled to begin at
-  // it. 0 when no reward is in flight (self-clears once `now` passes it).
-  private attackReadyAt_ = 0
-  // A kill that grants an upgrade pick splits the ceremony around the selector: the
-  // dealer dies on the Next-hand click, and the replacement's arrival (walk-in + shred
-  // + fresh deck) is deferred until the player picks. This holds what that deferred
-  // arrival needs — the round to shred + the incoming dealer — set on the death, cleared
-  // when the arrival fires. `upgradeRevealAt` is when the selector may surface (a beat
-  // after the death), gating syncUpgradePanel so it doesn't pop up mid-death.
+  // A kill splits the ceremony around the Next-hand click: the dealer already SHATTERED on the
+  // resolve laser, and the replacement's arrival (walk-in + shred + fresh deck) is deferred — until
+  // the player picks an upgrade, or (no upgrade) until the summary fades and it walks straight in.
+  // This holds what that deferred arrival needs — the round to shred + the incoming dealer — set on
+  // the click, cleared when the arrival fires. `upgradeRevealAt` is when the selector may surface (a
+  // beat after the summary clears), gating syncUpgradePanel so it doesn't pop up over the summary.
   private pendingCeremony_: { prevRound: Round; incomingShift: number; incomingIntegrity: number } | null = null
   private upgradeRevealAt_ = 0
   // True while a picked upgrade's dismiss animation plays (before the pick commits);
@@ -364,13 +418,6 @@ class GameView {
   private codaStakeHideAt_ = 0
   private codaStakeFadePoints_ = 0
   private codaStakeFadeWon_ = false
-  // The BANKRUPTCY coda's tax seizure, folded into the stake panel at the entry prompt (Points →
-  // −tax% → Net, above the offer). Non-null only for that first prompt; cleared once the panel has
-  // faded. The gross + taxed net are captured at entry (a losing hand never scores, so the pre-coda
-  // total is the gross).
-  private codaStakeTax_: CodaTaxBreakdown | null = null
-  private codaTaxGross_ = 0
-  private codaTaxNet_ = 0
   // True from the Banker's entry until his shred finishes, so the killing hand's cards are
   // marked gone (endShredDone) at the right moment and don't redraw before the prompt.
   private codaEntering_ = false
@@ -380,6 +427,14 @@ class GameView {
   // The Banker's entrance is deferred a beat after the boss dies: `codaArrivalAt` is when his
   // walk-in fires (0 = none pending), and `codaEntryScore` is the stake to roll up as he arrives.
   private codaArrivalAt_ = 0
+  // Once codaArrivalAt_ is reached, the Banker still waits for dealer 6's clown to clear the
+  // screen: this is stamped (= now + CODA_CLOWN_CLEAR_MS) the frame the clown goes off-screen,
+  // and the walk-in fires when it elapses. 0 while the clown is still exiting (or not yet stamped).
+  private codaClownClearAt_ = 0
+  // A dealer that SURVIVED its window walks off, then its replacement walks in — the walk-in is
+  // deferred to this timestamp (like codaArrivalAt_) so the old figure keeps its colour off-screen.
+  private windowArrivalAt_ = 0
+  private pendingWindowOut_: { incomingShift: number; incomingIntegrity: number } | null = null
   // When to start the "Decisions" (Banker waiting) music: the moment his entry shred COMPLETES
   // (set from playCodaArrival, = codaShredEndAt; 0 = none pending). It plays once, filling what
   // used to be the coda-entry silence, while the player weighs double-or-nothing.
@@ -393,7 +448,6 @@ class GameView {
   // instead of despawning during the boss death.
   private codaShredEndAt_ = 0
   // When the chips start fading out (the last dealer just died — no bets in the coda).
-  private codaChipsFadeAt_ = 0
   // When to fade the fight music out to silence at coda entry: the moment the dealer-6 winning
   // hand is revealed (its cards settle). The quiet holds through the Banker's walk-in + shred
   // until the "Decisions" theme rises (codaDecisionsAt) once the shred completes.
@@ -478,6 +532,10 @@ class GameView {
   // audio contexts (context.ts/main.ts window listeners), so all gameplay sound is on. Set in
   // buildIntroScreen's tap handler.
   private started_ = false
+  // The timestamp the scene started (started_ flipped true) — the tap-to-start fade-out completing,
+  // or a Continue/New game resuming in place. Drives the player hearts' fade-IN (they stay hidden on
+  // the title/tap screen, then ease in with the HUD once the game begins).
+  private startedAt_ = 0
   // Whether we've told CrazyGames a hand is actively being played (SDK.game.gameplayStart). Driven
   // off the phase each frame; toggled only on change.
   private gameplayActive_ = false
@@ -500,21 +558,17 @@ class GameView {
   // True once the title menu has been shown, so the nexus "TAP TO START" prompt stays suppressed
   // (the wordmark still projects) — the HTML buttons are the prompt. Never reset.
   private titleMenuMode_ = false
-  // False until the FIRST bet flies from the chip stack to the bet spot (the first deal): the
-  // bankroll count stays off (just the decorative pile) until then, then turns on for good.
-  private betFlown_ = false
-  // Latches true once the OPENING hand's cards have fully landed. Until then, every projected
-  // count (card totals + chip amounts) is held back so they appear together at the end of the
-  // deal rather than trickling in one-by-one amid the tap-to-start light rays. First hand only;
-  // once latched, later hands reveal their counts per-card/per-lane as usual (firstHandCountsHidden).
+  // Latches true once the OPENING hand's cards have fully landed. Until then, every projected count
+  // (card totals) is held back so they appear together at the end of the deal rather than trickling
+  // in one-by-one amid the tap-to-start light rays. First hand only; once latched, later hands
+  // reveal their counts per-card/per-lane as usual (firstHandCountsHidden).
   private openingCountsShown_ = false
 
   private readonly defs_: ButtonDef[]
   private tokensEl_!: HTMLElement
   private tokenCountEl_!: HTMLElement
-  // Win/blackjack tokens are credited to run.tokens the instant a hand resolves,
-  // but held out of the counter (no flight, no number bump) until the player
-  // calls the next hand — the same deferral the payout chips use.
+  // Win/blackjack tokens are credited to run.tokens the instant a hand resolves, but held out of
+  // the counter (no flight, no number bump) until the player calls the next hand.
   private heldTokens_ = 0
   // Last values written to the token counter's DOM, so updateTokenCounter can skip the
   // write when nothing changed (it's called every frame).
@@ -522,8 +576,6 @@ class GameView {
   private lastTokenTransform_ = ''
   private messageEl_!: HTMLElement
   private buttons_!: Record<string, HTMLButtonElement>
-  // Per-button "not enough chips" badges (Double/Split), toggled in syncOverlay.
-  private nsfBadges_!: Record<string, HTMLElement>
   // Per-powerup cost-pill number spans, rewritten each frame to the inflated price.
   private costPills_!: Record<string, HTMLElement>
   // The arcade points counter (top-right): the number span (swelled as it rolls) and
@@ -571,9 +623,9 @@ class GameView {
       forcePairs: debug.forcePairs,
       forcePairRank: debug.forcePairRank,
       startTokens: debug.startTokens,
-      startChips: debug.startChips,
       startScore: debug.startScore,
       dealerHealth: debug.dealerHealth,
+      hearts: debug.hearts,
       startDealer: debug.startDealer,
       startUpgrades,
       forceDealerNatural: debug.dealerBlackjack,
@@ -584,10 +636,10 @@ class GameView {
     const hasRunOverride =
       startUpgrades !== null ||
       debug.startDealer !== null ||
-      debug.startChips !== null ||
       debug.startScore !== null ||
       debug.startTokens !== null ||
-      debug.dealerHealth !== null
+      debug.dealerHealth !== null ||
+      debug.hearts !== null
     this.resumableRun_ = hasRunOverride ? null : loadSession()
     // Seed the opening balances + dealer/deck identity from the run so the first paint is correct.
     this.seedVisualsFromState_()
@@ -600,12 +652,6 @@ class GameView {
     this.prewarmDeckSprite_() // so the deck's fly-in doesn't hitch mid walk-in
     this.buildOverlay_()
     this.syncOverlay_(now())
-    // Repaint the chips once the shared chip image loads, so it swaps in over the
-    // vector fallback even if the table has already settled (slow network).
-    onChipImageReady(() => {
-      const canvas = this.stage_.canvas
-      this.drawChips_(canvas, computeLayout(canvas.width, canvas.height), now())
-    })
     this.buildIntroScreen_() // tap-to-play gate: unlocks audio + releases the opening on first tap
     this.ensureLoop_() // drive the opening ceremony, then auto-deal the first hand
   }
@@ -617,11 +663,13 @@ class GameView {
     this.state_ = this.session_.snapshot()
     // Show the balances immediately (no roll up from zero on load).
     this.tokenTicker_.set(this.displayedTokens_(now()))
-    this.bankrollTicker_.set(this.displayedBankroll_())
     this.scoreTicker_.set(this.displayedScore_())
     // Seed the dealer to the current integrity so a partway-damaged dealer (resume, or the
     // dealerHealth dev override) shows the right eye flicker + damage sparks from the first frame.
     this.dealer_.setLevel(this.state_.run.integrity, this.state_.run.shiftIndex)
+    // Seed the heart row to the run's current hit points (a resume may sit at partway health) so it
+    // paints the right count from the first frame — no phantom pop/heal.
+    this.hearts_.sync(this.state_.run.hitPoints)
     // Seed the dealer's colour identity + the deck colour to the current dealer, so the bowtie and
     // card backs wear that dealer's colour from the first paint.
     this.deckColorShift_ = this.state_.run.shiftIndex
@@ -743,18 +791,18 @@ class GameView {
   private resumeSettled_(): void {
     const state = this.state_
     this.started_ = true
+    this.startedAt_ = now() // fade the hearts in as Continue snaps the scene up
     this.introHold_ = false
     this.deckHidden_ = false // the resting deck sits on the table (no ceremony flew one in)
     this.openingCountsShown_ = true // show projected counts at once — there's no first-deal hold
-    this.betFlown_ = true // the bet's already on the table — draw it (+ its count), not just the pile
     this.dealer_.standAtMark() // cancel the constructor's parked walk-in; stand upright at the spot
     if (state.phase === 'coda') {
       // The coda is fought against the BANKER, not the last regular dealer. seedVisualsFromState_
-      // seeded run.shiftIndex — already BANKER_SHIFT for a victory coda, but the fought dealer (2-6)
-      // for a bankruptcy coda. Force the Banker's identity + full health + deck colour so a resumed
-      // coda shows him, exactly as the normal entry ceremony (playCodaArrival_) does.
+      // seeded run.shiftIndex — already BANKER_SHIFT for a killed-Dealer-6 coda, but Dealer 6 for a
+      // window-out coda. Force the Banker's identity + full health + deck colour so a resumed coda
+      // shows him, exactly as the normal entry ceremony (playCodaArrival_) does.
       this.dealer_.setShift(BANKER_SHIFT)
-      this.dealer_.setLevel(maxIntegrityFor(BANKER_SHIFT), BANKER_SHIFT)
+      this.dealer_.setLevel(maxHitsFor(BANKER_SHIFT), BANKER_SHIFT)
       this.deckColorShift_ = BANKER_SHIFT
       this.codaCrystalValue_ = state.run.score // best-effort: show the real pot, not 0 (default)
       this.codaCounters_.reveal(now()) // the glass pot pile (drawn in drawChips_), shown all coda long
@@ -769,8 +817,7 @@ class GameView {
         // the high-score BEST, drawn by drawCodaStake and gated on codaStakeShownAt_. The normal flow
         // only sets it when transitioning INTO the prompt, which a resume skips → no projected text.
         // The panel's other inputs stay at their construction defaults, which is exactly the plain
-        // steady offer we want: codaWonHand_ = false (not a fresh win), codaStakeTax_ = null (the
-        // bankruptcy seizure was a one-time entry reveal that already happened).
+        // steady offer we want: codaWonHand_ = false (not a fresh win).
         this.codaStakeShownAt_ = now()
       }
       // (mid-gamble — round in 'player-turn' — needs neither: the hand is up, no stake panel.)
@@ -791,8 +838,11 @@ class GameView {
     const layout = computeLayout(canvas.width, canvas.height)
     this.paintTable_(canvas, layout, this.tableHasDeck_())
     this.drawDealerFigure_(canvas, layout, t)
+    this.updateClown_(t) // a run resumed at dealer 6 snaps the clown to standing beside it
+    this.drawClownFigure_(canvas, layout, t)
     this.drawCards_(canvas, layout, t)
     this.drawChips_(canvas, layout, t)
+    this.drawHearts_(canvas, layout, t)
     this.drawTokens_(canvas, layout, t)
     this.drawMask_(canvas, layout, t)
     this.drawFx_(canvas, layout, t)
@@ -885,8 +935,10 @@ class GameView {
     // Repaint the dealer + strike fx at their CURRENT animated state, so a resize
     // mid-death/mid-strike doesn't blank the figure or the beam.
     this.drawDealerFigure_(canvas, layout, t)
+    this.drawClownFigure_(canvas, layout, t)
     this.drawCards_(canvas, layout, t)
     this.drawChips_(canvas, layout, t)
+    this.drawHearts_(canvas, layout, t)
     this.drawTokens_(canvas, layout, t)
     this.drawMask_(canvas, layout, t)
     this.drawFx_(canvas, layout, t)
@@ -939,6 +991,51 @@ class GameView {
     // resting figure, so sparks must not show while it's dying, walking in, or off.
     if (this.dealerStanding_(timestamp)) {
       drawDamageFx(ctx, layout, this.dealer_.damageBursts(timestamp))
+    }
+  }
+
+  // The clown layer: the dealer-6 sidekick, standing to the dealer's right (below the rail like
+  // the dealer). A pure render — the state was advanced by updateClown_ earlier in the frame.
+  private drawClownFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+    drawClown(canvas.layers.clown.ctx, layout, this.clown_, timestamp)
+  }
+
+  // Advance the clown from the dealer's state (once per frame) and fire its laughs. The clown
+  // follows dealer 6 in/out and to its side entirely off the dealer's public animation state, so
+  // this is the only place it's driven — no hooks in the action sequencing.
+  //  • On dealer 6's DEATH (observe returns 'death') the clown cackles at the wreckage, then goes.
+  //  • Whenever the dealer arms a fresh LAUGH emote, the clown echoes it on a slight delay — so it
+  //    laughs along with dealer 6's showdown-win cackles and its game-over walk-off laugh.
+  private updateClown_(timestamp: number): void {
+    // While the opening is held (the dealer is parked off-screen each frame during the
+    // tap-to-start / title screen, so its arriving() reads ~0 every frame), DON'T let the clown
+    // treat that as a walk-in and trot out over the title screen. It starts following only once the
+    // hold releases and the real walk-in begins (mirrors the walk-in growl's !introHold_ gate).
+    if (this.introHold_) {
+      return
+    }
+    if (this.clown_.observe(this.dealer_, timestamp) === 'death') {
+      // A stand-alone clown cackle at the moment dealer 6 shatters (the dealer itself is silent —
+      // it's being destroyed), landing just as the death reads before the clown turns to leave.
+      const pattern = clownifyLaugh(evilLaughPattern(CLOWN_VOICE_SEED, TOTAL_DEALERS))
+      voice.play(pattern, CLOWN_LAUGH_LEAD, CLOWN_LAUGH_GAIN)
+      this.clown_.emote(timestamp + CLOWN_LAUGH_LEAD * 1000, pattern)
+    }
+    // Echo the dealer's own laughs onto the clown's grin, a beat behind. Every fresh dealer emote
+    // is marked "seen" the frame it appears (so a laugh armed while the clown wasn't yet on screen
+    // is skipped, never fired late) — but only a LAUGH, only while the on-screen figure really is
+    // dealer 6 (never the Banker that walks in after its death), and only while the clown is up,
+    // actually plays. On a walk-off, dealer 6's parting cackle is mirrored as the clown follows.
+    const de = this.dealer_.currentEmote()
+    if (de && de.start !== this.lastClownEmoteStart_) {
+      this.lastClownEmoteStart_ = de.start
+      const isDealer6 = this.dealer_.figureShift(timestamp) === TOTAL_DEALERS
+      if (de.pattern.kind === 'laugh' && isDealer6 && this.clown_.present(timestamp)) {
+        const start = de.start + CLOWN_LAUGH_DELAY_MS
+        const pattern = clownifyLaugh(de.pattern)
+        voice.play(pattern, Math.max(0, start - now()) / 1000, CLOWN_LAUGH_GAIN)
+        this.clown_.emote(start, pattern)
+      }
     }
   }
 
@@ -1074,6 +1171,21 @@ class GameView {
       this.frameProjections_.push(...drawAnalysis(ctx, layout, ar.a, ar.age, ar.fade, timestamp))
     }
 
+    // The dealer HAND-SUMMARY the nexus projects between hands: the window slots (green win / red
+    // loss), the newest animating in. Its box joins frameProjections so the holo lens fans rays onto it.
+    const summary = this.summaryView_(timestamp)
+    if (summary) {
+      // Bound the pips to the clear zone: right of the (measured) powerup column, left of the nexus
+      // (which sits at this vertical level on the right, like the spec/score readouts clamp to).
+      const gap = Math.max(12, layout.width * 0.02)
+      const left = this.hudLeftInset_() + gap
+      const right = nexusHoloLight(layout, timestamp).x - Math.max(36, layout.width * 0.025)
+      const draw = drawHandSummary(ctx, layout, summary, { left, right })
+      this.frameProjections_.push(...draw.rays)
+      // Launch any due score deltas from their green check's live position (now known this frame).
+      this.emitScoreDeltas_(draw.slotCenters, timestamp)
+    }
+
     // The info-button spec sheet the nexus projects: the ruleset + token inflation,
     // centred on the felt, flickering in like the Analyze readout. Its panel box goes
     // into frameProjections so the holo lens fans its rays onto it (drawMask).
@@ -1088,26 +1200,18 @@ class GameView {
     const scr = this.scoreRender_(timestamp)
     if (scr) {
       // The cash-out / lost-to-Banker boards (run went through the coda) sit slightly left of
-      // centre, like the coda scoreboards; an early bankruptcy (no coda) stays centred.
+      // centre, like the coda scoreboards. (Every run reaches the coda now, so run.coda is set here.)
       this.frameProjections_.push(...drawScoreTitle(ctx, layout, scr.age, timestamp))
       this.frameProjections_.push(...drawScoreSheet(ctx, layout, scr.readout, scr.age, 1, timestamp, this.state_.run.coda))
     }
 
-    // The combo multiplier the nexus projects big in the middle of the felt — ticking up on
-    // a hit, down on a bust, or holding a hand's "base +N / ×mult" payout.
-    const cp = this.comboProjRender_(timestamp)
-    if (cp) {
-      this.frameProjections_.push(...drawComboProjection(ctx, layout, cp.proj, cp.age, cp.fade, timestamp))
-    }
     // The BANKER SCOREBOARD: project the double-or-nothing "points at risk" stake at the prompt
-    // (between hands). At the BANKRUPTCY entry the same panel leads with the tax seizure (Points →
-    // −tax% → Net) folded in above the offer (cs.tax = the bankruptcy variant), all on one screen;
-    // every other prompt passes tax = null (the victory / between-hands variant).
+    // (between hands).
     const cs = this.codaStakeRender_(timestamp)
     if (cs) {
       // getPersonalBest() is in-memory cached after its first read, so the per-frame call here is
       // cheap; it's the prior best (recordRun only updates at run-end), i.e. the score to beat.
-      this.frameProjections_.push(...drawCodaStake(ctx, layout, cs.points, cs.wonHand, getPersonalBest(), cs.age, cs.fade, timestamp, cs.tax, CODA_STAKE_ROW_STAGGER))
+      this.frameProjections_.push(...drawCodaStake(ctx, layout, cs.points, cs.wonHand, getPersonalBest(), cs.age, cs.fade, timestamp))
     }
 
     // The opening "TAP TO START" the nexus projects while the game waits for the first tap. Its
@@ -1215,8 +1319,8 @@ class GameView {
     // otherwise show the standing best (the target this run missed). A coda bust (0) never records.
     const isNewBest = this.state_.newPersonalBest
     return {
-      // `won` is never set now (the run resolves through the coda): a cash-out banks the score,
-      // a coda bust zeroes it, and a pre-coda chip bust-out is a plain bankruptcy.
+      // `won` is never set (the run resolves through the coda): a cash-out banks the score, a coda
+      // bust zeroes it. Every run now reaches the coda, so 'BANKRUPT' is an unreachable fallback.
       title: run.cashedOut ? 'CASHED OUT' : run.coda ? 'BUSTED' : 'BANKRUPT',
       rows: [
         // Player points are locale-grouped (thousands separators — "," or "." per the runtime
@@ -1269,7 +1373,6 @@ class GameView {
         { text: `${SHOE_DECKS}DECK`, kind: 'house' },
         { text: 'H16', kind: 'house' },
         { text: DEFAULT_ROUND_RULES.dealerSoft17 === 'stand' ? 'S17' : 'H17', kind: 'house' },
-        { text: `BJ_${DEFAULT_ROUND_RULES.blackjackPayoutNumerator}:${DEFAULT_ROUND_RULES.blackjackPayoutDenominator}`, kind: 'house' },
       ]
       return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags: codaFlags }
     }
@@ -1305,23 +1408,17 @@ class GameView {
     if (rules.dealerHardHitCeiling > 17) {
       house(`H${rules.dealerHardHitCeiling}_when_behind`)
     }
-    // Blackjack payout — a house baseline unless a Payout upgrade lifts it in the
-    // player's favour (then it reads as a green player mod).
-    const bj = `BJ_${rules.blackjackPayoutNumerator}:${rules.blackjackPayoutDenominator}`
-    if (rules.blackjackPayoutNumerator / rules.blackjackPayoutDenominator > 1.5) {
-      player(bj)
-    } else {
-      house(bj)
+    // Payout upgrade: a natural blackjack scores bonus points (T1 +50%, T2/T3 +100%).
+    const bjBonus = blackjackPointBonusFor(run.upgrades)
+    if (bjBonus > 0) {
+      player(`BJ_+${Math.round(bjBonus * 100)}%`)
     }
     if (rules.allowSplit) {
       house('SPLIT_TO_2') // may split once, up to 2 hands (round.ts MAX_HANDS)
     }
-    // Heal-on-win: a late dealer repairs itself whenever it beats the player.
-    if (shift.healOnWin[1] > 0) {
+    // A late dealer claws back a hit whenever it beats the player.
+    if (shift.maxHeals > 0) {
       house('DEALER_HEALS')
-    }
-    if (shift.minBetPct > 0) {
-      house(`BET_FLOOR_${Math.round(shift.minBetPct * 100)}%`)
     }
     if (this.state_.abilitiesLocked) {
       house('NO_ABILITIES')
@@ -1329,15 +1426,13 @@ class GameView {
 
     // Player roguelite mods (Sabotage / Payout / Tokens), all working in the player's
     // favour — drawn in green.
-    // The T1 refund only ever pays out when it's the top Sabotage tier: a higher tier
-    // (T2 voids the losing hand, T3 hijacks the dealer's natural into a win) supersedes
-    // the loss-to-dealer-natural branch entirely (see round.ts), so the refund never
-    // fires — hide the flag rather than project a moot rule.
-    if (rules.dealerNaturalRefundRatio > 0 && !rules.voidDealer21 && !rules.hijackDealerNatural) {
-      player(`REFUND_${Math.round(rules.dealerNaturalRefundRatio * 100)}%`)
+    // Sabotage T1 pays flat energy on any dealer 21, and stays active at every tier (T2/T3 add the
+    // redeal + hijack on top), so the flag shows the whole time the run owns Sabotage.
+    if (rules.dealer21Energy) {
+      player(`+${SABOTAGE_DEALER21_ENERGY}E_ON_D21`)
     }
     if (rules.voidDealer21) {
-      player('VOID_D21')
+      player('REDEAL_D21')
     }
     if (rules.hijackDealerNatural) {
       player('HIJACK_BJ')
@@ -1358,34 +1453,40 @@ class GameView {
   // result. Withheld until the card motion settles, so it never spoils the reveal.
   private handResults_(timestamp: number): (RoundResult | undefined)[] | undefined {
     const { phase, round } = this.state_
-    if (phase !== 'resolved' || !round) {
+    if (!round) {
       return undefined // 'over' shows the run summary on the felt (nexus score screen), not per-hand results
+    }
+    // A settled hand projects its per-hand status ("Win"/"Lose"/"Blackjack"/"Push") beside the
+    // count. Two phases carry a resolved hand: a normal 'resolved' hand, AND a resolved CODA hand —
+    // the coda phase stays 'coda' the whole way through (the boss-kill/window-out entry hand and
+    // every double-or-nothing hand), so a win/loss to the Banker would otherwise show a bare count
+    // with no status. Both get the tag; 'over' (final scoreboard) falls through to undefined.
+    const settledCoda = phase === 'coda' && round.status === 'resolved'
+    if (phase !== 'resolved' && !settledCoda) {
+      return undefined
     }
     if (this.anim_.isAnimating(timestamp)) {
       return undefined
     }
-    return round.hands.map((hand) => handResultLabel(hand, round.rules))
+    return round.hands.map((hand) => handResultLabel(hand))
   }
 
-  // The win/loss reveal sting. A finished run ('over') keys off run.won; a normal
-  // resolve sums the hands' net chips so a split reports its overall outcome — a
-  // net gain wins, a net loss loses, an exact push stays silent.
+  // The result reaction on a card-settle. The per-hand win/loss STING no longer plays here — it's
+  // timed to the hand-summary mark's fade-in (summaryAppear_) — so a normal resolve only triggers
+  // the dealer's VOICE. A finished run ('over') still plays its end sting off run.won/cashedOut (the
+  // final scoreboard has no hand-summary to key off).
   private playResultSting_(): void {
     const { phase, run, round } = this.state_
     if (phase === 'over') {
-      // The run ended: a coda cash-out (banked the score) plays the win sting; a coda bust or a
-      // pre-coda bankruptcy plays the loss sting. (Bankruptcy isn't a hand the dealer out-scored,
-      // so no victory laugh either way.)
+      // The run ended: a coda cash-out (banked the score) plays the win sting; a coda bust plays
+      // the loss sting.
       sfx.play(run.won || run.cashedOut ? 'player-won' : 'player-lost')
       return
     }
     if (phase === 'resolved' && round) {
-      const net = round.hands.reduce((sum, hand) => sum + handNet(hand, round.rules), 0)
-      if (net > 0) {
-        sfx.play('player-won')
-      } else if (net < 0) {
-        sfx.play('player-lost')
-      }
+      // The player-won/player-lost sting itself is NOT played here any more — it fires with the
+      // hand-summary mark's fade-in (see summaryAppear_), and nowhere else. This card-settle beat
+      // now only drives the dealer's VOICE reaction (laugh / growl).
       // A dealer that was just DESTROYED doesn't react. applyRound has already advanced the
       // shift to the next dealer (so playDealerAngry/Laugh would speak in the WRONG dealer's
       // voice) and zeroed handsThisDealer — which, at a resolved hand, only happens on a kill.
@@ -1477,7 +1578,7 @@ class GameView {
   }
 
   // A hand just started (cards dealing): a dealer 2–6 LAUGHS if the player has shoved ALL-IN
-  // (bet consumes their whole stack) while the table is still healthy (> 25% integrity) — the
+  // (down to their last window hand) while the table is still healthy (> 25% of its hits) — the
   // house savouring a desperate gamble. Fires once per deal (a fresh round appearing).
   private checkDealLaugh_(prevRound: Round | null): void {
     const round = this.state_.round
@@ -1488,10 +1589,12 @@ class GameView {
     if (run.shiftIndex <= 1) {
       return
     }
-    const bet = round.hands.reduce((sum, hand) => sum + hand.bet, 0)
-    const allIn = bet >= run.chips
-    const healthy = run.integrity > ALLIN_LAUGH_HEALTH * maxIntegrityFor(run.shiftIndex)
-    if (allIn && healthy) {
+    // The house savours it when the player is down to their last window hand with the dealer
+    // still healthy — the escalation analogue of the old all-in shove.
+    const shift = getShift(run.shiftIndex)
+    const lastCall = run.handsThisDealer >= shift.maxHands - 1
+    const healthy = run.integrity > ALLIN_LAUGH_HEALTH * maxHitsFor(run.shiftIndex)
+    if (lastCall && healthy) {
       this.playDealerLaugh_()
     }
   }
@@ -1526,7 +1629,7 @@ class GameView {
       return
     }
     const run = this.state_.run
-    const onTheRopes = run.tokens < ROPES_TOKENS && run.chips < ROPES_HANDS * nextBet(run)
+    const onTheRopes = run.tokens < ROPES_TOKENS
     const pattern = onTheRopes ? evilLaughPattern(seed, shift) : angryGrowlPattern(seed, shift)
     voice.play(pattern, 0) // starts now, in step with the walk-in's first steps
     this.dealer_.emote(timestamp, pattern)
@@ -1580,41 +1683,244 @@ class GameView {
     }
   }
 
-  // The chips layer: house + player bankroll stacks (always) plus the current
-  // hand's bet chips and any in-flight payout. Uses the retained ending round
-  // while the table is settling, and the frozen bankroll while a payout waits.
+  // Chips/bankroll are gone; this layer now only carries the coda's glass winnings counters (the
+  // double-or-nothing pot made physical). The dealer hand-summary is a nexus projection (drawCards_).
   private drawChips_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
     const ctx = canvas.layers.chips.ctx
-    // Once the last dealer dies (the coda), the chips are irrelevant — fade the whole stack out
-    // and drop the count entirely (there are no bets in the coda).
-    if (this.state_.run.coda) {
-      ctx.clearRect(0, 0, layout.width, layout.height)
-      const fade = 1 - (timestamp - this.codaChipsFadeAt_) / CODA_CHIPS_FADE_MS
-      if (fade > 0) {
-        ctx.save()
-        ctx.globalAlpha = fade
-        drawPlayerPile(ctx, layout, this.displayedBankroll_())
-        ctx.restore()
-      }
-      // The glass winnings counters: the double-or-nothing pot made physical. Drawn on
-      // the (now bet-free) chips layer; the view is empty until the entry prompt reveals
-      // the first plaque, so nothing shows during the boss death / Banker walk-in.
+    ctx.clearRect(0, 0, layout.width, layout.height)
+    // The glass pot appears with the coda proper — held back while a heart-death is still popping its
+    // final chip on the way in (heartDeathPending_), so the two don't overlap.
+    if (this.state_.run.coda && !this.heartDeathPending_) {
       drawCodaCounters(ctx, layout, this.codaCrystalValue_, this.codaCounters_.frame(timestamp))
+    }
+  }
+
+  // The player hit-point row (heart-chips) plus its pop/heal beams. Shown throughout normal play; it
+  // clears once the coda begins (hit points are a normal-play resource), except while the fatal pop
+  // is still animating in on a heart-death entry.
+  private drawHearts_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+    const ctx = canvas.layers.hearts.ctx
+    // Nothing on the tap-to-start / title screen — the hearts belong to a live run, and they ease in
+    // once it begins (fade below).
+    if (!this.started_) {
+      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
-    if (!this.betFlown_) {
-      // From the tap-to-start intro through the walk-in, show just the player's chip STACK (no
-      // count). The count turns on when the first bet flies from the stack (see syncChips).
-      drawPlayerPile(ctx, layout, this.displayedBankroll_())
+    if (this.state_.run.coda && !this.heartDeathPending_ && !this.hearts_.isAnimating(timestamp)) {
+      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
-    const round = this.state_.round ?? this.collectRound_
-    // Roll the bankroll number toward its true value (it jumps when a payout is
-    // released) so it ticks up as the chips settle instead of snapping.
-    this.bankrollTicker_.retarget(this.displayedBankroll_(), timestamp)
-    const chips = this.bankrollTicker_.value(timestamp)
-    const chipsScale = this.bankrollTicker_.scale(timestamp)
-    this.frameProjections_.push(...drawChips(ctx, layout, { chips, chipsScale, round }, this.chips_, timestamp, this.firstHandCountsHidden_(timestamp)))
+    const fade = Math.min(1, Math.max(0, (timestamp - this.startedAt_) / HEARTS_FADE_MS))
+    drawHearts(ctx, layout, this.hearts_.view(timestamp), timestamp, fade)
+  }
+
+  // The dealer hand-summary shown between hands: the played slots (green win / red loss) filling the
+  // dealer's window, the newest scaling in, fading out on Next hand. Null while a hand is live, the
+  // cards are still settling, or the summary has fully faded.
+  private summaryView_(t: number): HandSummaryView | null {
+    const s = this.summary_
+    if (!s) {
+      return null
+    }
+    // Fading out (the player called the next hand): keep painting the board as it winds down —
+    // deliberately BEFORE the appear gate below, since the next-hand ceremony is already running.
+    // Gating this on the appear/phase checks is what made the board snap out instead of fading.
+    if (this.summaryFadeAt_ > 0) {
+      const presence = 1 - (t - this.summaryFadeAt_) / SUMMARY_FADE_MS
+      if (presence <= 0) {
+        this.summary_ = null
+        return null
+      }
+      // Fade OUT front-loaded (smoothStart2): the bright, GLOWING win/loss marks need their alpha to
+      // drop fast early or a linear ramp makes them hold-then-snap (display gamma), while the faint
+      // gray pips fade smoothly regardless. Matching the whole board to this curve makes every element
+      // — pips, marks, and the holo rays keyed off `fade` below — wind down as one.
+      return { slots: s.slots, revealFrom: s.revealFrom, cashInElapsed: t - s.cashInAt, fade: smoothStart2(presence) }
+    }
+    // Not shown until its appear anchor: AFTER the laser lands on a win, or the card-settle on a loss
+    // (set in run_). Until then — and until it's actually scheduled (appearAt 0) — nothing is drawn.
+    if (s.appearAt === 0 || t < s.appearAt) {
+      return null
+    }
+    const phase = this.state_.phase
+    // A heart-death entry keeps painting the losing board over the 'coda' phase until its final pop
+    // has played and the walk-off begins (heartDeathPending_).
+    if (phase !== 'resolved' && phase !== 'choosing-upgrade' && !this.heartDeathPending_) {
+      return null
+    }
+    // The whole board eases IN from its appear anchor; then every new slot cascades in from cashInAt
+    // (= the reveal moment) at CASH_IN_STAGGER intervals — split/double checks and kill cash-in alike.
+    // smoothEnd2 mirrors the fade-out: the board rises quickly then settles, so the pips + holo rays are
+    // present fast without the marks popping in late (the mark-reveal cascade runs after fade-in ends).
+    const fade = smoothEnd2(clamp01((t - s.appearAt) / SUMMARY_FADE_IN_MS))
+    return { slots: s.slots, revealFrom: s.revealFrom, cashInElapsed: t - s.cashInAt, fade }
+  }
+
+  // Stamp WHEN the hand-summary eases in (its appear anchor: after the laser lands on a win, at the
+  // card-settle on a loss), derive the kill cash-in start, and set the Next-hand consent gate to the
+  // moment the result mark (and any kill cascade) has fully revealed — so a click never fast-forwards
+  // past the player seeing the outcome. Called on the resolve once the laser timing is known.
+  private summaryAppear_(appearAt: number): void {
+    const s = this.summary_
+    if (!s) {
+      this.resolveAttackEnd_ = appearAt
+      return
+    }
+    s.appearAt = appearAt
+    const revealAt = appearAt + SUMMARY_APPEAR_HOLD
+    // Every new slot cascades uniformly from the reveal moment (cashInAt = revealAt) at
+    // CASH_IN_STAGGER — a split/double's two checks, and a kill's whole cash-in run, fill one-by-one.
+    s.cashInAt = revealAt
+    // The win/loss sting — the ONLY place these play — timed to the mark's fade-in (revealAt). An
+    // all-push wash never gets here (summary_ is null, handled above).
+    const newMarks = s.slots.slice(s.revealFrom, s.revealFrom + s.playedCount)
+    const stingDelay = Math.max(0, revealAt - now()) / 1000
+    if (newMarks.includes('win')) {
+      sfx.play('player-won', stingDelay)
+    } else if (newMarks.includes('loss')) {
+      sfx.play('player-lost', stingDelay)
+    }
+    // The consent gate: once the whole cascade of new (non-empty) slots has fully revealed. They sit
+    // contiguously from revealFrom (played result + any cash-in), so the last is at index newFilled-1.
+    const newFilled = s.slots.slice(s.revealFrom).filter((slot) => slot !== 'empty').length
+    this.resolveAttackEnd_ = revealAt + Math.max(0, newFilled - 1) * CASH_IN_STAGGER + CASH_IN_REVEAL_MS
+  }
+
+  // Build the fly-in schedule from a resolved round's per-green-check deltas (winPointDeltas): pair
+  // each with the next WIN slot in the summary's new run, to launch when that check reveals (all at
+  // once on a normal win, cascaded on a kill). Hold the counter at the pre-resolve score, and extend
+  // the Next-hand consent gate so the last "+N" reaches the counter before the hand can be cleared.
+  private setupScoreDeltas_(prevScore: number, deltas: number[], revealAt: number): void {
+    const s = this.summary_
+    if (!s) {
+      return
+    }
+    this.scoreDeltas_.reset()
+    this.deltaHoldBase_ = prevScore
+    this.deltaLandedSum_ = 0
+    this.deltaEmitted_ = 0
+    this.deltaLandIndex_ = 0
+    this.deltaPending_ = []
+    let di = 0
+    let lastSpawn = revealAt
+    for (let k = 0; s.revealFrom + k < s.slots.length && di < deltas.length; k += 1) {
+      if (s.slots[s.revealFrom + k] !== 'win') {
+        continue // losses (red ✗) score nothing — no green check, no delta
+      }
+      // Launch each delta as its own check reveals — slot k pops at revealAt + k·CASH_IN_STAGGER — so
+      // a split/double's two "+N"s and a kill's cash-in fly one-by-one, matching the checks.
+      const spawnAt = revealAt + k * CASH_IN_STAGGER
+      this.deltaPending_.push({ value: deltas[di], slotIndex: s.revealFrom + k, spawnAt, rowIndex: di })
+      lastSpawn = Math.max(lastSpawn, spawnAt)
+      di += 1
+    }
+    this.resolveAttackEnd_ = Math.max(this.resolveAttackEnd_, lastSpawn + DELTA_FLY_MS)
+  }
+
+  // Diff the player's hit points across a (non-fatal) resolve and drive the heart VFX: a lost round
+  // POPs the last chip, a qualifying win HEALs the first empty one — both fired at `startAt` (after
+  // the summary's mark is fully revealed), and the Next-hand consent gate held until the effect ends.
+  // When hit points didn't change, just keep the animator's committed count in step for the next diff.
+  private syncHearts_(prevHitPoints: number, startAt: number): void {
+    const hp = this.state_.run.hitPoints
+    if (hp === prevHitPoints) {
+      this.hearts_.sync(hp)
+      return
+    }
+    if (hp < prevHitPoints) {
+      this.schedulePop_(startAt) // a loss always pops exactly one
+    } else {
+      this.scheduleHeal_(hp - prevHitPoints, startAt) // a win heals one, or several on a kill
+    }
+    this.resolveAttackEnd_ = Math.max(this.resolveAttackEnd_, this.hearts_.animEndAfter(startAt))
+  }
+
+  // Fire the heart-pop laser: the animator's pop, the red lens flare, and the prepare/impact sounds.
+  // No dealer laser competes on a loss, so the lens is free to flare; the impact lands a beat after
+  // launch as the beam reaches the chip (≈ the animator's beam travel).
+  private schedulePop_(startAt: number): void {
+    const t = now()
+    this.hearts_.pop(startAt)
+    this.nexus_.fire(t, startAt, startAt + HEART_MUZZLE_MS)
+    sfx.play('laser-prepare', Math.max(0, startAt - t) / 1000)
+    sfx.play('laser-impact', Math.max(0, startAt + 120 - t) / 1000)
+  }
+
+  // Fire the heart-heal beam for `count` hearts: the animator's heal + the repair chime. The green
+  // band is drawn from the nexus lens by the hearts layer (no dealer-side heal is triggered).
+  private scheduleHeal_(count: number, startAt: number): void {
+    this.hearts_.heal(count, startAt)
+    sfx.playHeal(Math.max(0, startAt - now()) / 1000)
+  }
+
+  // Launch any scheduled deltas whose green check has revealed by `now`, from that check's live
+  // position (slotCenters, straight off the summary draw). Called each frame from drawCards_.
+  private emitScoreDeltas_(slotCenters: readonly Point[], now: number): void {
+    while (this.deltaEmitted_ < this.deltaPending_.length) {
+      const d = this.deltaPending_[this.deltaEmitted_]
+      if (now < d.spawnAt) {
+        break // pending are in ascending spawnAt order — the rest aren't due yet
+      }
+      const from = slotCenters[d.slotIndex]
+      if (!from) {
+        break // the summary isn't laying this slot out this frame — retry next frame
+      }
+      this.scoreDeltas_.emit(d.value, from, d.rowIndex, now)
+      this.deltaEmitted_ += 1
+    }
+  }
+
+  // Tick the held counter up by every delta that reached its row since last frame, and ping the
+  // arrival tone (its pitch stepping up the run so a kill's ascending cash-in rings as a rising
+  // arpeggio). Called every frame from the loop.
+  private landScoreDeltas_(now: number): void {
+    for (const value of this.scoreDeltas_.landed(now)) {
+      this.deltaLandedSum_ += value
+      const pitch = Math.min(2, Math.pow(2, this.deltaLandIndex_ / 12))
+      sfx.playTone('score-delta-land', 0, pitch)
+      this.deltaLandIndex_ += 1
+    }
+  }
+
+  // Where row 0 of the delta stack lands: just below the score counter's number, right-anchored to
+  // its right edge (the "+N"s grow leftward). Canvas space (shared CSS-pixel coords, like tokenTarget).
+  private scoreDeltaTarget_(): Point {
+    const host = this.stage_.container.getBoundingClientRect()
+    const box = this.pointsRowEl_.getBoundingClientRect()
+    return { x: box.right - host.left, y: box.bottom - host.top + box.height * 0.4 }
+  }
+
+  private drawScoreDeltas_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+    const ctx = canvas.layers.deltas.ctx
+    if (!this.scoreDeltas_.isAnimating(timestamp)) {
+      ctx.clearRect(0, 0, layout.width, layout.height)
+      return
+    }
+    drawScoreDeltas(ctx, layout, this.scoreDeltas_, timestamp, this.scoreDeltaTarget_())
+  }
+
+  // The Next-hand button is CONSENT, not a fast-forward: if the resolve choreography (reward → laser
+  // → summary reveal) is still playing, arm `proceedPending` and let the frame loop advance once the
+  // gate passes; past the gate, advance now. Run inside run_ (the click wrapper), so even the
+  // arm-only path re-syncs the overlay (disabling the button now that consent's been given).
+  private requestNextHand_(): void {
+    if (now() >= this.resolveAttackEnd_) {
+      this.session_.nextHand()
+    } else {
+      this.proceedPending_ = true
+    }
+  }
+
+  // The rendered RIGHT edge of the left powerup ("ability") column, in canvas/CSS coords — so the
+  // hand-summary lays its pips out CLEAR of it. The column's width is LABEL-DRIVEN (max-width 44vw,
+  // stretched to the longest ability name), so it's MEASURED, not assumed. 0 when it's hidden/empty.
+  private hudLeftInset_(): number {
+    const powers = this.powersEl_.getBoundingClientRect()
+    if (powers.width <= 0) {
+      return 0
+    }
+    const host = this.stage_.container.getBoundingClientRect()
+    return powers.right - host.left
   }
 
   // The top layer: reward tokens flying up to the counter. Cleared and left blank
@@ -1635,18 +1941,6 @@ class GameView {
     const host = this.stage_.container.getBoundingClientRect()
     const box = this.tokensEl_.getBoundingClientRect()
     return { x: box.left - host.left + box.width / 2, y: box.top - host.top + box.height / 2 }
-  }
-
-  // The bankroll shown in the stack + status line: `run.chips` minus whatever is
-  // committed on the table as the live bet (so the count never double-shows the
-  // bet). While a payout is settling it holds the frozen pre-settle value.
-  private displayedBankroll_(): number {
-    if (this.heldChips_ !== null) {
-      return this.heldChips_
-    }
-    const round = this.state_.round
-    const bet = round ? round.hands.reduce((sum, hand) => sum + hand.bet, 0) : 0
-    return this.state_.run.chips - bet
   }
 
   // The count to show: the run total minus whatever is still flying toward the
@@ -1681,6 +1975,11 @@ class GameView {
   // The points to show: the pre-resolve value while a reward is still landing (heldScore),
   // otherwise the live run total. The ticker rolls up to whatever this returns.
   private displayedScore_(): number {
+    // While the fly-in deltas are landing, the counter shows the pre-resolve base plus only what has
+    // arrived so far — it climbs step-by-step with each "+N" (never ahead of them).
+    if (this.deltaHoldBase_ !== null) {
+      return this.deltaHoldBase_ + this.deltaLandedSum_
+    }
     return this.heldScore_ ?? this.state_.run.score
   }
 
@@ -1759,57 +2058,12 @@ class GameView {
     restartAnimation(this.pointsDeltaEl_, coda ? 'is-flashing-coda' : 'is-flashing')
   }
 
-  // Project a hit's combo tick into the middle of the felt: the multiplier rolls `from`→`to`
-  // ('up' on a survived hit, 'down' to ×1.00 when a lost hand resets the combo). Held back until `startAt` — the
-  // drawn card's settle — so it never spoils the outcome before the flip. Then holds + fades.
-  private showComboTick_(from: number, to: number, tone: 'up' | 'down', startAt: number): void {
-    this.comboProj_ = { from, to, tone, startAt, hideAt: startAt + COMBO_TICK_MS + COMBO_HOLD_MS }
-  }
-
-  // Trigger a combo tick from a state change: a surviving hit grew the combo (tick up), or a
-  // lost hand (busted or beaten) reset it (tick down to ×1.00). Held back to the card's settle (anim.animEnd, or now
-  // if already settled) so it doesn't reveal survived/busted before the card flips. Skips
-  // New-run/game-over transitions (prevPhase/phase 'over'), which zero the combo silently.
-  private updateComboProjection_(prevCombo: number, prevPhase: SessionState['phase'], now: number): void {
-    const combo = this.state_.run.combo
-    const startAt = Math.max(now, this.anim_.animEnd) // after the drawn card is revealed
-    if (combo > prevCombo) {
-      this.showComboTick_(comboMultiplier(prevCombo), comboMultiplier(combo), 'up', startAt)
-    } else if (combo < prevCombo && prevPhase !== 'over' && this.state_.phase !== 'over') {
-      this.showComboTick_(comboMultiplier(prevCombo), comboMultiplier(0), 'down', startAt)
-    }
-  }
-
-  // The combo projection to paint this frame (multiplier ticked toward its target, plus the
-  // strike-in age + fade), or null when it hasn't appeared yet (before startAt), nothing is
-  // up, or the game-over score sheet owns the felt. Clears itself once the fade-out completes.
-  private comboProjRender_(now: number): { proj: ComboProjection; age: number; fade: number } | null {
-    const p = this.comboProj_
-    if (!p || this.state_.phase === 'over' || now < p.startAt) {
-      return null
-    }
-    let fade = 1
-    if (now >= p.hideAt) {
-      fade = 1 - (now - p.hideAt) / COMBO_PROJ_FADE_MS
-      if (fade <= 0) {
-        this.comboProj_ = null
-        return null
-      }
-    }
-    const tickT = Math.min(1, Math.max(0, (now - p.startAt) / COMBO_TICK_MS))
-    const eased = 1 - (1 - tickT) * (1 - tickT) * (1 - tickT) // smoothEnd3 (ease-out)
-    const mult = p.from + (p.to - p.from) * eased
-    return { proj: { mult, tone: p.tone }, age: now - p.startAt, fade }
-  }
-
   // The BANKER SCOREBOARD (docs/scoreboards.md) to paint this frame: full presence at the prompt
   // (live values), then fading out once a hand is dealt (DOUBLE) or the run ends (cash-out). Its
   // content freezes the instant it starts fading, so the fade shows the prompt it's leaving, not
-  // the live hand behind it. `tax` set → the bankruptcy variant (the seizure rows fold into the
-  // panel; set only for the bankruptcy ENTRY prompt and cleared with the panel); null → the
-  // victory / between-hands offer. Null return when nothing's up. (Mirrors comboProjRender's
+  // the live hand behind it. Null return when nothing's up. (Mirrors comboProjRender's
   // self-clearing.)
-  private codaStakeRender_(now: number): { points: number; wonHand: boolean; age: number; fade: number; tax: CodaTaxBreakdown | null } | null {
+  private codaStakeRender_(now: number): { points: number; wonHand: boolean; age: number; fade: number } | null {
     if (this.codaStakeShownAt_ <= 0) {
       return null
     }
@@ -1818,7 +2072,7 @@ class GameView {
       // Use the ROLLING counter value (the same one the top-right score rides), not the raw
       // displayedScore() — so on a win the projected stake ticks up to the doubled total in
       // lockstep with the HUD instead of snapping when the held reward releases.
-      return { points: this.scoreTicker_.value(now), wonHand: this.codaWonHand_, age: now - this.codaStakeShownAt_, fade: 1, tax: this.codaStakeTax_ }
+      return { points: this.scoreTicker_.value(now), wonHand: this.codaWonHand_, age: now - this.codaStakeShownAt_, fade: 1 }
     }
     // The prompt just closed — fade out, freezing the content at the moment it began hiding.
     if (this.codaStakeHideAt_ <= 0) {
@@ -1830,10 +2084,9 @@ class GameView {
     if (fade <= 0) {
       this.codaStakeShownAt_ = 0
       this.codaStakeHideAt_ = 0
-      this.codaStakeTax_ = null // gone with the panel — the next prompt is a plain offer
       return null
     }
-    return { points: this.codaStakeFadePoints_, wonHand: this.codaStakeFadeWon_, age: now - this.codaStakeShownAt_, fade, tax: this.codaStakeTax_ }
+    return { points: this.codaStakeFadePoints_, wonHand: this.codaStakeFadeWon_, age: now - this.codaStakeShownAt_, fade }
   }
 
   // Animation loop: repaints the dynamic canvas layers every frame. It never fully
@@ -1885,6 +2138,7 @@ class GameView {
     // flip `started` (releasing the held walk-in + first deal), reveal the HUD, drop the catcher.
     if (this.tapAt_ > 0 && !this.started_ && timestamp >= this.tapAt_ + TAP_FADE_MS) {
       this.started_ = true
+      this.startedAt_ = timestamp // begin the hearts' fade-in with the HUD
       this.stage_.overlay.classList.remove('hud-hidden')
       this.introCatcher_?.remove()
       this.introCatcher_ = null
@@ -2011,13 +2265,6 @@ class GameView {
         this.playWalkOffLaugh_(timestamp)
       }
     }
-    // Release the frozen bankroll the moment the settling chips land (which is
-    // well before the longer card gather + shuffle finishes), so the stack grows
-    // or shrinks as the chips arrive.
-    if (this.clearPending_ && timestamp >= this.clearEnd_) {
-      this.heldChips_ = null
-      this.clearPending_ = false
-    }
     // Track the riffle's progress (null when not shuffling) — used to fire the shuffle
     // sfx at the merge and to draw the reforming deck.
     const shuffleT = this.anim_.shuffle()
@@ -2074,14 +2321,30 @@ class GameView {
       this.codaMusicFadeAt_ = 0
       music.enterCodaSilence()
     }
+    // Heart-death: the final chip has finished popping — now let the dealer walk off and the coda
+    // begin (deferred from beginHeartDeathCoda_ so the red X + last pop played first).
+    if (this.heartDeathPending_ && timestamp >= this.heartDeathAt_) {
+      this.heartDeathPending_ = false
+      const e = this.heartDeathEntry_
+      this.heartDeathEntry_ = null
+      if (e) {
+        this.beginCoda_(e.prevScore, e.prevIntegrity, e.prevShift, e.integrity, now())
+      }
+    }
     this.drawCards_(canvas, layout, timestamp)
     this.drawChips_(canvas, layout, timestamp)
+    this.drawHearts_(canvas, layout, timestamp)
     this.drawTokens_(canvas, layout, timestamp)
+    this.drawScoreDeltas_(canvas, layout, timestamp)
     this.drawMask_(canvas, layout, timestamp)
+    this.updateClown_(timestamp)
     this.drawDealerFigure_(canvas, layout, timestamp)
+    this.drawClownFigure_(canvas, layout, timestamp)
     this.drawFx_(canvas, layout, timestamp)
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter_(timestamp)
+    // Fly-in score deltas reaching their rows: tick the held counter up by each + ping the tone.
+    this.landScoreDeltas_(timestamp)
     // Fallback release: a token-less win (a chips-only push earns points but flies no
     // tokens, so nothing lands to trigger the tick above) still ticks once its reward
     // would have arrived.
@@ -2098,9 +2361,8 @@ class GameView {
       // A dealer's heal beam holds the settle (buttons + result) until it finishes,
       // so the repair always reads in full before the player can call the next hand.
       this.nexus_.isHealing(timestamp) ||
-      // A win's reward tokens shoot from the utility light BEFORE it charges the laser;
-      // hold the settle (and the Next-hand button) until they've landed.
-      timestamp < this.attackReadyAt_
+      // A heart popping/healing keeps the settle open too, so its beam finishes before the next deal.
+      this.hearts_.isAnimating(timestamp)
 
     // The card + chip sequence just finished: run the one-time settle. Other systems
     // (the dealer's damage/heal FX and its death choreography) may keep animating past
@@ -2141,35 +2403,47 @@ class GameView {
       // shreds when it walks in (playArrival). Same for the Banker coda entry (codaEntering): he
       // shreds them on arrival (playCodaArrival → codaShredEndAt), NOT here — the settle can fire
       // during the boss death, and clearing them then made the dealt cards despawn before the
-      // shred instead of being chewed up.
-      if (!this.pendingCeremony_ && !this.codaEntering_) {
+      // shred instead of being chewed up. And a WINDOW-OUT walk-off (pendingWindowOut): the survivor
+      // strides off and its replacement's shred is deferred to playWindowArrival — the settle fires
+      // during the walk-off (spawn hasn't begun yet), and clearing them here left nothing to shred.
+      if (!this.pendingCeremony_ && !this.codaEntering_ && !this.pendingWindowOut_) {
         this.collectRound_ = null
-      }
-      // Release the frozen bankroll only when a next-hand CLEAR just finished (the
-      // payout chips have moved) — NOT when a resolve animation settles, so the
-      // count stays put through the resolved-waiting state until next hand.
-      if (this.clearPending_) {
-        this.heldChips_ = null
-        this.clearPending_ = false
       }
       this.drawCards_(canvas, layout, timestamp)
       this.drawChips_(canvas, layout, timestamp)
+      this.drawHearts_(canvas, layout, timestamp)
       this.drawTokens_(canvas, layout, timestamp)
       this.syncOverlay_(timestamp)
 
       // No Deal button — once the deck is ready, deal the next hand automatically, UNLESS a
-      // deferred laser/death is still to play (dealAfter), or the opening is still waiting on
-      // the tap-to-start (`started`) — then wait.
-      if (this.state_.phase === 'betting' && this.dealAfter_ <= timestamp && this.started_) {
+      // deferred laser/death is still to play (dealAfter), the opening is still waiting on the
+      // tap-to-start (`started`), or a WINDOW-OUT walk-off is mid-flight (pendingWindowOut) — its
+      // replacement hasn't walked in + shredded yet, and dealAfter is still 0, so without this guard
+      // the deal would fire the instant the chips settle, mid-walk-off, over an empty table.
+      if (this.state_.phase === 'betting' && this.dealAfter_ <= timestamp && this.started_ && !this.pendingWindowOut_) {
         this.run_(() => this.session_.deal())
         return
       }
     }
 
-    // Deferred deal: the token reward + nexus laser (and any death → walk-in) play after the
+    // Deferred CONSENT: the player pressed Next hand while the resolve choreography (reward → laser
+    // → summary reveal) was still playing. It never fast-forwards — it waits here for the gate, then
+    // advances. (A click PAST the gate advances immediately in requestNextHand_ and never sets this.)
+    // The extra SUMMARY_MIN_HOLD past the reveal gate gives the fully-formed summary a readable beat
+    // before the click's fade-out — the courtesy the pre-clicker would otherwise skip past.
+    if (this.proceedPending_ && timestamp >= this.resolveAttackEnd_ + SUMMARY_MIN_HOLD && this.state_.phase === 'resolved' && this.started_) {
+      this.proceedPending_ = false
+      this.raf_ = 0
+      this.run_(() => this.session_.nextHand())
+      return
+    }
+
+    // Deferred deal: the summary fade-out + the card gather (and any walk-in) play after the
     // Next-hand click; only once that finishes do the next cards deal. Also how the OPENING deal
     // is scheduled (startIntroNow sets dealAfter), so `started` holds it until the tap-to-start.
-    if (this.dealAfter_ > 0 && timestamp >= this.dealAfter_ && this.state_.phase === 'betting' && !sequenceAnimating && this.started_) {
+    // (pendingWindowOut can't be set here — playWindowArrival clears it as it sets dealAfter — but
+    // the guard keeps the two deal paths symmetric.)
+    if (this.dealAfter_ > 0 && timestamp >= this.dealAfter_ && this.state_.phase === 'betting' && !sequenceAnimating && this.started_ && !this.pendingWindowOut_) {
       this.dealAfter_ = 0
       // Zero the raf first (like the settle block) so run() → ensureLoop reschedules
       // the loop — the `return` below skips this frame's own reschedule.
@@ -2178,10 +2452,28 @@ class GameView {
       return
     }
 
-    // The Banker's deferred entrance: a beat after the boss is gone, he strides in and shreds.
+    // A survived dealer's replacement walks in a beat after the old one has strode off.
+    if (this.windowArrivalAt_ > 0 && timestamp >= this.windowArrivalAt_ && this.started_) {
+      this.windowArrivalAt_ = 0
+      this.playWindowArrival_()
+    }
+    // The Banker's deferred entrance. Two gates, both required: the boss-gone beat
+    // (codaArrivalAt_, the death/laser floor) AND dealer 6's clown having fully walked off
+    // screen, plus a short buffer — so the Banker never strides in over the clown's exit.
     if (this.codaArrivalAt_ > 0 && timestamp >= this.codaArrivalAt_ && this.started_) {
-      this.codaArrivalAt_ = 0
-      this.playCodaArrival_()
+      if (this.clown_.present(timestamp)) {
+        // Clown still walking off — hold, and keep the buffer unarmed so it counts from the
+        // exact frame the clown clears the screen, not from when codaArrivalAt_ was reached.
+        this.codaClownClearAt_ = 0
+      } else {
+        // Clown is gone (or was never on screen): arm the buffer once, then fire when it elapses.
+        if (this.codaClownClearAt_ === 0) this.codaClownClearAt_ = timestamp + CODA_CLOWN_CLEAR_MS
+        if (timestamp >= this.codaClownClearAt_) {
+          this.codaArrivalAt_ = 0
+          this.codaClownClearAt_ = 0
+          this.playCodaArrival_()
+        }
+      }
     }
     // Once his entry shred completes (codaDecisionsAt, set in playCodaArrival), the Banker's
     // waiting theme rises out of the quiet — it plays once through the double-or-nothing prompt.
@@ -2268,8 +2560,7 @@ class GameView {
         group: 'action',
         act: () => this.session_.double(),
         visible: dealingRow,
-        enabled: (s) => !!s.round && canDouble(s.round) && affordsExtra(s),
-        shortFunds: (s) => !!s.round && canDouble(s.round) && !affordsExtra(s),
+        enabled: (s) => !!s.round && canDouble(s.round),
       },
       {
         key: 'split',
@@ -2277,8 +2568,7 @@ class GameView {
         group: 'action',
         act: () => this.session_.split(),
         visible: dealingRow,
-        enabled: (s) => !!s.round && canSplit(s.round) && affordsExtra(s),
-        shortFunds: (s) => !!s.round && canSplit(s.round) && !affordsExtra(s),
+        enabled: (s) => !!s.round && canSplit(s.round),
       },
       // Also shown (disabled) through a MAIN-GAME game-over draw-out/shred, so the bottom row looks
       // exactly like any resolving hand — an EMPTY row (no Next hand) would spoil that this was the
@@ -2288,7 +2578,7 @@ class GameView {
       // collect/walk-off just reads as a bug (the action row is simply empty until New run).
       // Held back while a deal-time natural is still revealing (dealRevealPending): the play row
       // shows instead, so the button doesn't pop in early and spoil the instant blackjack.
-      { key: 'next', label: 'Next hand', group: 'action', act: () => this.session_.nextHand(), visible: (s) => (s.phase === 'resolved' && !this.dealRevealPending_()) || (this.state_.phase === 'over' && !this.scoreRevealed_ && !this.state_.run.coda), enabled: (s) => s.phase === 'resolved' },
+      { key: 'next', label: 'Next hand', group: 'action', act: () => this.requestNextHand_(), visible: (s) => (s.phase === 'resolved' && !this.dealRevealPending_()) || (this.state_.phase === 'over' && !this.scoreRevealed_ && !this.state_.run.coda), enabled: (s) => s.phase === 'resolved' },
       // Shown only once the game-over sequence has projected the score screen (the cards
       // are sucked up, the dealer destroyed / gone) — not the instant the run ends.
       { key: 'restart', label: 'New run', group: 'action', act: () => this.session_.restart(), visible: () => this.state_.phase === 'over' && this.scoreRevealed_, enabled: yes },
@@ -2309,6 +2599,7 @@ class GameView {
         label: 'Peek Dealer',
         group: 'power',
         cost: POWERUPS.peek.cost,
+        order: 3, // Bust Block, Mulligan, then Peek Dealer among the 60-cost trio.
         act: () => this.session_.buyPeek(),
         visible: yes,
         enabled: (s) => playing(s) && affords(POWERUPS.peek.cost, s) && !s.peeked,
@@ -2329,8 +2620,7 @@ class GameView {
           affords(POWERUPS['forced-split'].cost, s) &&
           !!s.round &&
           canForcedSplit(s.round) &&
-          !canSplit(s.round) &&
-          affordsExtra(s),
+          !canSplit(s.round),
       },
       {
         key: 'late-double',
@@ -2343,7 +2633,7 @@ class GameView {
         // free Double has lapsed.
         visible: (s) => !(s.round && canDouble(s.round)),
         enabled: (s) =>
-          playing(s) && affords(POWERUPS['late-double'].cost, s) && !!s.round && !canDouble(s.round) && affordsExtra(s),
+          playing(s) && affords(POWERUPS['late-double'].cost, s) && !!s.round && !canDouble(s.round),
       },
       {
         key: 'return',
@@ -2371,6 +2661,7 @@ class GameView {
         label: 'Bust Block',
         group: 'power',
         cost: POWERUPS['second-chance'].cost,
+        order: 1, // Bust Block, Mulligan, then Peek Dealer among the 60-cost trio.
         act: () => this.session_.buySecondChance(),
         visible: yes,
         enabled: (s) =>
@@ -2382,6 +2673,7 @@ class GameView {
         label: 'Mulligan',
         group: 'power',
         cost: POWERUPS.mulligan.cost,
+        order: 2, // Bust Block, Mulligan, then Peek Dealer among the 60-cost trio.
         act: () => this.session_.buyMulligan(),
         visible: yes,
         enabled: (s) => playing(s) && affords(POWERUPS.mulligan.cost, s) && !!s.round && canMulligan(s.round),
@@ -2414,11 +2706,13 @@ class GameView {
         enabled: (s) => codaPlaying(s) && !!s.round && canMulligan(s.round) && s.run.tokens >= powerupCost(CODA_MULLIGAN_COST, s.run),
       },
     ]
-    // The powerup column reads top-to-bottom in ascending token cost. Array.sort is
-    // stable, so the action buttons (no cost → 0) keep their defined order and their
-    // own column, and equal-cost powerups (e.g. Late double & Forced split at 30) hold
-    // source order. Dispatch to columns is by `group`, so sorting the flat list is safe.
-    return defs.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0))
+    // The powerup column reads top-to-bottom in ascending token cost, then by explicit
+    // `order` within a cost tie (Bust Block, Mulligan, Peek Dealer at 60). Array.sort is
+    // stable, so the action buttons (no cost/order → 0) keep their defined order and their
+    // own column, and equal-cost powerups without an `order` (Late double & Forced split at
+    // 30) hold source order. Dispatch to columns is by `group`, so sorting the flat list is
+    // safe.
+    return defs.sort((a, b) => (a.cost ?? 0) - (b.cost ?? 0) || (a.order ?? 0) - (b.order ?? 0))
   }
 
   private buildOverlay_(): void {
@@ -2432,7 +2726,6 @@ class GameView {
     this.actionsEl_ = actions
 
     this.buttons_ = {}
-    this.nsfBadges_ = {}
     this.costPills_ = {}
     for (const def of this.defs_) {
       const button = document.createElement('button')
@@ -2453,13 +2746,6 @@ class GameView {
         if (num) {
           this.costPills_[def.key] = num as HTMLElement
         }
-      }
-      // A move that can be priced out (Double/Split) carries a hidden "not enough
-      // chips" badge in the opposite (bottom-left) corner, revealed in syncOverlay.
-      if (def.shortFunds) {
-        const badge = nsfBadge()
-        button.appendChild(badge)
-        this.nsfBadges_[def.key] = badge
       }
       button.addEventListener('click', () => {
         // A powerup click fires the ability cue (and, as the first user gesture,
@@ -2807,12 +3093,13 @@ class GameView {
     this.dismissSpec_()
     const prevPhase = this.state_.phase
     const prevRound = this.state_.round
-    const prevChips = this.state_.run.chips
+    const prevRun = this.state_.run // pre-resolve snapshot (for the per-green-check score deltas)
     const prevTokens = this.state_.run.tokens
     const prevScore = this.state_.run.score
-    const prevCombo = this.state_.run.combo
     const prevIntegrity = this.state_.run.integrity
     const prevShift = this.state_.run.shiftIndex
+    const prevHandLog = this.state_.run.handLog
+    const prevKillsLen = this.state_.run.kills.length
     const prevAnalysis = this.state_.analysis
     mutate()
     this.state_ = this.session_.snapshot()
@@ -2832,6 +3119,41 @@ class GameView {
     const { integrity, shiftIndex } = this.state_.run
 
     const t = now()
+    // Capture the dealer hand-summary the moment a hand resolves: this hand's win/loss slots appended
+    // to the prior log, padded to the dealer's window; a kill fills the remainder green (the cash-in).
+    // `appearAt`/`cashInAt` are stamped LATER (in the token/laser block) once the laser timing is
+    // known — the summary follows the attack on a win, the card-settle on a loss.
+    // A heart-death jumps straight to 'coda' (never 'resolved'), but the losing hand still gets a
+    // summary board so its red X shows before the final pop + walk-off (see beginHeartDeathCoda_).
+    const heartDeathSummary = this.state_.phase === 'coda' && this.state_.run.hitPoints <= 0 && prevPhase !== 'coda'
+    if (((this.state_.phase === 'resolved' && prevPhase !== 'resolved') || heartDeathSummary) && this.state_.round) {
+      const killed = this.state_.run.kills.length > prevKillsLen
+      const summaryShift = shiftIndex > prevShift ? prevShift : shiftIndex
+      const maxHands = getShift(summaryShift).maxHands
+      // WINDOW CLAMP (matches applyRound / winPointDeltas): a hand can't fill more of the window than
+      // remains, so a double on the last open slot lands ONE green check, not two.
+      const remaining = Math.max(0, maxHands - prevHandLog.length)
+      const thisHand = (roundTally(this.state_.round).slots as SummarySlot[]).slice(0, remaining)
+      if (thisHand.length === 0) {
+        // An all-push round is a WASH (it redeals) — it lands no slot, so there's nothing new to
+        // show. Skip the summary entirely rather than flash an unchanged board.
+        this.summary_ = null
+      } else {
+        const played: SummarySlot[] = [...prevHandLog, ...thisHand]
+        if (killed) {
+          while (played.length < maxHands) {
+            played.push('win')
+          }
+        }
+        const slots: SummarySlot[] = []
+        for (let i = 0; i < maxHands; i += 1) {
+          slots.push(played[i] ?? 'empty')
+        }
+        this.summary_ = { slots, revealFrom: prevHandLog.length, playedCount: thisHand.length, appearAt: 0, cashInAt: 0 }
+      }
+      this.summaryFadeAt_ = 0
+      this.proceedPending_ = false // a fresh resolve starts with no armed consent
+    }
     // Stamp when a fresh reading appears (flicker ramps in from here), or start the
     // flicker-out when one is dismissed (retain it so it can die gracefully).
     if (this.state_.analysis && !prevAnalysis) {
@@ -2862,16 +3184,20 @@ class GameView {
       // hand gathers the spent cards back into the deck + riffles; a dealer SPAWN — a
       // kill, or a New run's reset — instead shreds the old cards into the new
       // dealer's mouth and flies in a fresh shrink-wrapped deck (the ceremony).
+      this.summaryFadeAt_ = t // the hand-summary fades out as the player calls the next hand
+      // Everything the click sets in motion (gather / walk-off / walk-in) waits for that fade-out to
+      // finish first — the table clears only once the summary has gone (the laser already fired on
+      // the resolve, so there's none left to wait on).
+      const summaryFadeEnd = t + SUMMARY_FADE_MS
+      this.proceedPending_ = false // consent consumed (the loop may have armed it)
       this.collectRound_ = prevRound
       // A cash-out restart has no hand on the table (prevRound null) — no bet chips to sweep, and
       // chips.clear(null) would throw — so only settle chips when a round actually resolved.
       if (prevRound) {
         this.chips_.clear(prevRound, t)
-        this.clearEnd_ = this.chips_.animEnd
-        this.clearPending_ = true
       }
-      // The win tokens were already awarded on the resolve (they flew in behind the
-      // won chips). A New run (from 'over') just drops the withheld final reward.
+      // The win tokens were already awarded on the resolve (they flew in as the hand settled).
+      // A New run (from 'over') just drops the withheld final reward.
       this.heldTokens_ = 0
       // The reward "+base ×mult" delta holds (no fade) until THIS moment — the player
       // clicked Next hand — so clear it now. Also drop any reward that hadn't flashed yet
@@ -2882,11 +3208,18 @@ class GameView {
       this.pendingScoreDelta_ = 0
       this.pendingMult_ = 1
       this.scoreReleaseAt_ = 0
+      // The fly-in deltas have all landed by now (the consent gate waited them out), so the counter
+      // already reads run.score — drop the hold and fade the settled "+N" list away as the hand clears.
+      this.deltaHoldBase_ = null
+      this.deltaLandedSum_ = 0
+      this.deltaPending_ = []
+      this.deltaEmitted_ = 0
+      this.scoreDeltas_.clear(t)
 
-      const isKill =
-        !!this.pendingAttack_ && prevPhase === 'resolved' && this.pendingAttack_.toShift > this.pendingAttack_.fromShift
+      const isKill = !!this.pendingAttack_ && prevPhase === 'resolved' && this.pendingAttack_.kind === 'kill'
+      const isWindowOut = !!this.pendingAttack_ && prevPhase === 'resolved' && this.pendingAttack_.kind === 'windowOut'
       const newRun = prevPhase === 'over'
-      const ceremony = isKill || newRun
+      const ceremony = isKill || isWindowOut || newRun
 
       if (!ceremony) {
         // Same dealer: move the deck onto the cards layer so the gather + riffle can
@@ -2911,52 +3244,62 @@ class GameView {
         this.pendingScoreDelta_ = 0
         this.pendingMult_ = 1
         this.scoreReleaseAt_ = 0
-        this.comboProj_ = null // drop any lingering combo projection
+        this.deltaHoldBase_ = null
+        this.deltaLandedSum_ = 0
+        this.deltaPending_ = []
+        this.deltaEmitted_ = 0
+        this.scoreDeltas_.reset() // wipe any lingering "+N" list with no fade
         this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda')
         this.scoreTicker_.set(this.displayedScore_())
         // Clear any coda winnings-counter state from the prior run (a fresh run has no pot
         // until it reaches the Banker again; reveal() re-arms the animation there).
         this.codaWins_ = 0
         this.codaCrystalValue_ = 0
-        this.codaStakeTax_ = null
         this.codaChoiceReadyAt_ = 0
+        this.windowArrivalAt_ = 0
+        this.pendingWindowOut_ = null
+        // A fresh run refills the hearts and drops any pending heart-death entry from the last run.
+        this.hearts_.sync(this.state_.run.hitPoints)
+        this.heartDeathPending_ = false
+        this.heartDeathEntry_ = null
       }
 
-      if (this.pendingAttack_ && prevPhase === 'resolved' && prevRound) {
-        // A win: the won chips first collect from the bet area into the player's stack
-        // (chips.clear, above), THEN the laser fires — and only after that does the
-        // deck reset play, so the payout never animates during the attack. (`prevRound` is
-        // always set here — a 'resolved' prevPhase means a hand existed — but the check also
-        // narrows it non-null for TS now the block admits the round-less cash-out restart.)
-        const pa = this.pendingAttack_
+      if (isWindowOut && prevRound) {
+        // The dealer survived its whole WINDOW — it strides OFF (no laser, no death); the replacement
+        // walks in behind it, deferred to windowArrivalAt_ so the old figure keeps its colour through
+        // the walk-off. The walk-off waits for the summary to clear; the resting cards (collectRound)
+        // wait for the new dealer's shred.
+        const pa = this.pendingAttack_!
         this.pendingAttack_ = null
-        const attackStart = this.chips_.animEnd + LASER_GAP
-        if (isKill && this.state_.phase === 'choosing-upgrade') {
-          // The kill grants an upgrade pick: play only the DEATH now (the figure breaks
-          // apart, the bar drains). The replacement's walk-in + shred + fresh deck are
-          // deferred until the pick (playArrival) — so the selector shows over an empty
-          // table with the old cards still resting. The old cards + round are held in
-          // `pendingCeremony` (and `collectRound`) for that later shred.
-          const deathEnd = this.playDeath_(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
-          this.pendingCeremony_ = { prevRound, incomingShift: pa.toShift, incomingIntegrity: pa.toIntegrity }
-          this.upgradeRevealAt_ = deathEnd + UPGRADE_REVEAL_LEAD
-          this.dealAfter_ = 0 // the deal waits for the pick, not a timestamp
-        } else {
-          const attackEnd = this.playAttack_(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, attackStart)
-          if (isKill) {
-            // A kill with no upgrade to pick (every path maxed): the replacement walks
-            // in (part of playAttack), its mouth shreds the old cards while a fresh
-            // wrapped deck flies in — no riffle. The next hand waits for the ceremony.
-            this.dealAfter_ = this.beginSpawn_(pa.toShift, attackEnd - SHRED_ARRIVE_OVERLAP)
+        this.dealer_.walkOff(summaryFadeEnd)
+        this.pendingWindowOut_ = { incomingShift: pa.toShift, incomingIntegrity: pa.toIntegrity }
+        this.windowArrivalAt_ = summaryFadeEnd + KILL_ARRIVE_MS + WINDOW_WALKIN_DELAY
+        this.dealAfter_ = 0 // the deal waits for the walk-in
+      } else if (this.pendingAttack_ && prevPhase === 'resolved' && prevRound) {
+        // A win — the laser + damage/shatter ALREADY fired on the resolve. The click only advances
+        // the table, and only once the summary has faded out.
+        this.pendingAttack_ = null
+        if (isKill) {
+          // The dealer already SHATTERED on the resolve laser; its cards rest for the replacement to
+          // shred. The replacement's walk-in is deferred — held in pendingCeremony (+ collectRound).
+          // The state already advanced to the new dealer, so shiftIndex/integrity ARE the incoming.
+          this.pendingCeremony_ = { prevRound, incomingShift: shiftIndex, incomingIntegrity: integrity }
+          if (this.state_.phase === 'choosing-upgrade') {
+            // An upgrade to pick: reveal the selector AFTER the summary fades out (over the empty
+            // table), and walk the replacement in on the pick (playArrival, above).
+            this.upgradeRevealAt_ = summaryFadeEnd + UPGRADE_REVEAL_LEAD
+            this.dealAfter_ = 0 // the deal waits for the pick, not a timestamp
           } else {
-            // Same dealer, just damaged: gather the cards back + riffle after the laser.
-            this.anim_.collect(prevRound, attackEnd + GATHER_GAP)
-            this.dealAfter_ = this.anim_.animEnd
+            // No upgrade (every path maxed): the replacement walks in, its mouth shreds the old
+            // cards + a fresh wrapped deck flies in (playArrival, the same path a pick takes). Its
+            // CEREMONY_LEAD (800ms) outlasts the summary's fade, so the board clears first.
+            this.playArrival_(t)
           }
+        } else {
+          // Same dealer, just damaged: once the summary clears, gather the cards back + riffle.
+          this.anim_.collect(prevRound, summaryFadeEnd + GATHER_GAP)
+          this.dealAfter_ = this.anim_.animEnd
         }
-        // The red muzzle blasts for the laser, then fades. No yellow flare — the
-        // tokens already flew on the resolve; the yellow just eases out of its glow.
-        this.fireLaser_(t, attackStart, isKill)
       } else if (newRun) {
         // A New run: the fresh run's opening dealer walks in and presents a new deck. The
         // old run's table cards were already shredded at game over, so there are none left
@@ -2974,10 +3317,11 @@ class GameView {
         // just fly the fresh deck in.
         this.dealAfter_ = this.beginSpawn_(shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, false)
       } else if (prevRound) {
-        // No deferred damage (a losing/pushing hand): gather the cards right away and
-        // refresh the health + dealer state now. (Reached only with a round in hand — a
-        // round-less restart always took the `newRun` branch above; the guard narrows for TS.)
-        this.anim_.collect(prevRound, t)
+        // No attack (a losing/pushing hand): once the summary clears, gather the cards back in.
+        // Refresh the health + dealer state now (a heal already played its beam on the resolve).
+        // (Reached only with a round in hand — a round-less restart always took the `newRun` branch
+        // above; the guard narrows for TS.)
+        this.anim_.collect(prevRound, summaryFadeEnd)
         this.pendingAttack_ = null
         this.dealAfter_ = 0
         this.dealer_.sync(prevIntegrity, prevShift, integrity, shiftIndex, t)
@@ -3047,20 +3391,20 @@ class GameView {
         // A hit/stand/double.
         this.anim_.sync(prevPhase, this.state_, t)
       }
-      // A winning hand damages the dealer, but the nexus LASER doesn't fire yet: it's
-      // deferred to the Next-hand click, after the token reward (see the Next-hand branch
-      // above). The exception is the final blow ('over'), which ends the run — its
-      // shred → laser death is run by beginEndGame below, not deferred to a Next hand.
+      // A winning hand damages the dealer. The nexus laser + damage/shatter are FIRED below (in the
+      // awardWinTokens block), auto-timed to land just after the reward tokens — no longer deferred
+      // to the Next-hand click. The exception is the final blow ('over'), which ends the run — its
+      // shred → laser death is run by beginEndGame below, and the coda's boss death by beginCoda.
       const enteringOver = this.state_.phase === 'over' && prevPhase !== 'over'
       const enteringCoda = this.state_.phase === 'coda' && prevPhase !== 'coda'
       const damaged = integrity < prevIntegrity || shiftIndex > prevShift
       if (damaged && !enteringOver && !enteringCoda) {
-        this.pendingAttack_ = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex }
-        // The nexus now holds a reward + strike to deliver, but the RED laser charge is
-        // NOT started here — the utility light first shoots the reward tokens (pulsing
-        // yellow), and only once they've landed does it transition to the red charging
-        // glow (one light, one effect at a time). That transition is scheduled in the
-        // awardWinTokens block below, timed to the token flight's end.
+        // Tag the kind now, while we can still tell a KILL (kills grew) from a WINDOW-OUT (the dealer
+        // survived its window — shift advanced but kills didn't). The laser block reads it to pick
+        // the beat (hit / shatter / no-laser), and the Next-hand block to route the table's advance.
+        const killed = this.state_.run.kills.length > prevKillsLen
+        const kind: 'kill' | 'windowOut' | 'damage' = killed ? 'kill' : shiftIndex > prevShift ? 'windowOut' : 'damage'
+        this.pendingAttack_ = { fromIntegrity: prevIntegrity, fromShift: prevShift, toIntegrity: integrity, toShift: shiftIndex, kind }
       }
       // A late dealer that BEAT the player repairs itself (heal-on-win): integrity
       // rose with no shift change. The YELLOW emitter fires a heal beam and the bar
@@ -3079,66 +3423,93 @@ class GameView {
       // Reward tokens for a surviving hit fly up right away; the win reward is
       // handled below, timed to the chips.
       this.scheduleTokens_(prevPhase, prevTokens)
-      // A surviving hit earns NO score now — it just grew the combo, projected as a tick in
-      // the middle of the felt (updateComboProjection, at the end of run()).
+      // A surviving hit earns NO score — it only pays tokens (scheduled above).
       // On resolve, freeze the bankroll at its pre-settle *available* value (the
       // live bet is on the table); it releases to the new total once the payout
       // chips land on the next hand.
       if (this.syncChips_(prevPhase, t)) {
-        const bet = this.state_.round ? this.state_.round.hands.reduce((sum, hand) => sum + hand.bet, 0) : 0
-        this.heldChips_ = prevChips - bet
         // Award the win reward the moment the won chips finish sliding into place
         // beside the bet (chips.animEnd) — no longer deferred to the Next-hand click.
         // Only a normal resolve pays the counter; a final blow ('over') ends the run.
         if (this.state_.phase === 'resolved' && this.state_.round) {
           const tokensEnd = this.awardWinTokens_(this.state_.round, this.chips_.animEnd + TOKEN_SPAWN_DELAY)
-          // A damaging (winning) hand: the reward tokens have just been shot from the
-          // utility light (pulsing yellow). Only once they've LANDED does the light
-          // transition to the red laser charge, and the Next-hand button unlocks — one
-          // light, one effect at a time. (`pendingAttack` is set above for exactly this.)
-          if (this.pendingAttack_) {
-            this.attackReadyAt_ = tokensEnd
-            this.nexus_.anticipate(tokensEnd)
+          // Sabotage T1: the dealer reaching 21 paid flat energy (already credited in Session.settle_).
+          // Fly it up as its own burst — anchored, like every reward, at the nexus vent — so even a
+          // LOSING hand (or a voided 21) shows a clear "the dealer's 21 fuelled you" beat instead of a
+          // silent counter tick. Unlike the win tokens, this DOES gate the attack below: `attackFloor`
+          // holds the nexus strike until the burst has fully landed (liftoff + FLY_MS) plus a beat, so
+          // the +20 completes cleanly before the laser hits (see ENERGY_ATTACK_GAP).
+          let attackFloor = 0
+          if (this.state_.round.rules.dealer21Energy && dealerSettleTotal(this.state_.round) === 21) {
+            const layout = computeLayout(this.stage_.canvas.width, this.stage_.canvas.height)
+            const liftoff = tokensEnd + TOKEN_HAND_STAGGER
+            this.tokens_.emit(nexusUtilityLight(layout, liftoff), SABOTAGE_DEALER21_ENERGY, liftoff)
+            this.nexus_.pulseYellow(liftoff)
+            attackFloor = liftoff + FLY_MS + ENERGY_ATTACK_GAP
           }
-          // Hold the points counter at its pre-resolve value; it releases and ticks up
-          // once those reward tokens land (see the landed() loop), so points rise right
-          // behind the reward. scoreReleaseAt is a fallback for a token-less win.
-          const gained = this.state_.run.score - prevScore
-          if (gained > 0) {
-            // The combo multiplier that boosted this win + any kill — carried for the felt
-            // reward projection (base +N / ×mult); the top-right shows the effective +N.
-            const mult = comboMultiplier(this.state_.run.combo)
+          // The nexus laser now AUTO-FIRES here — no longer deferred to the Next-hand click. The
+          // reward tokens land, THEN the utility light charges red (anticipate), THEN the beam
+          // strikes: tokens → points → laser, in step. A `damage` hit drops the dealer's health;
+          // a `kill` SHATTERS it on impact (playDeath fires the +40 bounty with the death, and the
+          // replacement's walk-in / upgrade pick wait for the click). A `windowOut` fires NO laser
+          // — the survivor simply strides off on the click. The summary then eases in behind the
+          // attack (appearAt), and its reveal sets the Next-hand consent gate. `attackFloor` pushes the
+          // strike (and its charge-up) past the Sabotage energy burst when there is one.
+          const pa = this.pendingAttack_
+          let appearAt = tokensEnd
+          if (pa && pa.kind !== 'windowOut') {
+            const laserStart = Math.max(tokensEnd + LASER_GAP, attackFloor)
+            this.nexus_.anticipate(laserStart - LASER_GAP)
+            const kill = pa.kind === 'kill'
+            appearAt = kill
+              ? this.playDeath_(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, laserStart)
+              : this.playAttack_(pa.fromIntegrity, pa.fromShift, pa.toIntegrity, pa.toShift, laserStart)
+            this.fireLaser_(t, laserStart, kill)
+          }
+          this.summaryAppear_(appearAt)
+          // Points fly in as a "+N" from each winning green check to a stacked row below the counter,
+          // timed to the summary's reveal — the counter holds at prevScore and climbs as each lands.
+          // The `else if` is a defensive fallback for any round that raises the score without a green
+          // check to fly from; the normal win path always takes the first branch.
+          const deltas = winPointDeltas(prevRun, this.state_.round)
+          if (deltas.length > 0 && this.summary_) {
+            this.setupScoreDeltas_(prevScore, deltas, appearAt + SUMMARY_APPEAR_HOLD)
+          } else if (this.state_.run.score - prevScore > 0) {
             const releaseAt = this.chips_.animEnd + TOKEN_SPAWN_DELAY + FLY_MS + 200
-            this.holdScoreReward_(prevScore, gained, mult, releaseAt)
+            this.holdScoreReward_(prevScore, this.state_.run.score - prevScore, 1, releaseAt)
           }
+          // Player hearts: a lost round pops the last chip, a qualifying win heals the first empty
+          // one — fired after the summary's mark (resolveAttackEnd_, computed just above) is in, and
+          // never before the Sabotage energy burst has landed (attackFloor), so on a dealer-21 loss
+          // the +20 completes cleanly before the heart-pop laser strikes.
+          this.syncHearts_(prevRun.hitPoints, Math.max(this.resolveAttackEnd_, attackFloor))
         }
-      } else if (prevPhase === 'betting') {
-        this.heldChips_ = null
       }
       // Game over: once the ending hand's cards settle, the dealer sucks them up + shreds
       // them, then is destroyed (a win: laser death) or walks off (a loss), and the nexus
       // projects the score screen. Fires for a bust-out loss too (no damage this hand).
       if (enteringCoda) {
-        // The 6th dealer fell → the Banker walks in and the double-or-nothing coda begins.
-        this.beginCoda_(prevScore, prevIntegrity, prevShift, integrity, t)
+        if (this.state_.run.hitPoints <= 0 && this.state_.run.kills.length < TOTAL_DEALERS) {
+          // HEART-DEATH: the player bled out before Dealer 6. Play the losing summary + final heart
+          // pop first, THEN let the dealer walk off and the coda begin (deferred to the frame loop).
+          this.beginHeartDeathCoda_(prevScore, prevIntegrity, prevShift, integrity, t)
+        } else {
+          // The 6th dealer fell (or outlasted its window) → the Banker walks in and the coda begins.
+          this.beginCoda_(prevScore, prevIntegrity, prevShift, integrity, t)
+        }
       } else if (enteringOver) {
         this.beginEndGame_(prevScore, prevIntegrity, prevShift, integrity, shiftIndex, t)
       }
     }
 
     this.syncOverlay_(t) // reflect the new state immediately (disable while animating)
-    // A hit grew the combo → project the multiplier ticking up in the middle of the felt; a
-    // bust → tick it back to ×1.00. (No-op when the combo didn't change.)
-    this.updateComboProjection_(prevCombo, prevPhase, t)
     this.lastAnimating_ =
       this.anim_.isAnimating(t) ||
       this.chips_.isAnimating(t) ||
       this.spawn_.isAnimating(t) ||
       this.bustBlock_.isAnimating(t) ||
       this.nexus_.isHealing(t) ||
-      // Match sequenceAnimating so the settle EDGE fires when the win tokens land (then
-      // the utility light transitions to the red charge + the Next-hand button unlocks).
-      t < this.attackReadyAt_
+      this.hearts_.isAnimating(t)
     this.ensureLoop_()
   }
 
@@ -3153,7 +3524,6 @@ class GameView {
     }
     if (prevPhase === 'betting') {
       this.chips_.placeBets(round, t)
-      this.betFlown_ = true // the bet flew from the stack → turn the bankroll count on for good
     }
     // The coda-entry hand (the 6th kill) resolves into the 'coda' phase, not 'resolved'/'over' —
     // count it as resolved too so the winning chips still collect before the Banker arrives.
@@ -3278,15 +3648,29 @@ class GameView {
     this.dealAfter_ = this.beginSpawn_(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
   }
 
+  // A survived dealer's replacement walks in (deferred from the window-out walk-off): the new dealer
+  // slides in, its mouth shreds the old resting cards + deck, and a fresh wrapped deck flies in. The
+  // resting cards come from collectRound_ (set at the Next-hand clear, kept until now).
+  private playWindowArrival_(): void {
+    const w = this.pendingWindowOut_
+    if (!w) {
+      return
+    }
+    this.pendingWindowOut_ = null
+    const t = now()
+    this.dealer_.setLevel(w.incomingIntegrity, w.incomingShift)
+    this.dealer_.setShift(w.incomingShift)
+    this.dealer_.spawn(t)
+    this.playWalkInGrowl_(t)
+    this.dealAfter_ = this.beginSpawn_(w.incomingShift, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+  }
+
   // Blast the nexus's red muzzle for the laser beam at `attackStart` (from `t`, the
   // action) and fire the attack sounds at their true moments: the laser as it fires,
   // the impact as the beam reaches the dealer (STRIKE_TRAVEL_MS later, damage dealt),
   // and — on a kill — the explosion as the figure blows apart (KILL_DEATH_LEAD_MS in).
-  // Centralised so every laser — deferred damage/kill and the final blow — is in step.
+  // Centralised so every laser — the auto-fired resolve damage/kill and the final blow — is in step.
   private fireLaser_(t: number, attackStart: number, kill: boolean): void {
-    // The token reward already flew + the red charge has been holding; consume the
-    // ready gate so it can't re-disable the buttons for this (now-fired) attack.
-    this.attackReadyAt_ = 0
     this.nexus_.fire(t, attackStart, attackStart + HIT_TOTAL_MS)
     sfx.play('laser-prepare', Math.max(0, attackStart - t) / 1000)
     sfx.play('laser-impact', Math.max(0, attackStart + STRIKE_TRAVEL_MS - t) / 1000)
@@ -3364,7 +3748,7 @@ class GameView {
     // counter roll up during the gather/walk-off would spoil the run's final beat.
     const gained = this.state_.run.score - prevScore
     if (gained > 0) {
-      this.holdScoreReward_(prevScore, gained, comboMultiplier(this.state_.run.combo), gatherEnd)
+      this.holdScoreReward_(prevScore, gained, 1, gatherEnd)
     }
     // Once the cards are back in the deck, project the score screen + reveal the New-run button.
     this.scoreRevealAt_ = gatherEnd
@@ -3375,15 +3759,33 @@ class GameView {
     this.pointsDeltaEl_.textContent = ''
   }
 
-  // Enter the coda — the BANKER walks in to run a double-or-nothing, ending at one of the two
-  // banker scoreboards (docs/scoreboards.md). Two doorways, branched on run.bankruptcyCoda below:
-  // the VICTORY entry (the 6th dealer just fell to a winning hand — the boss breaks apart, then the
-  // Banker walks in as its "replacement") and the BANKRUPTCY entry (the player went broke at Dealer
-  // 3+ — the victorious dealer walks off, then the Banker walks in). Either way it's a normal
-  // non-final kill ceremony (final would suppress the walk-in), his mouth shredding the boss's
-  // resting cards as he arrives, with a fresh Banker-coloured deck for the double-or-nothing hands.
+  // Enter the coda — the BANKER walks in to run a double-or-nothing, ending at the banker scoreboard
+  // (docs/scoreboards.md). Two doorways into the SAME coda, branched on whether Dealer 6 was killed
+  // (kills.length reached TOTAL_DEALERS): the VICTORY entry (the 6th dealer just fell to a winning
+  // hand — the boss breaks apart, then the Banker walks in as its "replacement") and the WINDOW-OUT
+  // entry (Dealer 6's hand window ran out — the surviving dealer walks off, then the Banker walks
+  // in). Either way it's a normal non-final kill ceremony (final would suppress the walk-in), his
+  // mouth shredding the boss's resting cards as he arrives, with a fresh Banker-coloured deck for
+  // the double-or-nothing hands.
   // The killing hand is kept resting for the shred, then dismissed to the prompt (codaResolveNext)
   // once the ceremony finishes.
+  // A heart-death coda entry: the player lost their last hit point. Show the losing hand's summary
+  // and pop the final heart-chip FIRST; the frame loop (at heartDeathAt_) then fires beginCoda_ so the
+  // dealer walks off and the Banker's double-or-nothing begins — the red X + last pop read before the
+  // table clears. No score penalty: the coda opens on the current total (the loss scored nothing).
+  private beginHeartDeathCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
+    this.heartDeathPending_ = true
+    this.heartDeathEntry_ = { prevScore, prevIntegrity, prevShift, integrity }
+    // Ease the losing summary in once the cards settle (no laser on a loss), like any other loss —
+    // summaryAppear_ sets resolveAttackEnd_ to the moment the red X is fully revealed.
+    const appearAt = Math.max(this.anim_.animEnd, t)
+    this.summaryAppear_(appearAt)
+    // Then the final chip pops (after the red X), and the deferred coda entry waits for it to finish.
+    const startAt = this.resolveAttackEnd_
+    this.schedulePop_(startAt)
+    this.heartDeathAt_ = this.hearts_.animEndAfter(startAt) + SUMMARY_MIN_HOLD
+  }
+
   private beginCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
     const round = this.state_.round
     if (!round) {
@@ -3400,7 +3802,6 @@ class GameView {
     // settle), then hold silent through the Banker's entrance until the player picks an action.
     this.codaMusicFadeAt_ = Math.max(this.anim_.animEnd, t)
     this.codaWonHand_ = false // the entry prompt isn't a hand-win
-    this.codaChipsFadeAt_ = t // the chips start fading out now (the last dealer is dead)
     // Score to roll up when the Banker arrives (his walk-in is deferred by CODA_WALKIN_DELAY).
     this.codaEntryScore_ = { prevScore, gained: this.state_.run.score - prevScore }
     // Freeze the counter at the pre-coda total (so it doesn't roll up during the boss death),
@@ -3410,18 +3811,16 @@ class GameView {
     this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda')
 
     // Settle the last hand's chips before the exit — a bankruptcy loss flies the bet to the
-    // house; a 6th-kill win collects the winnings — then the boss leaves.
-    const chipStart = Math.max(this.anim_.animEnd, this.chips_.animEnd)
+    // house; a 6th-kill win collects the winnings — then the boss leaves. Floor on `t`: a heart-death
+    // entry calls this DEFERRED (well after the resolve), so the anim/chip clocks are stale and in the
+    // past — without the `t` floor the walk-off would start in the past and JUMP forward on frame one.
+    const chipStart = Math.max(this.anim_.animEnd, this.chips_.animEnd, t)
     this.chips_.clear(round, chipStart)
 
-    if (this.state_.run.bankruptcyCoda) {
-      // Bankruptcy: the player went broke, so the dealer isn't destroyed — it WON. It strides
-      // off (no laser/death), and the Banker walks in behind it to run the last-chance
-      // double-or-nothing. Capture the gross + taxed net for the tax reveal (playCodaArrival);
-      // prevScore is the gross (a losing hand never scores). The killing hand's cards stay
-      // resting (collectRound, above) for the Banker to shred on arrival, same as a 6th-kill entry.
-      this.codaTaxGross_ = prevScore
-      this.codaTaxNet_ = this.state_.run.score
+    if (this.state_.run.kills.length < TOTAL_DEALERS) {
+      // Dealer 6 outlasted its window (it wasn't killed): it strides OFF (no laser/death), and the
+      // Banker walks in behind it to run the double-or-nothing. The last window hand's cards stay
+      // resting (collectRound, above) for the Banker to shred on arrival, exactly like a 6th-kill entry.
       const walkStart = this.chips_.animEnd + LASER_GAP
       this.dealer_.walkOff(walkStart)
       this.codaArrivalAt_ = walkStart + KILL_ARRIVE_MS + CODA_WALKIN_DELAY
@@ -3442,7 +3841,7 @@ class GameView {
   // Once the shred finishes the killing hand is dismissed to the prompt.
   private playCodaArrival_(): void {
     const t = now()
-    this.dealer_.setLevel(maxIntegrityFor(BANKER_SHIFT), BANKER_SHIFT)
+    this.dealer_.setLevel(maxHitsFor(BANKER_SHIFT), BANKER_SHIFT)
     this.dealer_.setShift(BANKER_SHIFT)
     this.dealer_.spawn(t)
 
@@ -3468,14 +3867,6 @@ class GameView {
     const info = this.codaEntryScore_
     this.codaEntryScore_ = null
     this.pointsDeltaEl_.classList.remove('is-flashing', 'is-flashing-coda') // fade any lingering delta from the last hand
-    if (this.state_.run.bankruptcyCoda) {
-      // Bankruptcy: the tax seizure isn't a separate pre-roll any more — it folds into the stake
-      // panel (Points → −tax% → Net → the offer) as one screen. So here we just dismiss the
-      // shredded hand to that prompt on the usual beat, keeping the top-right counter held at the
-      // gross (set in beginCoda); runCoda's entry branch arms the tax rows + ticks it down to net.
-      this.codaAdvanceAt_ = shredEnd + CODA_ENTRY_HOLD
-      return
-    }
     if (info) {
       // Roll the counter up to the stake as the Banker settles — no "+N" delta (the coda is
       // about the total at risk, not a per-hand gain).
@@ -3588,14 +3979,6 @@ class GameView {
         this.codaCrystalValue_ = this.state_.run.score
         this.codaWins_ = 0
         this.codaCounters_.reveal(t)
-        if (this.state_.run.bankruptcyCoda) {
-          // The bankruptcy entry: fold the tax seizure into this panel (Points → −tax% → Net,
-          // above the offer), and tick the top-right counter DOWN from the held gross to the taxed
-          // net (run.score) as the Net row lands — row index 3, so 3 · stagger after the panel
-          // appears. Until then the counter stays parked at the gross (held since beginCoda).
-          this.codaStakeTax_ = { gross: this.codaTaxGross_, net: this.codaTaxNet_, taxPct: BANKRUPTCY_TAX * 100 }
-          this.holdScoreReward_(this.codaTaxGross_, 0, 1, t + 3 * CODA_STAKE_ROW_STAGGER)
-        }
       }
       const gained = this.state_.run.score - prevScore
       if (gained > 0) {
@@ -3703,10 +4086,7 @@ class GameView {
       this.dealer_.isArriving(timestamp) ||
       this.spawn_.isAnimating(timestamp) ||
       this.bustBlock_.isAnimating(timestamp) ||
-      this.nexus_.isHealing(timestamp) ||
-      // The Next-hand button stays disabled while a win's reward tokens are still flying
-      // from the utility light (it charges the red laser only once they've landed).
-      timestamp < this.attackReadyAt_
+      this.nexus_.isHealing(timestamp)
 
     // Point the counters at their current values (rewards still flying are withheld);
     // the frame loop rolls them up as they land.
@@ -3733,11 +4113,14 @@ class GameView {
       const codaChoiceLocked =
         (def.key === 'coda-double' || def.key === 'coda-cash') && timestamp < this.codaChoiceReadyAt_
       button.disabled = animating || duelLocked || codaChoiceLocked || (visible && !def.enabled(s))
-      // Flag a priced-out move (Double/Split disabled only for lack of chips). Hidden
-      // while animating, or when the move is illegal for any other reason.
-      const badge = this.nsfBadges_[def.key]
-      if (badge) {
-        badge.classList.toggle('is-hidden', animating || !visible || !def.shortFunds?.(s))
+      // Next-hand is CONSENT, not a fast-forward: enable it the instant the resolved hand's cards
+      // settle (its result is revealed) and keep it enabled THROUGH the auto-firing reward + laser +
+      // summary — clicking only arms the advance (which then waits out the choreography). So the
+      // attack/ceremony animations in `animating` must NOT disable it; only unsettled cards, a
+      // still-revealing deal-natural, or an already-given consent do. (The 'over' New-run case keeps
+      // the generic gate above.)
+      if (def.key === 'next' && s.phase === 'resolved') {
+        button.disabled = !def.enabled(s) || this.anim_.isAnimating(timestamp) || this.dealRevealPending_() || this.proceedPending_
       }
       // Powerup cost pills show the live (inflated) price the spend path will charge.
       const pill = this.costPills_[def.key]
@@ -3792,13 +4175,7 @@ class GameView {
   }
 
   private buildMessage_(): string {
-    const { phase, run } = this.state_
-    if (phase === 'betting') {
-      const bet = nextBet(run)
-      return isLastCall(run) ? `Last call — all in (${bet})` : `Bet ${bet}`
-    }
-    // Game over: the summary is projected onto the felt (the nexus score screen), not
-    // shown as a banner — so no message here.
+    // Betting is a thin deal-gate now (no wager to show); game over paints the felt summary.
     return ''
   }
 
@@ -3807,19 +4184,21 @@ class GameView {
 // A single hand's result label + tone, from its settled outcome and net chips.
 // Returns undefined when the hand shows no player-side label — a voided hand is
 // tagged beside the dealer's total instead (see cards.ts dealerNote).
-function handResultLabel(hand: PlayerHand, rules: RoundRules): RoundResult | undefined {
-  const net = handNet(hand, rules)
+function handResultLabel(hand: PlayerHand): RoundResult | undefined {
   if (hand.outcome === 'blackjack') {
-    return { label: `Blackjack +${net}`, tone: 'win' }
+    return { label: 'Blackjack', tone: 'win' }
   }
   if (hand.outcome === 'voided') {
     return undefined
   }
-  if (net > 0) {
-    return { label: `Win +${net}`, tone: 'win' }
+  if (hand.outcome === 'win') {
+    return { label: 'Win', tone: 'win' }
   }
-  if (net < 0) {
-    return { label: hand.outcome === 'bust' ? `Bust ${net}` : `Lose ${net}`, tone: 'lose' }
+  if (hand.outcome === 'bust') {
+    return { label: 'Bust', tone: 'lose' }
+  }
+  if (hand.outcome === 'lose') {
+    return { label: 'Lose', tone: 'lose' }
   }
   return { label: 'Push', tone: 'push' }
 }
@@ -3834,16 +4213,6 @@ function winTokenFor(hand: PlayerHand, round: Round): number {
 
 function winTokensTotal(round: Round): number {
   return round.hands.reduce((total, hand) => total + winTokenFor(hand, round), 0)
-}
-
-function affordsExtra(s: SessionState): boolean {
-  const round = s.round
-  if (!round) {
-    return false
-  }
-  const exposure = round.hands.reduce((total, hand) => total + hand.bet, 0)
-  const activeBet = round.hands[round.activeIndex].bet
-  return s.run.chips >= exposure + activeBet
 }
 
 function now(): number {
@@ -3938,16 +4307,10 @@ function costPill(cost: number): HTMLElement {
   return pill
 }
 
-// A "not enough chips" badge: a white ✕ on red, tucked into a move button's
-// bottom-left corner. Starts hidden; syncOverlay reveals it when Double/Split is
-// disabled purely because the bankroll can't cover the extra bet.
-function nsfBadge(): HTMLElement {
-  const badge = element('span', 'nsf-badge is-hidden')
-  badge.textContent = '✕'
-  badge.title = 'Not enough chips'
-  return badge
-}
-
 function generateSeed(): number {
   return Math.floor(Math.random() * 0x100000000)
+}
+
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v
 }

@@ -13,9 +13,9 @@ import { DEFAULT_ROUND_RULES, type RoundRules } from './round'
 export type UpgradePath = 'antiDealer' | 'chipEco' | 'tokenEco'
 
 export interface RunUpgrades {
-  /** Sabotage the dealer: refund → void any dealer 21 → hijack naturals. */
+  /** Sabotage the dealer: +20 energy on any dealer 21 → redeal any dealer 21 → hijack naturals. */
   antiDealer: number
-  /** Bigger chip payouts: 2:1 blackjacks → 3:1 blackjacks → win all pushes. */
+  /** Payout: +50% → +100% points on a natural blackjack → win all pushes. */
   chipEco: number
   /** The economy path: more tokens (×1.10 → ×1.30 on every reward) AND slower token
    *  inflation (accrue ×0.75 → ×0.35 per shift — see inflationResistanceFor). */
@@ -24,8 +24,8 @@ export interface RunUpgrades {
 
 export const MAX_UPGRADE_TIER = 3
 
-// Sabotage T1: fraction of the bet handed back on a loss to a dealer natural.
-const DEALER_NATURAL_REFUND = 0.75
+// Payout T1/T2: bonus fraction added to a natural blackjack's points, by chipEco tier (index 0..3).
+const BJ_POINT_BONUS = [0, 0.5, 1, 1]
 
 // Token eco multiplier by unlocked tier (index = level 0..3). The tiers replace
 // one another rather than stacking, so the top is a flat ×1.30.
@@ -64,6 +64,11 @@ export function tokenMultiplierFor(upgrades: RunUpgrades): number {
   return TOKEN_MULTIPLIERS[upgrades.tokenEco] ?? 1
 }
 
+// Payout T1/T2: the bonus fraction added to a natural blackjack's points at the current chipEco tier.
+export function blackjackPointBonusFor(upgrades: RunUpgrades): number {
+  return BJ_POINT_BONUS[upgrades.chipEco] ?? BJ_POINT_BONUS[BJ_POINT_BONUS.length - 1]
+}
+
 // The factor applied to each shift's token-inflation add for the run's Token eco
 // tier — 1 (no path) down to 0.35 (maxed), so a maxed Tokens build inflates at ~a
 // third the rate. See run.ts's inflationIncrement.
@@ -75,13 +80,14 @@ export function inflationResistanceFor(upgrades: RunUpgrades): number {
 export function rulesForUpgrades(upgrades: RunUpgrades): RoundRules {
   return {
     ...DEFAULT_ROUND_RULES,
-    // Payout T1: 2:1 on a natural blackjack; T2: 3:1.
-    blackjackPayoutNumerator: upgrades.chipEco >= 2 ? 3 : upgrades.chipEco >= 1 ? 2 : DEFAULT_ROUND_RULES.blackjackPayoutNumerator,
-    blackjackPayoutDenominator: upgrades.chipEco >= 1 ? 1 : DEFAULT_ROUND_RULES.blackjackPayoutDenominator,
-    // Payout T3: genuine pushes (and Sabotage-voided dealer 21s) pay the player, no damage.
+    // Payout T3: genuine pushes (and Sabotage-voided dealer 21s) resolve as a win (a hit + points)
+    // instead of redealing. (T1/T2 add points to naturals via blackjackPointBonusFor, applied in
+    // run.ts — a scoring effect, not a settlement rule.)
     pushWinsToPlayer: upgrades.chipEco >= 3,
-    // Sabotage T1/T2/T3.
-    dealerNaturalRefundRatio: upgrades.antiDealer >= 1 ? DEALER_NATURAL_REFUND : 0,
+    // Sabotage T1: any dealer 21 (dealt natural OR a hit-to-21) pays a flat energy bonus (credited
+    // in Session.settle_, see SABOTAGE_DEALER21_ENERGY). T2: any dealer 21 redeals the hand (voided →
+    // Session redeals). T3: hijack the dealer's natural. All three key on the dealer reaching 21.
+    dealer21Energy: upgrades.antiDealer >= 1,
     voidDealer21: upgrades.antiDealer >= 2,
     hijackDealerNatural: upgrades.antiDealer >= 3,
     // Token eco.
@@ -106,8 +112,8 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
     name: 'Sabotage',
     color: '#d8484b',
     tiers: [
-      '75% refund on dealer natural blackjack',
-      'Any dealer 21 voids the hand',
+      '+20 energy on dealer 21',
+      'Redeals hand on dealer 21',
       "Hijack dealer's natural blackjack",
     ],
   },
@@ -116,9 +122,9 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
     name: 'Payout',
     color: '#4a86d8',
     tiers: [
-      'Natural blackjack pays 2:1',
-      'Natural blackjack pays 3:1',
-      'You win all pushes',
+      'Natural blackjack pays +50%',
+      'Natural blackjack pays +100%',
+      'Win all pushes',
     ],
   },
   {
@@ -126,9 +132,9 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
     name: 'Energy',
     color: '#49b26a',
     tiers: [
-      '+10% energy · 25% inflation resist',
-      '+18% energy · 45% inflation resist',
-      '+30% energy · 65% inflation resist',
+      '+10% energy, +25% inflation resist',
+      '+18% energy, +45% inflation resist',
+      '+30% energy, +65% inflation resist',
     ],
   },
 ]

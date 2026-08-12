@@ -12,7 +12,7 @@ function resolvedSave(upgradePending: boolean, run = startRun(3)): PersistedSess
   return {
     run,
     phase: 'resolved',
-    round: startRound(shuffle(createShoe(6), createRng(3)), 20),
+    round: startRound(shuffle(createShoe(6), createRng(3))),
     peeked: false,
     codaRedeal: false,
     upgradePending,
@@ -76,7 +76,6 @@ describe('resume (integration)', () => {
     expect(saved).not.toBeNull()
     expect(saved!.phase).toBe('resolved')
     expect(saved!.run.handsPlayed).toBe(1)
-    expect(saved!.run.chips).toBe(snap.run.chips)
     expect(saved!.run.score).toBe(snap.run.score)
 
     // A brand-new session (as on page reload) adopts the saved session and reopens at the SAME
@@ -85,7 +84,6 @@ describe('resume (integration)', () => {
     resumed.adoptSession(saved!)
     const r = resumed.snapshot()
     expect(r.phase).toBe('resolved')
-    expect(r.run.chips).toBe(snap.run.chips)
     expect(r.run.score).toBe(snap.run.score)
     expect(r.run.handsPlayed).toBe(1)
   })

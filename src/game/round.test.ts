@@ -11,13 +11,10 @@ import {
   doubleDown,
   forcedSplit,
   freezeDealer,
-  handNet,
   hit,
   isDealerHijacked,
   lateDouble,
   mulligan,
-  payout,
-  type PlayerHand,
   returnCard,
   type RoundRules,
   split,
@@ -36,17 +33,15 @@ function outcomeOf(round: Round, index = 0) {
 
 describe('startRound', () => {
   it('pays three-to-two on a natural blackjack', () => {
-    const round = startRound([card('A'), card('K'), card('9'), card('7')], 100)
+    const round = startRound([card('A'), card('K'), card('9'), card('7')])
 
     expect(outcomeOf(round)).toBe('blackjack')
-    expect(payout(round)).toBe(150)
   })
 
   it('pushes when both sides hold a natural', () => {
-    const round = startRound([card('A'), card('K'), card('A', 'hearts'), card('K', 'hearts')], 100)
+    const round = startRound([card('A'), card('K'), card('A', 'hearts'), card('K', 'hearts')])
 
     expect(outcomeOf(round)).toBe('push')
-    expect(payout(round)).toBe(0)
   })
 })
 
@@ -54,7 +49,7 @@ describe('returnCard', () => {
   it('pushes the last-drawn card back onto the shoe for the dealer to draw, then auto-stands', () => {
     // Player 6+6=12 hits a 9 -> 21 (alive, three cards). Dealer shows 10 over a 6
     // (16, must hit). The 9 is a poison: fine for the player, a bust for the dealer.
-    const round = hit(startRound([card('6'), card('6', 'hearts'), card('10'), card('6', 'diamonds'), card('9')], 50))
+    const round = hit(startRound([card('6'), card('6', 'hearts'), card('10'), card('6', 'diamonds'), card('9')]))
     expect(round.hands[0].cards.map((c) => c.rank)).toEqual(['6', '6', '9'])
     expect(round.hands[0].busted).toBe(false)
 
@@ -69,7 +64,7 @@ describe('returnCard', () => {
   })
 
   it('is unavailable until the hand has taken a hit', () => {
-    const fresh = startRound([card('9'), card('7'), card('10'), card('6'), card('2')], 50)
+    const fresh = startRound([card('9'), card('7'), card('10'), card('6'), card('2')])
     expect(canReturn(fresh)).toBe(false)
     expect(() => returnCard(fresh)).toThrow()
     expect(canReturn(hit(fresh))).toBe(true)
@@ -78,14 +73,13 @@ describe('returnCard', () => {
 
 describe('stand', () => {
   it('wins when the player beats the dealer', () => {
-    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')], 50))
+    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')]))
 
     expect(outcomeOf(round)).toBe('win')
-    expect(payout(round)).toBe(50)
   })
 
   it('keeps the dealer standing on a soft seventeen', () => {
-    const round = stand(startRound([card('K'), card('Q'), card('A'), card('6')], 50))
+    const round = stand(startRound([card('K'), card('Q'), card('A'), card('6')]))
 
     expect(round.dealer).toHaveLength(2)
     expect(outcomeOf(round)).toBe('win')
@@ -93,7 +87,7 @@ describe('stand', () => {
 
   it('wins when the dealer draws into a bust', () => {
     const shoe = [card('K'), card('Q'), card('K', 'hearts'), card('6'), card('10', 'hearts')]
-    const round = stand(startRound(shoe, 50))
+    const round = stand(startRound(shoe))
 
     expect(outcomeOf(round)).toBe('win')
   })
@@ -104,28 +98,28 @@ describe('smart soft-17 dealer (Dealer 6)', () => {
 
   it('stands on a soft 17 that is already beating the player', () => {
     // Player stands on 15; dealer A+6 = soft 17. Already ahead → keep it, do not risk a hit.
-    const round = stand(startRound([card('K'), card('5'), card('A'), card('6')], 50, smart))
+    const round = stand(startRound([card('K'), card('5'), card('A'), card('6')], smart))
     expect(round.dealer).toHaveLength(2)
     expect(outcomeOf(round)).toBe('lose')
   })
 
   it('hits a soft 17 that would only tie or lose', () => {
     // Player stands on 17; dealer A+6 = soft 17 → a stand only pushes, so it draws (→ 21).
-    const round = stand(startRound([card('K'), card('7'), card('A'), card('6'), card('4')], 50, smart))
+    const round = stand(startRound([card('K'), card('7'), card('A'), card('6'), card('4')], smart))
     expect(round.dealer).toHaveLength(3)
     expect(outcomeOf(round)).toBe('lose')
   })
 
   it('stands on a hard 17 that ties the player (a sure push beats a risky hit)', () => {
     // Player 17; dealer 10+7 = hard 17. A stand pushes — do not gamble it away.
-    const round = stand(startRound([card('K'), card('7'), card('10'), card('7')], 50, smart))
+    const round = stand(startRound([card('K'), card('7'), card('10'), card('7')], smart))
     expect(round.dealer).toHaveLength(2)
     expect(outcomeOf(round)).toBe('push')
   })
 
   it('hits a hard 17 when strictly behind (a stand is a certain loss)', () => {
     // Player stands on 18; dealer 10+7 = hard 17 → certain loss if it stands, so it draws (→ 20).
-    const round = stand(startRound([card('K'), card('8'), card('10'), card('7'), card('3')], 50, smart))
+    const round = stand(startRound([card('K'), card('8'), card('10'), card('7'), card('3')], smart))
     expect(round.dealer).toHaveLength(3)
     expect(outcomeOf(round)).toBe('lose')
   })
@@ -133,64 +127,61 @@ describe('smart soft-17 dealer (Dealer 6)', () => {
   it('raises the hard-hit ceiling when desperate (hits a hard 18 behind)', () => {
     // Player 19; dealer 10+8 = hard 18, behind. At the base ceiling (17) it stands…
     const shoe = [card('K'), card('9'), card('10'), card('8'), card('3')]
-    expect(stand(startRound(shoe, 50, smart)).dealer).toHaveLength(2)
+    expect(stand(startRound(shoe, smart)).dealer).toHaveLength(2)
     // …but a desperate dealer (ceiling 18) hits it (→ 21).
     const desperate = { ...smart, dealerHardHitCeiling: 18 }
-    expect(stand(startRound(shoe, 50, desperate)).dealer).toHaveLength(3)
+    expect(stand(startRound(shoe, desperate)).dealer).toHaveLength(3)
   })
 })
 
 describe('hit', () => {
   it('loses immediately when the player busts, before the dealer draws', () => {
-    const round = hit(startRound([card('K'), card('6'), card('9'), card('7'), card('Q')], 40))
+    const round = hit(startRound([card('K'), card('6'), card('9'), card('7'), card('Q')]))
 
     expect(outcomeOf(round)).toBe('bust')
     expect(round.dealer).toHaveLength(2)
-    expect(payout(round)).toBe(-40)
   })
 })
 
 describe('doubleDown', () => {
   it('doubles the stake and draws exactly one card', () => {
     const shoe = [card('6'), card('5'), card('K'), card('7'), card('10', 'hearts')]
-    const round = doubleDown(startRound(shoe, 30))
+    const round = doubleDown(startRound(shoe))
 
     expect(round.hands[0].cards).toHaveLength(3)
-    expect(round.hands[0].bet).toBe(60)
+    expect(round.hands[0].doubled).toBe(true)
     expect(outcomeOf(round)).toBe('win')
-    expect(payout(round)).toBe(60)
   })
 })
 
 describe('lateDouble', () => {
   it('doubles a hand after it has already taken a hit', () => {
     const shoe = [card('5'), card('3'), card('K'), card('7'), card('3', 'hearts'), card('10')]
-    const round = lateDouble(hit(startRound(shoe, 20)))
+    const round = lateDouble(hit(startRound(shoe)))
 
     expect(round.hands[0].cards).toHaveLength(4)
-    expect(round.hands[0].bet).toBe(40)
+    expect(round.hands[0].doubled).toBe(true)
     expect(outcomeOf(round)).toBe('win')
-    expect(payout(round)).toBe(40)
   })
 })
 
 describe('split', () => {
   it('can only split a pair of equal value', () => {
-    expect(canSplit(startRound([card('8'), card('8', 'hearts'), card('9'), card('7')], 50))).toBe(true)
-    expect(canSplit(startRound([card('8'), card('9'), card('9', 'hearts'), card('7')], 50))).toBe(false)
+    expect(canSplit(startRound([card('8'), card('8', 'hearts'), card('9'), card('7')]))).toBe(true)
+    expect(canSplit(startRound([card('8'), card('9'), card('9', 'hearts'), card('7')]))).toBe(false)
   })
 
   it('splits any two ten-value cards, not just identical ranks (standard US casino rule)', () => {
     // 10, J, Q, K are all worth ten, so any two of them form a splittable pair.
-    expect(canSplit(startRound([card('10'), card('K'), card('9'), card('7')], 50))).toBe(true)
-    expect(canSplit(startRound([card('Q'), card('J'), card('9'), card('7')], 50))).toBe(true)
-    expect(canSplit(startRound([card('A'), card('A', 'hearts'), card('9'), card('7')], 50))).toBe(true)
+    expect(canSplit(startRound([card('10'), card('K'), card('9'), card('7')]))).toBe(true)
+    expect(canSplit(startRound([card('Q'), card('J'), card('9'), card('7')]))).toBe(true)
+    expect(canSplit(startRound([card('A'), card('A', 'hearts'), card('9'), card('7')]))).toBe(true)
     // ...but a ten and a nine are not equal value, so they are not a pair.
-    expect(canSplit(startRound([card('10'), card('9'), card('9', 'hearts'), card('7')], 50))).toBe(false)
+    expect(canSplit(startRound([card('10'), card('9'), card('9', 'hearts'), card('7')]))).toBe(false)
   })
 
   it('cannot split after taking a hit, or a hand that is not two cards', () => {
-    const round = hit(startRound([card('8'), card('8', 'hearts'), card('9'), card('7'), card('2')], 50))
+    const round = hit(startRound([card('8'), card('8', 'hearts'), card('9'), card('7'), card('2')]))
     expect(round.hands[0].cards).toHaveLength(3)
     expect(canSplit(round)).toBe(false)
   })
@@ -205,19 +196,18 @@ describe('split', () => {
       card('Q'),
       card('10', 'hearts'),
     ]
-    let round = split(startRound(shoe, 50))
+    let round = split(startRound(shoe))
     expect(round.hands).toHaveLength(2)
 
     round = stand(round)
     round = stand(round)
 
     expect(round.hands.map((hand) => hand.outcome)).toEqual(['win', 'win'])
-    expect(payout(round)).toBe(100)
   })
 
   it('gives split aces one card each and resolves with no further actions', () => {
     const shoe = [card('A'), card('A', 'hearts'), card('9'), card('8'), card('K'), card('Q')]
-    const round = split(startRound(shoe, 50))
+    const round = split(startRound(shoe))
 
     expect(round.status).toBe('resolved')
     expect(round.hands).toHaveLength(2)
@@ -228,23 +218,22 @@ describe('split', () => {
     // Split aces each draw a ten → 21, but a post-split 21 is a normal win at
     // even money, never a blackjack.
     const shoe = [card('A'), card('A', 'hearts'), card('10'), card('7'), card('K'), card('Q')]
-    const round = split(startRound(shoe, 50))
+    const round = split(startRound(shoe))
 
     expect(round.hands.map((hand) => hand.outcome)).toEqual(['win', 'win'])
     expect(round.hands.some((hand) => hand.outcome === 'blackjack')).toBe(false)
-    expect(payout(round)).toBe(100) // 50 + 50 even money, NOT 75 + 75 at 3:2
   })
 })
 
 describe('forcedSplit', () => {
   it('allows splitting an opening hand that is not a natural pair', () => {
-    const nonPair = startRound([card('9'), card('7'), card('10'), card('6')], 50)
+    const nonPair = startRound([card('9'), card('7'), card('10'), card('6')])
     expect(canSplit(nonPair)).toBe(false)
     expect(canForcedSplit(nonPair)).toBe(true)
   })
 
   it('cannot force split after a hit or on a hand that is not two cards', () => {
-    const round = hit(startRound([card('9'), card('7'), card('10'), card('6'), card('2')], 50))
+    const round = hit(startRound([card('9'), card('7'), card('10'), card('6'), card('2')]))
     expect(round.hands[0].cards).toHaveLength(3)
     expect(canForcedSplit(round)).toBe(false)
     expect(() => forcedSplit(round)).toThrow()
@@ -252,12 +241,12 @@ describe('forcedSplit', () => {
 
   it('splits a non-pair into two playable hands, each keeping the original bet', () => {
     const shoe = [card('9'), card('7'), card('10'), card('6'), card('K'), card('Q')]
-    const round = forcedSplit(startRound(shoe, 50))
+    const round = forcedSplit(startRound(shoe))
 
     expect(round.status).toBe('player-turn')
     expect(round.hands).toHaveLength(2)
     expect(round.hands.map((hand) => hand.cards.length)).toEqual([2, 2])
-    expect(round.hands.every((hand) => hand.bet === 50 && !hand.finished)).toBe(true)
+    expect(round.hands.every((hand) => !hand.finished)).toBe(true)
     expect(round.drawIndex).toBe(6)
   })
 
@@ -265,41 +254,18 @@ describe('forcedSplit', () => {
     // A+7 is not a pair of aces, so both hands play on normally — unlike a genuine
     // ace split, which locks each hand to a single card.
     const shoe = [card('A'), card('7'), card('10'), card('6'), card('9'), card('8')]
-    const round = forcedSplit(startRound(shoe, 50))
+    const round = forcedSplit(startRound(shoe))
 
     expect(round.status).toBe('player-turn')
     expect(round.hands.every((hand) => !hand.splitAce && !hand.finished)).toBe(true)
   })
 })
 
-describe('handNet', () => {
-  function settled(outcome: PlayerHand['outcome'], bet: number, patch: Partial<PlayerHand> = {}): PlayerHand {
-    return { cards: [], bet, doubled: false, splitAce: false, finished: true, busted: false, outcome, ...patch }
-  }
-
-  it('reports each hand its own win/loss/push (so both halves of a split settle)', () => {
-    expect(handNet(settled('win', 50), DEFAULT_ROUND_RULES)).toBe(50)
-    expect(handNet(settled('lose', 50), DEFAULT_ROUND_RULES)).toBe(-50)
-    expect(handNet(settled('push', 50), DEFAULT_ROUND_RULES)).toBe(0)
-    expect(handNet(settled('bust', 50, { busted: true }), DEFAULT_ROUND_RULES)).toBe(-50)
-    expect(handNet(settled('blackjack', 50), DEFAULT_ROUND_RULES)).toBe(75)
-  })
-
-  it('sums to payout across a multi-hand round', () => {
-    // Player splits 8s → hands [8,10]=18 and [8,3]=11; both stand; dealer 9,7,5 = 21.
-    const shoe = [card('8'), card('8'), card('9'), card('7'), card('10'), card('3'), card('5'), card('2')]
-    const played = stand(stand(split(startRound(shoe, 50))))
-    expect(played.status).toBe('resolved')
-    expect(played.hands).toHaveLength(2)
-    const perHand = played.hands.reduce((total, hand) => total + handNet(hand, played.rules), 0)
-    expect(perHand).toBe(payout(played))
-  })
-})
 
 describe('armSecondChance', () => {
   it('burns a busting draw and stands on the replacement', () => {
     const shoe = [card('10'), card('6'), card('9'), card('8'), card('K'), card('4')]
-    const round = hit(armSecondChance(startRound(shoe, 50)))
+    const round = hit(armSecondChance(startRound(shoe)))
 
     expect(round.burned).toEqual(card('K'))
     expect(round.hands[0].cards).toEqual([card('10'), card('6'), card('4')])
@@ -310,7 +276,7 @@ describe('armSecondChance', () => {
     // [10,6]=16; first draw 10 -> 26 (burned); replacement 9 -> 25 also busts, so
     // the shield stands the hand on 16 rather than busting.
     const shoe = [card('10'), card('6'), card('9'), card('8'), card('10', 'hearts'), card('9', 'hearts')]
-    const round = hit(armSecondChance(startRound(shoe, 50)))
+    const round = hit(armSecondChance(startRound(shoe)))
 
     expect(round.hands[0].busted).toBe(false)
     expect(outcomeOf(round)).not.toBe('bust')
@@ -325,11 +291,10 @@ describe('freezeDealer', () => {
     // Dealer holds 6,6 = 12 and would normally draw. Frozen, it stands on 12 with
     // no card added, so the player's 20 wins.
     const shoe = [card('K'), card('Q'), card('6'), card('6', 'hearts'), card('K', 'hearts')]
-    const round = stand(freezeDealer(startRound(shoe, 50)))
+    const round = stand(freezeDealer(startRound(shoe)))
 
     expect(round.dealer).toEqual([card('6'), card('6', 'hearts')])
     expect(outcomeOf(round)).toBe('win')
-    expect(payout(round)).toBe(50)
   })
 
   it('turns a would-be dealer draw-out into a win', () => {
@@ -337,8 +302,8 @@ describe('freezeDealer', () => {
     // 20). Frozen, it stands on 16 and loses to the 20.
     const shoe = [card('K'), card('Q'), card('10', 'hearts'), card('6'), card('5')]
 
-    expect(outcomeOf(stand(startRound(shoe, 50)))).toBe('lose') // unfrozen: draws to 21
-    expect(outcomeOf(stand(freezeDealer(startRound(shoe, 50))))).toBe('win') // frozen: stands on 16
+    expect(outcomeOf(stand(startRound(shoe)))).toBe('lose') // unfrozen: draws to 21
+    expect(outcomeOf(stand(freezeDealer(startRound(shoe))))).toBe('win') // frozen: stands on 16
   })
 })
 
@@ -346,7 +311,7 @@ describe('mulligan', () => {
   it('discards the opening hand and deals a fresh one from the shoe', () => {
     // Opening 10,6 = 16 is thrown away; the next two cards (K,5) become the hand.
     const shoe = [card('10'), card('6'), card('9'), card('7'), card('K'), card('5'), card('4')]
-    const round = mulligan(startRound(shoe, 50))
+    const round = mulligan(startRound(shoe))
 
     expect(round.hands[0].cards).toEqual([card('K'), card('5')])
     expect(round.mulliganed).toBe(true)
@@ -355,14 +320,14 @@ describe('mulligan', () => {
 
   it('records the tossed cards as discarded (spent + known, out of the odds pool)', () => {
     const shoe = [card('10'), card('6'), card('9'), card('7'), card('K'), card('5'), card('4')]
-    const round = mulligan(startRound(shoe, 50))
+    const round = mulligan(startRound(shoe))
 
     expect(round.discarded).toEqual([card('10'), card('6')])
   })
 
   it('can only be used once per round', () => {
     const shoe = [card('10'), card('6'), card('9'), card('7'), card('K'), card('5'), card('4'), card('3')]
-    const round = mulligan(startRound(shoe, 50))
+    const round = mulligan(startRound(shoe))
 
     expect(canMulligan(round)).toBe(false)
     expect(() => mulligan(round)).toThrow()
@@ -371,7 +336,7 @@ describe('mulligan', () => {
   it('cannot mulligan after taking a hit', () => {
     // 10,6 -> hit a 2 = 18 (three cards), so the opening-hand window has closed.
     const shoe = [card('10'), card('6'), card('9'), card('7'), card('2'), card('5')]
-    const round = hit(startRound(shoe, 50))
+    const round = hit(startRound(shoe))
 
     expect(round.hands[0].cards).toHaveLength(3)
     expect(canMulligan(round)).toBe(false)
@@ -379,7 +344,7 @@ describe('mulligan', () => {
 
   it('cannot mulligan after splitting', () => {
     const shoe = [card('8'), card('8', 'hearts'), card('9'), card('7'), card('K'), card('Q'), card('4')]
-    const round = split(startRound(shoe, 50))
+    const round = split(startRound(shoe))
 
     expect(round.hands).toHaveLength(2)
     expect(canMulligan(round)).toBe(false)
@@ -388,10 +353,9 @@ describe('mulligan', () => {
   it('pays a redealt blackjack as a natural', () => {
     // Fresh hand A,K = 21 resolves immediately at 3:2.
     const shoe = [card('10'), card('6'), card('9'), card('7'), card('A'), card('K')]
-    const round = mulligan(startRound(shoe, 50))
+    const round = mulligan(startRound(shoe))
 
     expect(outcomeOf(round)).toBe('blackjack')
-    expect(payout(round)).toBe(75)
   })
 })
 
@@ -405,44 +369,41 @@ describe('upgrade outcomes', () => {
   it('isDealerHijacked marks a hijacked dealt natural only with the T3 rule', () => {
     // Dealer A,K natural; player 16. Hijack steals it into a player blackjack.
     const shoe = [card('9'), card('7'), card('A'), card('K')]
-    const hijacked = startRound(shoe, 50, rules({ hijackDealerNatural: true }))
+    const hijacked = startRound(shoe, rules({ hijackDealerNatural: true }))
     expect(isDealerHijacked(hijacked)).toBe(true)
     expect(outcomeOf(hijacked)).toBe('blackjack')
 
-    const normal = startRound(shoe, 50)
+    const normal = startRound(shoe)
     expect(isDealerHijacked(normal)).toBe(false)
     expect(outcomeOf(normal)).toBe('lose')
   })
 
   it('voids a dealt dealer natural into a wash with the void rule', () => {
     const shoe = [card('9'), card('7'), card('A'), card('K')]
-    const round = startRound(shoe, 50, rules({ voidDealer21: true }))
+    const round = startRound(shoe, rules({ voidDealer21: true }))
     expect(outcomeOf(round)).toBe('voided')
-    expect(payout(round)).toBe(0)
   })
 
   it('voids a dealer that hits to 21, but leaves a dealer 20 alone', () => {
     // Player 16 stands; dealer 10+6 hits the 5 → 21 → voided.
-    const toTwentyOne = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('5')], 50, rules({ voidDealer21: true })))
+    const toTwentyOne = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('5')], rules({ voidDealer21: true })))
     expect(outcomeOf(toTwentyOne)).toBe('voided')
     // The same start but a 4 on the end lands the dealer on 20 — untouched, a loss.
-    const toTwenty = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('4')], 50, rules({ voidDealer21: true })))
+    const toTwenty = stand(startRound([card('9'), card('7'), card('10'), card('6'), card('4')], rules({ voidDealer21: true })))
     expect(outcomeOf(toTwenty)).toBe('lose')
   })
 
   it('pays a voided dealer 21 to the player with push-wins (void + push)', () => {
     const shoe = [card('9'), card('7'), card('A'), card('K')]
-    const round = startRound(shoe, 50, rules({ voidDealer21: true, pushWinsToPlayer: true }))
+    const round = startRound(shoe, rules({ voidDealer21: true, pushWinsToPlayer: true }))
     expect(outcomeOf(round)).toBe('win')
     expect(round.hands[0].chipsOnly).toBe(true)
-    expect(payout(round)).toBe(50) // even money, chips only
   })
 
   it('wins a genuine tie as a chips-only win with push-wins', () => {
     // Player 20 vs dealer 20 → push, upgraded to a chips-only win.
-    const round = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], 50, rules({ pushWinsToPlayer: true })))
+    const round = stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], rules({ pushWinsToPlayer: true })))
     expect(outcomeOf(round)).toBe('win')
     expect(round.hands[0].chipsOnly).toBe(true)
-    expect(payout(round)).toBe(50)
   })
 })

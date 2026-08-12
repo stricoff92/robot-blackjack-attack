@@ -13,7 +13,7 @@
 import { deviceDpr } from './canvas'
 import { smoothEnd3, smoothStart2, smoothStep } from './easing'
 import { BOTTOM_HUD_RESERVE, cardSize } from './cards'
-import type { Point } from './chips'
+import type { Point } from './tokens'
 import { dealerBox, type Layout } from './scene'
 import { createSpriteCanvas } from './sprite-canvas'
 

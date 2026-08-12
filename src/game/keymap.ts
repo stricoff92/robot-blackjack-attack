@@ -1,9 +1,9 @@
 // Save-payload key obfuscation — the second half of "make the save opaque" (the first being the
 // base64 + checksum envelope in ./obfuscate). pack() already hides the VALUES at a glance, but a
-// base64-decode still reveals the field NAMES (`chips`, `score`, `integrity`, …), which hands a
+// base64-decode still reveals the field NAMES (`wins`, `score`, `integrity`, …), which hands a
 // casual save-editor a labelled map of exactly which number to bump. This module renames every
 // serialized key to a short opaque code before packing and reverses it on load, so a decoded save
-// reads as `{"ch":300,"sc":0,…}` — structure obscured, not just the digits.
+// reads as `{"ws":12,"sc":0,…}` — structure obscured, not just the digits.
 //
 // Like ./obfuscate this is a speed bump, not encryption: the codes ship in the bundle, so a
 // determined attacker can read this table and undo it. It exists to make the save non-trivial to
@@ -28,14 +28,17 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   // RunState
   seed: 'sd',
   deckState: 'dk',
-  chips: 'ch',
   score: 'sc',
   tokens: 'tk',
   shiftIndex: 'si',
   handsThisDealer: 'hd',
   handsPlayed: 'hp',
+  wins: 'ws',
   integrity: 'ig',
-  combo: 'cb',
+  healsThisDealer: 'hz',
+  hitPoints: 'ht',
+  roundWins: 'rw',
+  handLog: 'lg',
   tokenInflation: 'tf',
   tokensThisShift: 'ss',
   kills: 'kl',
@@ -50,7 +53,6 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   over: 'ov',
   won: 'wn',
   coda: 'cd',
-  bankruptcyCoda: 'bc',
   cashedOut: 'co',
   upgrades: 'ug',
   // RunUpgrades
@@ -85,20 +87,16 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   finished: 'fn',
   busted: 'bt',
   outcome: 'oc',
-  lostToDealerNatural: 'ln',
   chipsOnly: 'cy',
   freeDoubled: 'fd',
   // RoundRules
   dealerSoft17: 's7',
   dealerHardHitCeiling: 'hh',
-  blackjackPayoutNumerator: 'pn',
-  blackjackPayoutDenominator: 'pe',
   allowSplit: 'al',
-  doubleWinBonusRatio: 'wb',
   pushWinsToPlayer: 'pw',
   voidDealer21: 'v2',
   hijackDealerNatural: 'hj',
-  dealerNaturalRefundRatio: 'nr',
+  dealer21Energy: 'd2',
   tokenMultiplier: 'tm',
   // Card
   rank: 'rk',

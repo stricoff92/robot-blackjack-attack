@@ -8,7 +8,7 @@
 // with the card reveal. The kill phase durations are EXPORTED so GameView can
 // sequence the death → walk-in beat against them (they can't drift apart).
 
-import { maxIntegrityFor } from '../game/run'
+import { maxHitsFor } from '../game/run'
 import { voiceEnvelope, type VoicePattern } from '../audio/voice'
 import type { DamageBurstState } from '../render/damage-fx'
 import { arch2, smoothEnd2, smoothStart2 } from '../render/easing'
@@ -128,7 +128,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     // Hold whatever level is showing now until the strike lands (levelAt), so a deferred
     // laser doesn't blank the sparks/tremor/flicker the instant it's scheduled at the click.
     this.prevLevel_ = this.level_
-    this.level_ = clamp01(Math.max(0, nextIntegrity) / maxIntegrityFor(nextShift))
+    this.level_ = clamp01(Math.max(0, nextIntegrity) / maxHitsFor(nextShift))
 
     if (nextShift > prevShift) {
       this.mode_ = 'kill'
@@ -167,7 +167,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // override) flickers (or not) correctly from the first frame. `shift` scales it to
   // that dealer's max.
   setLevel(integrity: number, shift: number): void {
-    this.level_ = clamp01(Math.max(0, integrity) / maxIntegrityFor(shift))
+    this.level_ = clamp01(Math.max(0, integrity) / maxHitsFor(shift))
     // An instant set (load / new run / heal / arrival): no strike to wait for.
     this.prevLevel_ = this.level_
     this.levelAt_ = 0
@@ -220,6 +220,13 @@ export class DealerAnimation implements DealerView, StrikeView {
   emote(startAfter: number, pattern: VoicePattern): void {
     this.emoteStart_ = startAfter
     this.emotePattern_ = pattern
+  }
+
+  // The emote currently armed (its absolute start stamp + pattern), or null if the dealer
+  // has never emoted. Exposed so a companion (the dealer-6 clown) can mirror the dealer's
+  // laughs onto its own mouth on a slight delay — it edge-detects a change in `start`.
+  currentEmote(): { start: number; pattern: VoicePattern } | null {
+    return this.emotePattern_ ? { start: this.emoteStart_, pattern: this.emotePattern_ } : null
   }
 
   // Walk-off progress (0..1) as the dealer leaves to the right, or null when it's still

@@ -42,10 +42,9 @@ export function shoeStackExtent(w: number, h: number): { dx: number; dy: number 
   return { dx: w * SHOE_DX * SHOE_LAYERS, dy: h * SHOE_DY * SHOE_LAYERS }
 }
 
-// Player cards' top edge, as a fraction of felt height below the felt top. Kept
-// with room above (for the big count + result) and below (for the betting circle).
-// chips.ts shares it. Raised (from 0.56) to open room below the cards for the chips.
-export const PLAYER_ROW = 0.5
+// Player cards' top edge, as a fraction of felt height below the felt top. Lowered to 0.55 now that
+// chips are gone (freed bottom space) — this also grows the mid-table band the readouts project in.
+export const PLAYER_ROW = 0.55
 
 // The dealer cards' top edge. Anchored to the CURVED felt top near the dealer (not to
 // edgeY, the felt's SIDE edge — which sits a whole curveDepth lower, leaving the cards
@@ -58,13 +57,27 @@ function dealerRowY(l: Layout): number {
   return topAtReach + cardW * 0.12 // a small gap below the felt edge so cards clear the rail
 }
 
-// Bottom-of-felt reservation the player cards must sit clear ABOVE, so the cards never
-// collide with the bet chips: the action-bar band (BOTTOM_HUD_RESERVE), plus room for
-// the betting circle + the tallest bet stack, plus a small gap. The chip figures used
-// to compute that room MIRROR chips.ts (chipMetrics rx, MAX_BET_DISCS, LIFT_RATIO,
-// CHIP_RATIO) — keep them in sync. BOTTOM_HUD_RESERVE is exported so chips.ts shares it.
-export const BOTTOM_HUD_RESERVE = 96
-const CARD_BET_GAP_PX = 12 // clearance kept between the player cards' bottom and the bet stack
+// The clear band between the dealer's cards/count and the player's — where the nexus projects the
+// between-hands readouts (Analyze, spec sheet, coda stake, the dealer hand-summary). SINGLE SOURCE
+// OF TRUTH: analysisGeom / spec-sheet / coda-stake / hand-summary all call this (it was duplicated
+// 4× and risked desync when the card row / size changes).
+export function handBand(l: Layout): { top: number; bottom: number; center: number } {
+  const dc = dealerCountAnchor(l)
+  const pc = playerCountAnchor(l, 1, 0)
+  const top = dc.y + dc.size * 0.7
+  const bottom = pc.y - dc.size * 0.7
+  return { top, bottom, center: (top + bottom) / 2 }
+}
+
+export function handBandCenterY(l: Layout): number {
+  return handBand(l).center
+}
+
+// Bottom-of-felt reservation the player cards must sit clear ABOVE: the HTML action bar (Hit/Stand/…
+// at bottom:20px + ~56px button ≈ 76px) plus a small margin. Chips are gone, so this no longer
+// reserves a bet-stack band. Also lifts the game-over scoreboard + coda counters off the bottom
+// (score-sheet.ts / coda-counters.ts read it).
+export const BOTTOM_HUD_RESERVE = 84
 
 // Per-card animation state, supplied by the deal animator.
 export interface CardState {
@@ -107,17 +120,13 @@ export function playerKey(handIndex: number, cardIndex: number): string {
 // capped by screen width so cards don't get oversized on narrow/portrait phones.
 export function cardSize(l: Layout): { w: number; h: number } {
   const feltH = l.height - l.edgeY
-  const byHeight = feltH * 0.2
-  const byWidth = (l.width * 0.13) / CARD_RATIO
-  // Third limit — the vertical budget: the player cards must fit ABOVE the reserved
-  // chip/HUD band at the bottom. On wide/short screens this is what actually binds, so
-  // cards shrink there just enough to clear the bet chips (elsewhere it's slack).
-  const rx = clamp(Math.min(l.width, l.height) * 0.03, 10, 22) // mirrors chips.ts chipMetrics
-  const stackH = rx * (4 * 0.2 + 0.42) // MAX_BET_DISCS·LIFT_RATIO + CHIP_RATIO
-  const betCap = l.height - BOTTOM_HUD_RESERVE - rx * 0.95
+  const byHeight = feltH * 0.22 // ~10% bigger than before (chips gone, room to grow)
+  const byWidth = (l.width * 0.14) / CARD_RATIO
+  // Third limit — the vertical budget: the player cards must fit ABOVE the reserved action-bar band
+  // at the bottom. Binds only on wide/short screens (elsewhere byHeight/byWidth bind).
   const playerY = l.edgeY + feltH * PLAYER_ROW
-  const byBottom = betCap - stackH - CARD_BET_GAP_PX - playerY
-  const h = clamp(Math.min(byHeight, byWidth, byBottom), 48, 168)
+  const byBottom = l.height - BOTTOM_HUD_RESERVE - playerY
+  const h = clamp(Math.min(byHeight, byWidth, byBottom), 48, 180)
   return { w: h * CARD_RATIO, h }
 }
 
@@ -134,8 +143,8 @@ export function playerCardBox(l: Layout): { x: number; y: number; w: number; h: 
 
 // Horizontal placement of the player's hand(s). A single hand sits at centre.
 // Split hands are packed into a centred band of the felt — NOT spread to the
-// screen edges — so the outer hands and their bet chips stay clear of the corner
-// HUD (powerups bottom-left, bankroll bottom-right) and read like real
+// screen edges — so the outer hands stay clear of the corner HUD (powerups bottom-left, score
+// bottom-right) and read like real
 // side-by-side split hands. Cards shrink as more hands fill the band.
 const HAND_BAND = 0.66 // widest fraction of the felt the hand group may span
 
@@ -268,8 +277,7 @@ export function drawHands(
     )
   }
 
-  // Player hand(s): the cards rest on top of the bet chips, so the total goes
-  // ABOVE the cards.
+  // Player hand(s): the total goes ABOVE the cards.
   const playerY = feltTop + feltHeight * PLAYER_ROW
   const count = round.hands.length
   const scale = handCardScale(l, count)
@@ -672,18 +680,10 @@ interface AnalysisGeom {
 }
 
 function analysisGeom(ctx: CanvasRenderingContext2D, l: Layout, a: AnalysisReadout): AnalysisGeom {
-  const feltTop = l.edgeY
-  const feltHeight = l.height - feltTop
   const { h: cardH } = cardSize(l)
-  const countPx = clamp(cardH * 0.2, 20, 28) // the hand-count font size (matches drawCount)
-  const dealerCountY = dealerRowY(l) + cardH + cardH * 0.22
-  const playerCountY = feltTop + feltHeight * PLAYER_ROW - cardH * 0.34
-  // Fit the two rows in the CLEAR band BETWEEN the counts' text — each count reaches
-  // ~countPx/2 from its centre, so leave that plus a margin. On tight (wide/short)
-  // screens the band is small, so the font shrinks to fit rather than crowding the counts.
-  const bandTop = dealerCountY + countPx * 0.7
-  const bandBottom = playerCountY - countPx * 0.7
-  const midY = (bandTop + bandBottom) / 2
+  const countPx = dealerCountAnchor(l).size // the hand-count font size (matches drawCount)
+  // The clear band between the two counts — shared with the spec/coda/summary readouts (handBand).
+  const { top: bandTop, bottom: bandBottom, center: midY } = handBand(l)
   // Size to the band, but never bigger than the hand count — that stays the primary
   // number. With the counts now smaller + the dealer at the felt top, the band is roomy,
   // so on big screens this is countPx-limited rather than starved.

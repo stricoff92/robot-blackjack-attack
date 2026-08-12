@@ -8,6 +8,10 @@ resumed gamble. None were engine bugs — all were in the presentation layer, an
 same few structural weaknesses. This doc records those weaknesses and how to reduce them, so the
 next change to this layer is less error-prone.
 
+> **v29 note.** Chips / bet were removed in the economy rework, so the "bet chips missing/shown"
+> mentions in this doc are **historical**. The chips canvas layer now carries the dealer
+> **hand-summary** (the window slots, between hands) and the coda pot instead.
+
 **Scope.** This is about `src/ui/game-view.ts` and `src/render/*` / the animators. It is NOT about
 `src/game/*` — that layer (rules, run/session state, persistence, anti-cheat) is clean,
 deterministic, and covered by ~390 tests. Leave it alone; spend effort below the game/render line.
@@ -159,9 +163,9 @@ Two ways to close the gap:
   | Saved phase | Expect on Continue |
   |---|---|
   | betting | walk-in, auto-deal |
-  | playing (incl. split, armed powerup) | same cards/turn, hole DOWN, bet chips shown |
-  | resolved (no kill) | advances to next hand |
-  | resolved (kill) | advances to upgrade pick → deal |
+  | playing (incl. split, armed powerup) | same cards/turn, hole DOWN |
+  | resolved (no kill) | hand-summary shown, advances to next hand on click |
+  | resolved (kill) | hand-summary greens flip, advances to upgrade pick → deal |
   | coda prompt | Banker shown, pot + BEST projected, double/cash |
   | coda mid-gamble | gamble hand, Banker hole DOWN |
   | coda resolved-gamble / entry hand | auto-advances to prompt |

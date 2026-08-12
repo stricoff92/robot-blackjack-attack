@@ -530,32 +530,6 @@
   display: inline-flex;
 }
 
-/* "Not enough chips" badge: a white ✕ on red, tucked into a move button's
- * bottom-left corner (mirroring the cost pill's bottom-right tuck). Shown when
- * Double/Split is disabled purely for lack of the chips to cover the extra bet. */
-.nsf-badge {
-  position: absolute;
-  left: 0; /* flush into the button's bottom-left corner */
-  bottom: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  /* Bottom-left corner matches the button's radius so the badge nests into it;
-   * the two edges meeting the button's sides stay square for a flush tuck. */
-  border-radius: 0 10px 0 10px;
-  background: #d23a3a;
-  color: #ffffff;
-  font: 700 13px system-ui, -apple-system, sans-serif;
-  line-height: 1;
-}
-
-.nsf-badge.is-hidden {
-  display: none;
-}
-
 .hud-actions {
   position: absolute;
   left: 0;

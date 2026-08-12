@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { maxHitsFor } from '../game/run'
 import { DealerAnimation } from './dealer-animator'
 
-// Dealer 1's max integrity is 100 (run.ts SHIFT_TABLE), so setLevel(n, 1) sets the
-// health fraction to exactly n%. The damage sparks/smoke (damageBursts) key off that
-// fraction: nothing at/above 75%, ramping denser toward 0.
+// setLevel scales integrity by the dealer's max HIT count (maxHitsFor), so passing
+// (pct/100)×maxHits sets the health fraction to exactly pct%. The damage sparks/smoke
+// (damageBursts) key off that fraction: nothing at/above 75%, ramping denser toward 0.
 function at(healthPct: number): DealerAnimation {
   const d = new DealerAnimation()
-  d.setLevel(healthPct, 1)
+  d.setLevel((healthPct / 100) * maxHitsFor(1), 1)
   return d
 }
 
@@ -53,13 +54,13 @@ describe('dealer damage FX (damageBursts)', () => {
     // must keep showing the dying dealer's low health right up until the beam lands — not blank
     // out at the click. (This regressed once: level snapped at sync-call time.)
     const d = new DealerAnimation()
-    d.setLevel(10, 1) // the outgoing dealer is at 10% — sparking + trembling
+    d.setLevel((10 / 100) * maxHitsFor(1), 1) // the outgoing dealer is at 10% — sparking + trembling
     // Strike scheduled well after the click (impact = startAfter + STRIKE_TRAVEL_MS), so the
     // pre-strike window comfortably spans several intermittent tremor pulses.
     const startAfter = 5000
-    // A kill hands sync() the INCOMING dealer's state: shift 2, full integrity (110 for
-    // dealer 2 in run.ts) — so the model level jumps to 1.0 at the click.
-    d.sync(10, 1, 110, 2, startAfter)
+    // A kill hands sync() the INCOMING dealer's state: shift 2, full integrity (maxHitsFor(2)) —
+    // so the model level jumps to 1.0 at the click.
+    d.sync((10 / 100) * maxHitsFor(1), 1, maxHitsFor(2), 2, startAfter)
 
     // Before the beam strikes: still sparking...
     expect(d.damageBursts(300).length).toBeGreaterThan(0)

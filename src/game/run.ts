@@ -1,9 +1,8 @@
 import { isBlackjack } from './hand'
-import { damageForRound } from './integrity'
-import type { Rng } from './random'
 import { handReward } from './rewards'
-import { isWinningHand, payout, type PlayerHand, type Round, type Soft17Rule } from './round'
+import { handWeight, isWinningHand, roundTally, type HandResult, type PlayerHand, type Round, type Soft17Rule } from './round'
 import {
+  blackjackPointBonusFor,
   bumpUpgrade,
   emptyUpgrades,
   hasAvailableUpgrade as hasAvailableUpgradeFor,
@@ -14,84 +13,59 @@ import {
 } from './upgrades'
 
 // Bumped whenever resolution/reward maths change, so stale replays are invalidated.
-// v4: roguelite upgrades (auto-blackjack, dealer sabotage, chip/token scaling).
-// v5: per-shift dealer HP + late-dealer heal-on-win; win-streak combo + clean-kill score.
-// v6: wealth-floor bet (bet forced to a % of the stack on later dealers).
-// v7: token inflation (powerup costs rise with tokens earned; Token eco resists it).
-// v8: harder endgame — bigger wealth floor + Dealer 6 max bet; late dealers hit soft 17.
-// v9: soft-17 rule per dealer — D3-5 hit, D6 plays 'smart' (hits only when behind).
-// v10: smart D6 also hits a hard 17 when strictly behind (downgrade folded in).
-// v11: D6 "honorable duel" — desperation hard-hit ceiling, no heal <30%, no abilities
-//      <20%, and a bust from an abandoned stand pays the beat-total tier, not weak bust.
-// v12: upgrade-path rework — Payout (2:1 → 3:1 blackjack → win all pushes), Sabotage
-//      (75% refund → void any dealer 21 → hijack natural), buffed Tokens; the
-//      auto-blackjack lift and the −1 dealer downgrade removed.
-// v13: harder economy — min-bet ladder doubled per dealer (20/40/80/160/320/640) with
-//      a steeper wealth floor (0/10/12/15/18/25%); Peek Dealer costs the same as Peek Deck.
-// v14: kill bounty raised (150→1000 ×dealer) so kills dominate score, and clean-kill
-//      decay halved (0.2→0.1) so the clean bonus survives a realistic loss count and
-//      stays reachable on the drawn-out, self-healing late dealers.
-// v15: winning a token-free Double (standard double-down, not the paid Late double
-//      powerup) pays a 1.5x score boost — a reward for the bold, unbought risk.
-// v16: surviving hits now also pay SCORE by bust risk (hitPoints) — a flat 10 up to 50%
-//      risk, then a smoothStart2 ease-in climbing to 1000 at a certain bust.
-// v17: lifetime tallies for the game-over score screen (handsWon/handsLost, tokensSpent,
-//      freeDoubleWins) — display only, no effect on resolution maths.
-// v18: hit-points curve retuned — flat 10 below 40% risk, then smoothStart2 from 10 to 400
-//      (was a 50% floor climbing to 1000).
-// v19: hit points now (a) ramp from a near-zero floor up to 10 across the sub-40% region
-//      instead of a flat 10, and (b) scale by the dealer's score multiplier (Session.hit).
-// v20: the combo is now a unified HIT streak (built +1 per surviving hit, reset on bust)
-//      that multiplies ALL score — hit points, won chip score, and kill bounty — at x1..x2.
-//      Replaces the old win-streak combo (consecutive won hands, reset on any dealer win).
-// v21: hits earn NO points — their sole purpose is to build the combo, now a CONTINUOUS
-//      risk-weighted accumulator (comboGain: safe hit +0.01, riskier hits more) that
-//      multiplies won hands + kills at x1..x2. hitPoints removed.
-// v22: clean-kill bonus removed (it was invisible to the player) — the kill bounty is now
-//      just 400 × dealer × combo, no per-loss decay. lossesThisDealer dropped.
-// v23: the combo now resets on ANY lost hand (all hands, on a split), not just a bust —
-//      so safe play (standing to protect the streak) no longer hoards the multiplier.
-// v24: points rescaled for a tighter (mobile-friendly) score ceiling — the per-dealer
-//      scoreMultiplier curve is flattened (was 1..5.5, now 1..1.7) since bet size already
-//      grows ~40x across dealers, so the multiplier no longer needs to do the heavy lifting;
-//      and the kill bounty base drops 1000 -> 400 so bounties don't dominate the smaller
-//      totals. Blackjack still scores via chips (3:2 + upgrades), deliberately unchanged.
-// v25: score now COMPOUNDS with depth — the flat per-dealer scoreMultiplier (1..1.7) is
-//      replaced by runMultiplier = 1.5^kills (1, 1.5, 2.25, 3.4, 5.06, 7.59 by dealer 6),
-//      applied to the won-hand chip score and the kill bounty, so deep runs are worth
-//      exponentially more (feeding the double-or-nothing Banker coda). The per-shift
-//      scoreMultiplier field is removed — bet size + this now carry the score curve.
-// v27: more game-over score-screen tallies (busts, blackjackWins, and a per-hand star rating
-//      accumulator ratingSum/ratedHands — see tallyPerformance) for the scoreboard's "page 2".
-//      Display only, no effect on resolution maths. Bumped so an in-progress v26 save (which
-//      lacks the fields) is discarded on load rather than resumed missing them.
-// v28: resume-EXACT saves — the persisted payload grew from RunState-only to a full session
-//      snapshot (phase + in-progress round + peeked/codaRedeal/upgradePending). Bumped so a v27
-//      RunState-only save is discarded rather than resumed into the new (incompatible) shape. This
-//      is the fix for the mid-hand / bankruptcy-coda refresh replay (see game/persistence).
-export const RULES_VERSION = 28
-export const STARTING_CHIPS = 400
+// … (see git history for v4–v28) …
+// v29: economy rework — chips/bankroll removed entirely. Dealer health is now an integer HIT
+//      count (maxHits 5..10); every winning hand deals its WEIGHT in hits (1, or 2 if doubled).
+//      Each dealer deals a fixed WINDOW of hands (maxHands); running it out with the dealer alive
+//      makes it walk off with no upgrade. A kill CASHES IN every remaining window slot as a bonus
+//      win. Score is per-win off a cumulative counter: POINTS_BASE × POINTS_GROWTH^(wins−1). The
+//      bet ladder, wealth floor, bankruptcy coda, chip payout, runMultiplier (1.5^kills), the flat
+//      kill score-bounty, and the free-double score bonus are all gone. The banker coda now always
+//      fires at the end of Dealer 6 (killed OR window-out). Doubles/splits carry their risk as
+//      weight (double win = 2 wins/2 hits, double loss = 2 window slots; split hands independent).
+// v30: removed the hit-streak combo multiplier — it punished correct standing (only surviving HITS
+//      built it) and duplicated the win-count curve. Score is now purely the cumulative-win curve;
+//      surviving hits still pay tokens. RunState.combo dropped, so v29 saves are discarded.
+// v31: player HEARTS (hit points) added — 5 heart-chips. A losing round pops one; qualifying wins
+//      heal one back (buffed streak / natural or hijacked blackjack / double-win). Running the
+//      hearts out ends the current dealer early and drops into the coda, with NO score penalty. New
+//      RunState fields hearts/roundWins change the shape, so v30 saves are discarded.
+// v32: Sabotage T1 re-themed — the old "25% points on a loss to a dealer natural" consolation is
+//      replaced by a flat +20 ENERGY on ANY dealer 21 (dealt natural or hit-to-21), credited in
+//      Session.settle_ so it also fires on a T2-voided 21 and stacks on a T3 hijack. The
+//      dealerNaturalConsolation rule flag + lostToDealerNatural hand field + CONSOLATION_FRACTION
+//      scoring are gone (RoundRules/PlayerHand shape changed), so v31 saves are discarded.
+export const RULES_VERSION = 32
+
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
 export const STARTING_TOKENS = 100
 // The run is won by destroying this many dealers; there is no dealer beyond it.
 export const TOTAL_DEALERS = 6
 
+// Player hit points, shown as heart-chips above the HUD. A losing round pops one; running them out
+// ends the current dealer early and drops into the coda (no score penalty — see [[banker-coda]]).
+// Wins heal (see heartsAfterRound). This, the lookback, and the kill heal are the balance knobs.
+export const MAX_HEARTS = 8
+// A plain win heals a heart only if the player also won AT LEAST ONE of the last HEART_HEAL_LOOKBACK
+// SCORED rounds. 1 = strict (two wins in a row); 2 = buffed (a W-L-W pattern still heals, surviving a
+// single intervening loss). Buffed is the shipped default: in a house-edge game it rewards win-RATE
+// over hot streaks. Natural/hijacked blackjacks and double-wins heal unconditionally (heartsAfterRound).
+export const HEART_HEAL_LOOKBACK = 2
+// Beating (destroying) a dealer heals this many hearts — a milestone reward, bigger than the ordinary
+// per-win heal it supersedes on that round.
+export const HEART_KILL_HEAL = 2
+
 export const DESTROY_TOKEN = 40
 
-// Bankruptcy redemption: going broke normally ends the run, but once the player has downed at
-// least BANKRUPTCY_MIN_SHIFT dealers the Banker steps in with a last-chance double-or-nothing —
-// at a punishing "bankruptcy tax". The run enters the coda staking only (1 − tax) of the earned
-// score instead of ending. 0.83 → the player climbs back from 17%.
-export const BANKRUPTCY_TAX = 0.83
-// The player must be fighting at least this deep (shiftIndex > this) to be offered the redemption
-// coda — no bailout for a run that barely started. `> 1` means Dealer 2 onward (≥1 kill).
-export const BANKRUPTCY_MIN_SHIFT = 1
+// Sabotage T1 (any Sabotage tier): a flat ENERGY bonus paid whenever the dealer reaches 21 — a dealt
+// natural OR a hit-to-21 — regardless of the hand's outcome (a loss, a T2 void/redeal, a T3 hijack
+// win, or a Payout-T3 push-win). Credited in Session.settle_ (not applyRound) so it also lands on a
+// voided round, which never reaches applyRound. Flat (not scaled by the Energy token multiplier).
+export const SABOTAGE_DEALER21_ENERGY = 20
 
-// A surviving hit pays tokens scaled by how risky it was: the base for a safe
-// hit, climbing to base+bonus for a hit that was very likely to bust but landed
-// anyway. Expected value stays modest — the riskier the hit, the rarer it
-// survives to be paid — so this rewards nerve without inflating the economy.
+// A surviving hit (the blackjack HIT action) pays tokens scaled by how risky it was: the base for
+// a safe hit, climbing to base+bonus for a hit that was very likely to bust but landed anyway.
 export const HIT_TOKEN_BASE = 1
 export const HIT_TOKEN_MAX_BONUS = 9
 
@@ -100,48 +74,36 @@ export function hitTokens(bustChance: number): number {
   return HIT_TOKEN_BASE + Math.round(risk * HIT_TOKEN_MAX_BONUS)
 }
 
-// Hits earn NO points directly — their sole purpose is to build the combo (below). A
-// surviving hit adds `comboGain(risk)` to the combo, weighted by how risky the hit was: a
-// safe hit (0% bust) nudges it by only COMBO_GAIN_FLOOR, a near-certain bust that survived
-// adds the most. So the multiplier is built by taking real risk, not by free safe hits.
-export const COMBO_GAIN_FLOOR = 0.01
-export const COMBO_GAIN_SLOPE = 0.19 // + this × risk (max gain 0.20 at a certain-bust hit)
+// A surviving hit (the blackjack HIT action) earns NO points — it only pays tokens (hitTokens,
+// risk-priced, the powerup economy). Score comes purely from WINNING hands (see applyRound), so the
+// score never punishes correct standing.
 
-export function comboGain(bustChance: number): number {
-  const risk = Math.min(1, Math.max(0, bustChance))
-  return COMBO_GAIN_FLOOR + risk * COMBO_GAIN_SLOPE
+// Points curve: a WIN at cumulative ordinal `n` scores POINTS_BASE × POINTS_GROWTH^(n−1). The win
+// counter never resets across the run, so every win permanently raises the rate for all wins ahead.
+// A full clear lands ~100 wins → ~7M total. Bonus (cash-in) wins score off the same curve.
+export const POINTS_BASE = 10
+export const POINTS_GROWTH = 1.12
+
+export function basePoints(winOrdinal: number): number {
+  return POINTS_BASE * Math.pow(POINTS_GROWTH, Math.max(0, winOrdinal - 1))
 }
 
-const DESTRUCTION_SCORE_BASE = 400
-const HAND_BET_STEP = 0.5
-// On a kill, seed the next dealer's bankroll with this many of its minimum bets,
-// so the escalating min-bet ladder stays survivable instead of starving the run.
-const KILL_REWARD_RATIO = 3
-const PROTOTYPE_MIN_GROWTH = 2.5
-// Dealers past the table (only reached by a dev jump; the run ends at dealer 6)
-// keep gaining HP so a jumped-to late dealer is still a real fight.
-const PROTOTYPE_HP_STEP = 45
 
-// Unified combo (score only): a CONTINUOUS accumulator of risk-weighted surviving hits
-// (see comboGain). `run.combo` holds the accumulated bonus fraction, capped at
-// COMBO_MAX_BONUS; the multiplier is 1 + that. A BUST resets it to 0 (see Session.hit);
-// standing, losing, and winning leave it. The multiplier scales ALL score the streak earns
-// — a won hand's chip score and the kill bounty (hits themselves no longer score). Built in
-// Session.hit; applyRound only READS it.
-const COMBO_MAX_BONUS = 1 // caps the multiplier at x2
+// Dealers past the table (only reached by a dev jump; the run ends at dealer 6) keep gaining hits
+// and window so a jumped-to late dealer is still a real fight.
+const PROTOTYPE_HITS_STEP = 2
+const PROTOTYPE_HANDS_STEP = 4
 
-// Free-double win bonus (score only): a hand won on the standard token-free Double
-// (doubleDown) scores x1.5 — a reward for the bold, unbought risk. The paid Late
-// double powerup is deliberately excluded (buying score would be too cheap).
-const FREE_DOUBLE_SCORE_BONUS = 1.5
+// Never heal a dealer off its last hit — a heal only fires while it has at least this many hits
+// remaining, so the kill is always reachable.
+const HEAL_MIN_HITS = 2
 
 // Endgame "honorable duel" on the final dealer. Below these health fractions it stops
-// self-repairing (heal-on-win off), locks the player out of token abilities, and (via
-// its 'smart' AI, round.ts) grows more willing to hit a hard total when behind.
-const HEAL_MIN_HEALTH_FRACTION = 0.3
+// self-repairing (heal off), locks the player out of token abilities, and (via its 'smart' AI,
+// round.ts) grows more willing to hit a hard total when behind.
 const ABILITIES_LOCK_FRACTION = 0.2
-// The final dealer's desperation hard-hit ceiling by health: once its health drops
-// below `below`, it will hit a hard total up to `ceiling` when behind (highest first).
+// The final dealer's desperation hard-hit ceiling by health: once its health drops below `below`,
+// it will hit a hard total up to `ceiling` when behind (highest first).
 const DESPERATION_CEILINGS: readonly { below: number; ceiling: number }[] = [
   { below: 0.1, ceiling: 20 },
   { below: 0.2, ceiling: 19 },
@@ -150,106 +112,85 @@ const DESPERATION_CEILINGS: readonly { below: number; ceiling: number }[] = [
 
 export interface Shift {
   index: number
-  minBet: number
-  maxBet: number
-  /** The dealer's full integrity — how much damage destroying it takes. */
-  maxIntegrity: number
-  /** On a hand the dealer wins, it repairs a random amount of HP in [min, max],
-   *  capped at maxIntegrity. [0, 0] = never heals. */
-  healOnWin: readonly [min: number, max: number]
-  /** Wealth floor: the bet is forced to at least this fraction of the player's
-   *  chips (the greater of it and the ladder bet), so a fat stack can't shrug off
-   *  the stakes. 0 on Dealer 1, up to 0.125 (12.5%) by Dealer 6. */
-  minBetPct: number
-  /** Token inflation: destroying this dealer adds up to this fraction to the global
-   *  inflation (§ token inflation), scaled by how close the shift's token earnings
-   *  came to `inflationDenom`. 0 = no inflation from this shift (Dealer 6 wins the
-   *  run, so its kill never inflates anything). */
+  /** How many HITS destroying this dealer takes — each winning hand lands 1 (×weight). */
+  maxHits: number
+  /** The window: how many hands the dealer deals before walking off if still alive. */
+  maxHands: number
+  /** Max +1-hit heals this dealer can claw back (on hands it wins). 0 = never heals. */
+  maxHeals: number
+  /** Token inflation: destroying this dealer adds up to this fraction to the global inflation,
+   *  scaled by how close the shift's token earnings came to `inflationDenom`. 0 = none. */
   inflationCap: number
-  /** Token earnings that max out this shift's inflation add. Higher on later shifts,
-   *  which normally earn more, so the add tracks *excess* earning, not raw volume. */
+  /** Token earnings that max out this shift's inflation add. */
   inflationDenom: number
-  /** How this dealer plays a soft 17 (§ house rules): 'stand' early, 'hit' (H17) on
-   *  the mid dealers, 'smart' on Dealer 6 (hits only when not already winning). Folded
-   *  into the round rules at deal. */
+  /** How this dealer plays a soft 17 (§ house rules): 'stand' early, 'hit' on the mid dealers,
+   *  'smart' on Dealer 6. Folded into the round rules at deal. */
   dealerSoft17: Soft17Rule
 }
 
 export interface RunState {
   seed: number
-  // The deal RNG's stream position (its mulberry32 `.state`), checkpointed at each save so a resume
-  // deals the SAME upcoming shoe on every reload — reloading can't reroll the opening cards. Kept in
-  // sync with the live deal RNG on every checkpoint; restored via createRng(deckState) in adoptSession.
-  // Distinct from `seed` (the run's fixed origin, which also derives the Analyze/heal streams): this
-  // is the evolving position that seed has advanced to.
+  // The deal RNG's stream position (mulberry32 `.state`), checkpointed at each save so a resume
+  // deals the SAME upcoming shoe on every reload.
   deckState: number
-  chips: number
   score: number
   tokens: number
   shiftIndex: number
   handsThisDealer: number
   handsPlayed: number
+  // Cumulative WINS this run (never reset per dealer). Incremented by real winning hands (×weight)
+  // AND by kill cash-in bonus wins. Drives the points curve (basePoints).
+  wins: number
+  // Current dealer HP as an integer HIT count (max via maxHitsFor). Repurposes the old `integrity`.
   integrity: number
-  // Accumulated risk-weighted combo bonus since the last lost hand (a continuous 0..1
-  // value), driving the score multiplier (comboMultiplier = 1 + this). Grown by each
-  // surviving hit in Session.hit (comboGain), reset to 0 in applyRound when the whole hand
-  // is lost (all split hands lost); multiplies won hands + kills.
-  combo: number
-  // Global token inflation (a fraction): powerup costs are charged at base × (1 + this).
-  // Only ever rises, by an amount set at each kill from the shift's token earnings.
+  // +1-hit heals this dealer has already clawed back; reset on shift advance.
+  healsThisDealer: number
+  // Player hit points (a run-long pool, NOT reset per dealer), drawn as the heart-chips. A losing
+  // round pops one; wins heal (capped at MAX_HEARTS; a kill heals more). 0 opens the coda early.
+  // Named hitPoints, not hearts, because the card-suit value "hearts" is plaintext in the save and
+  // would trip the field-name-leak guard (keymap only obfuscates keys, not values).
+  hitPoints: number
+  // The last HEART_HEAL_LOOKBACK SCORED rounds' results (true = won that round), most-recent last.
+  // Drives the streak heal; pushes/washes never reach applyRound so they never appear here.
+  roundWins: boolean[]
+  // Per consumed window slot, win or loss, for the dealer hand-summary. Reset on shift advance.
+  handLog: HandResult[]
+  // Global token inflation (a fraction): powerup costs are charged at base × (1 + this). Only rises.
   tokenInflation: number
-  // Tokens earned against the current dealer, feeding the inflation add; reset on kill.
+  // Tokens earned against the current dealer, feeding the inflation add; reset on shift advance.
   tokensThisShift: number
   kills: number[]
   // Lifetime tallies for the game-over score screen (display only, never gameplay inputs).
-  // handsWon/handsLost feed the win/loss ratio (pushes count as neither); tokensSpent is
-  // cumulative powerup spend; freeDoubleWins counts wins that used the token-free Double.
   handsWon: number
   handsLost: number
   tokensSpent: number
   freeDoubleWins: number
-  // Player-performance tallies for the score screen's "page 2" (tallyPerformance, display only,
-  // never gameplay inputs). Counted per ROUND, so a split counts once — like handsPlayed. Coda
-  // hands are excluded (they resolve outside applyRound/tallyPerformance).
-  //   busts         — rounds where the player busted (any hand). Feeds BUST %.
-  //   blackjackWins — rounds with a 'blackjack' outcome (a real natural OR a hijacked dealer 21,
-  //                   per the metric's "including hijacks"). Feeds BLACKJACK %.
-  //   ratingSum/ratedHands — running sum + count of per-round star ratings (1..5); their quotient
-  //                   is the averaged star rating. A split's sub-hands are each rated then averaged
-  //                   into one round rating; a round with no rateable decision isn't counted.
+  // Player-performance tallies for the score screen's "page 2" (tallyPerformance, display only).
   busts: number
   blackjackWins: number
   ratingSum: number
   ratedHands: number
   over: boolean
   won: boolean
-  // The Banker coda: set true (in place of `won`) when the 6th dealer is destroyed, so the run
+  // The Banker coda: set true when Dealer 6 is finished (killed OR its window runs out), so the run
   // enters the double-or-nothing endgame instead of ending. Stays true through the coda.
   coda: boolean
-  // The coda was entered by going BANKRUPT (vs. clearing the 6th dealer) — the run's score was
-  // taxed by BANKRUPTCY_TAX on entry. Drives the entry ceremony (dealer walk-off + tax reveal,
-  // not a boss death) and can flavour the score screen. Implies `coda`.
-  bankruptcyCoda: boolean
   // Set when the player cashes OUT of the coda (vs. busting it) — drives the score-screen title.
   cashedOut: boolean
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
   upgrades: RunUpgrades
 }
 
-// The min-bet floor doubles per dealer (20 → 640, v13) to thin the 400-chip bankroll
-// and raise variance — cold streaks bust the player out more often, hardest early
-// where runs actually end. maxBet grows slower than the min, so the ladder's bet range
-// compresses on the later dealers. The wealth floor climbs too (0 → 25%). Dealer HP
-// scales — from 100 up to 220 at dealer 6, so late kills take more hands (more exposure
-// to a cold streak, more score) — and dealer 6 repairs 10-15 HP whenever it beats you,
-// so a stumble against it costs progress, not just chips.
+// Per-dealer config. maxHits climbs 5→10, the window (maxHands ≈ (maxHits+maxHeals)×2.25) sets the
+// required win-rate to kill in time; the late dealers also claw back hits (maxHeals). The token
+// inflation fields are unchanged from the old economy.
 const SHIFT_TABLE: readonly Shift[] = [
-  { index: 1, minBet: 20, maxBet: 200, maxIntegrity: 100, healOnWin: [0, 0], minBetPct: 0, inflationCap: 0.07, inflationDenom: 140, dealerSoft17: 'stand' },
-  { index: 2, minBet: 40, maxBet: 350, maxIntegrity: 110, healOnWin: [0, 0], minBetPct: 0.1, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
-  { index: 3, minBet: 80, maxBet: 550, maxIntegrity: 125, healOnWin: [0, 0], minBetPct: 0.12, inflationCap: 0.125, inflationDenom: 200, dealerSoft17: 'hit' },
-  { index: 4, minBet: 160, maxBet: 850, maxIntegrity: 150, healOnWin: [0, 0], minBetPct: 0.15, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
-  { index: 5, minBet: 320, maxBet: 1700, maxIntegrity: 185, healOnWin: [5, 9], minBetPct: 0.18, inflationCap: 0.18, inflationDenom: 280, dealerSoft17: 'hit' },
-  { index: 6, minBet: 640, maxBet: 2750, maxIntegrity: 220, healOnWin: [10, 15], minBetPct: 0.25, inflationCap: 0, inflationDenom: 320, dealerSoft17: 'smart' },
+  { index: 1, maxHits: 5,  maxHands: 11, maxHeals: 0, inflationCap: 0.07,   inflationDenom: 140, dealerSoft17: 'stand' },
+  { index: 2, maxHits: 6,  maxHands: 14, maxHeals: 0, inflationCap: 0.0975, inflationDenom: 170, dealerSoft17: 'stand' },
+  { index: 3, maxHits: 7,  maxHands: 16, maxHeals: 0, inflationCap: 0.125,  inflationDenom: 200, dealerSoft17: 'hit' },
+  { index: 4, maxHits: 8,  maxHands: 18, maxHeals: 0, inflationCap: 0.1525, inflationDenom: 240, dealerSoft17: 'hit' },
+  { index: 5, maxHits: 9,  maxHands: 25, maxHeals: 2, inflationCap: 0.18,   inflationDenom: 280, dealerSoft17: 'hit' },
+  { index: 6, maxHits: 10, maxHands: 29, maxHeals: 3, inflationCap: 0,      inflationDenom: 320, dealerSoft17: 'smart' },
 ]
 
 export function startRun(seed: number): RunState {
@@ -257,14 +198,17 @@ export function startRun(seed: number): RunState {
     seed,
     // The deal RNG opens at the seed; Session.deal advances this as it draws each shoe.
     deckState: seed >>> 0,
-    chips: STARTING_CHIPS,
     score: 0,
     tokens: STARTING_TOKENS,
     shiftIndex: 1,
     handsThisDealer: 0,
     handsPlayed: 0,
-    integrity: getShift(1).maxIntegrity,
-    combo: 0,
+    wins: 0,
+    integrity: getShift(1).maxHits,
+    healsThisDealer: 0,
+    hitPoints: MAX_HEARTS,
+    roundWins: [],
+    handLog: [],
     tokenInflation: 0,
     tokensThisShift: 0,
     kills: [],
@@ -279,7 +223,6 @@ export function startRun(seed: number): RunState {
     over: false,
     won: false,
     coda: false,
-    bankruptcyCoda: false,
     cashedOut: false,
     upgrades: emptyUpgrades(),
   }
@@ -310,44 +253,36 @@ export function getShift(index: number): Shift {
   }
   const base = SHIFT_TABLE[SHIFT_TABLE.length - 1]
   const shiftsBeyond = index - base.index
-  const minBet = Math.round(base.minBet * Math.pow(PROTOTYPE_MIN_GROWTH, shiftsBeyond))
   return {
     index,
-    minBet,
-    maxBet: minBet * 10,
-    maxIntegrity: base.maxIntegrity + PROTOTYPE_HP_STEP * shiftsBeyond,
-    healOnWin: base.healOnWin,
-    minBetPct: base.minBetPct,
+    maxHits: base.maxHits + PROTOTYPE_HITS_STEP * shiftsBeyond,
+    maxHands: base.maxHands + PROTOTYPE_HANDS_STEP * shiftsBeyond,
+    maxHeals: base.maxHeals,
     inflationCap: base.inflationCap,
     inflationDenom: base.inflationDenom,
     dealerSoft17: base.dealerSoft17,
   }
 }
 
-// The current dealer's full integrity, so the health bar can scale to a per-dealer
-// max (dealers no longer share a flat 100).
-export function maxIntegrityFor(shiftIndex: number): number {
-  return getShift(shiftIndex).maxIntegrity
+// The current dealer's full hit count, so the health pips can scale to a per-dealer max.
+export function maxHitsFor(shiftIndex: number): number {
+  return getShift(shiftIndex).maxHits
 }
 
-// How hard a dealer's 10/11-value UP-CARD (an Ace — soft 11 — or any ten-value card) is
-// suppressed at the deal: the probability that such an opening is discarded and reshuffled
-// (see Session.shuffleShoe). It falls off FAST so only the opening dealer is truly gentled and
-// the normal game returns quickly — Dealer 1 100% (NEVER shows a 10/11) → 2 30% → 3 15% →
-// 4, 5 & 6 0% (honest, unguarded deal). Any dealer past the table (dev jumps) stays honest (0%).
+// How hard a dealer's 10/11-value UP-CARD is suppressed at the deal: the probability that such an
+// opening is discarded and reshuffled. Falls off fast — Dealer 1 100% → 2 30% → 3 15% → honest.
 const UPCARD_RESHUFFLE_CHANCE: readonly number[] = [1, 0.3, 0.15]
 export function dealerUpcardReshuffleChance(shiftIndex: number): number {
   return UPCARD_RESHUFFLE_CHANCE[shiftIndex - 1] ?? 0
 }
 
-// The highest HARD total the current dealer will hit when behind (see round.ts). 17 for
-// any dealer but a wounded final dealer, which grows desperate as it nears death — it
-// will risk hitting an 18/19/20 to survive a hand a stand would lose.
+// The highest HARD total the current dealer will hit when behind (see round.ts). 17 for any dealer
+// but a wounded final dealer, which grows desperate as it nears death.
 export function dealerHardHitCeiling(run: RunState): number {
   if (run.shiftIndex < TOTAL_DEALERS) {
     return 17
   }
-  const frac = run.integrity / maxIntegrityFor(run.shiftIndex)
+  const frac = run.integrity / maxHitsFor(run.shiftIndex)
   for (const { below, ceiling } of DESPERATION_CEILINGS) {
     if (frac < below) {
       return ceiling
@@ -359,26 +294,7 @@ export function dealerHardHitCeiling(run: RunState): number {
 // The final dealer's "honorable duel": token abilities are locked once it drops below
 // ABILITIES_LOCK_FRACTION of its max health — the climax is raw blackjack, no powerups.
 export function abilitiesLocked(run: RunState): boolean {
-  return run.shiftIndex >= TOTAL_DEALERS && run.integrity < maxIntegrityFor(run.shiftIndex) * ABILITIES_LOCK_FRACTION
-}
-
-// The player no longer chooses a bet. It's the greater of two floors, capped at the
-// bankroll: the ladder bet (the dealer's min, climbing as the fight drags on, capped
-// at the table max) and a wealth floor (a % of the current stack, §3). The wealth
-// floor is what keeps a fat bankroll honest — it can push the bet above the table max
-// for the very rich, so wins and losses always move real money late.
-export function nextBet(run: RunState): number {
-  const shift = getShift(run.shiftIndex)
-  const climbed = Math.min(
-    Math.round(shift.minBet * (1 + run.handsThisDealer * HAND_BET_STEP)),
-    shift.maxBet,
-  )
-  const wealthFloor = Math.round(shift.minBetPct * run.chips)
-  return Math.min(Math.max(climbed, wealthFloor), run.chips)
-}
-
-export function isLastCall(run: RunState): boolean {
-  return run.chips > 0 && run.chips < getShift(run.shiftIndex).minBet
+  return run.shiftIndex >= TOTAL_DEALERS && run.integrity < maxHitsFor(run.shiftIndex) * ABILITIES_LOCK_FRACTION
 }
 
 export function addTokens(run: RunState, amount: number): RunState {
@@ -388,8 +304,6 @@ export function addTokens(run: RunState, amount: number): RunState {
 }
 
 // A powerup's live token cost: its base price inflated by the run's token inflation.
-// The single source of truth for what a powerup costs right now — used by both the
-// spend path and the UI's cost pills.
 export function powerupCost(baseCost: number, run: RunState): number {
   return Math.round(baseCost * (1 + run.tokenInflation))
 }
@@ -402,22 +316,14 @@ export function spendTokens(run: RunState, amount: number): RunState {
 }
 
 // The player's TERMINAL decision on a hand — the last hit-or-stand call, captured live in
-// Session (the odds can't be reconstructed after the deck advances). `bustChance` is the
-// exact chance the hand busts if hit; `standLoseChance` the Monte-Carlo chance the dealer
-// beats the current total if the player stands. Both are read from public cards.
+// Session (the odds can't be reconstructed after the deck advances).
 export interface HandDecision {
   action: 'hit' | 'stand'
   bustChance: number
   standLoseChance: number
 }
 
-// The per-hand star rating (1..5), or null if the hand can't be rated. It rewards the RIGHT
-// CALL and the OUTCOME independently: hitting is "right" when the bust risk is lower than the
-// risk of losing by standing, and standing is "right" when it isn't (the EV crossover). A right
-// call scores 5/4/3 on a win/push/loss; a wrong call 3/2/1 — so a correct-but-unlucky bust (hit
-// a stiff, lost) still beats a reckless bust (hit a pat hand), and a lucky wrong call (hit 18 and
-// won) is only middling. A genuine two-card natural is a flat 5 (no decision to judge). Returns
-// null when the player never got to act (e.g. a dealer natural off the deal) — an unrateable hand.
+// The per-hand star rating (1..5), or null if the hand can't be rated.
 export function ratePlayerHand(hand: PlayerHand, decision: HandDecision | undefined): number | null {
   // A real natural blackjack (not a hijacked dealer 21) — top marks, no decision involved.
   if (hand.outcome === 'blackjack' && isBlackjack(hand.cards)) {
@@ -436,16 +342,10 @@ export function ratePlayerHand(hand: PlayerHand, decision: HandDecision | undefi
   return won ? 3 : push ? 2 : 1
 }
 
-// Fold a resolved round's PLAYER-PERFORMANCE tallies into the run: the bust / blackjack counts
-// (for the score screen's percentages) and the averaged per-hand star rating. Kept OUT of
-// applyRound so the pure resolution maths never depend on the live odds snapshots this needs —
-// Session calls it right after applyRound (so coda hands, which resolve elsewhere, are excluded).
-// A split's sub-hands are each rated then averaged into ONE round rating; the round counts once
-// toward every denominator, matching handsPlayed. `decisions` is aligned to round.hands by index.
+// Fold a resolved round's PLAYER-PERFORMANCE tallies into the run (display only). Kept OUT of
+// applyRound so the pure resolution maths never depend on the live odds snapshots this needs.
 export function tallyPerformance(run: RunState, round: Round, decisions: readonly (HandDecision | undefined)[]): RunState {
   const playerBusted = round.hands.some((hand) => hand.outcome === 'bust')
-  // BLACKJACK % counts EVERY 'blackjack' outcome — a real natural AND a hijacked dealer 21
-  // (Sabotage T3) — per the metric's "including hijacks".
   const blackjackWin = round.hands.some((hand) => hand.outcome === 'blackjack')
   const stars = round.hands
     .map((hand, i) => ratePlayerHand(hand, decisions[i]))
@@ -465,107 +365,202 @@ export function tallyPerformance(run: RunState, round: Round, decisions: readonl
   }
 }
 
-// `rng` sources the heal-on-win roll (only consumed on a dealer-won hand at a
-// healing dealer). It defaults to the mid-roll so callers that don't care — the
-// early dealers never heal — stay deterministic.
-export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): RunState {
+// A resolved round's effect on the player's HEARTS (hit points) and the recent-win history that
+// drives the streak heal. Pure, so it unit-tests without running the whole applyRound. A round of
+// only pushes/voids never reaches here (Session redeals it), so the round is always a net win or a
+// net loss:
+//   • LOSS (no winning hand) → pop one heart.
+//   • WIN → heal (capped at MAX_HEARTS):
+//       – a KILL (beating the dealer) heals HEART_KILL_HEAL, superseding the per-win heal below;
+//       – a natural or hijacked blackjack (outcome 'blackjack'), one, unconditionally;
+//       – a double-win (a split where BOTH hands won), one, unconditionally;
+//       – any other win, one, only if ≥1 of the last HEART_HEAL_LOOKBACK scored rounds was also a win.
+// The win/loss split uses the unclamped tally; the last-window-slot split-clamp corner (a won split
+// hand that didn't land) simply favours the player's hearts, which is fine.
+export function heartsAfterRound(
+  prevHitPoints: number,
+  prevRoundWins: readonly boolean[],
+  round: Round,
+  killed = false,
+): { hitPoints: number; roundWins: boolean[] } {
+  const { hits, losses } = roundTally(round)
+  const won = hits > 0
+  const lost = !won && losses > 0
+
+  let hitPoints = prevHitPoints
+  if (lost) {
+    hitPoints = Math.max(0, prevHitPoints - 1)
+  } else if (won) {
+    const heal = killed ? HEART_KILL_HEAL : heartHealQualifies(round, prevRoundWins) ? 1 : 0
+    hitPoints = Math.min(MAX_HEARTS, prevHitPoints + heal)
+  }
+
+  // Record this round's result for future streak checks, keeping only the last HEART_HEAL_LOOKBACK.
+  const roundWins = won || lost ? [...prevRoundWins, won].slice(-HEART_HEAL_LOOKBACK) : [...prevRoundWins]
+  return { hitPoints, roundWins }
+}
+
+function heartHealQualifies(round: Round, prevRoundWins: readonly boolean[]): boolean {
+  // A natural or hijacked blackjack always heals.
+  if (round.hands.some((hand) => hand.outcome === 'blackjack')) {
+    return true
+  }
+  // A double-win — a split where both hands won — always heals.
+  if (round.hands.length === 2 && round.hands.every(isWinningHand)) {
+    return true
+  }
+  // Any other win heals only on a recent-win streak (buffed default: ≥1 of the last N scored rounds).
+  return prevRoundWins.some((won) => won)
+}
+
+// Resolve a settled round into the run: land hits (weighted wins), score each win off the cumulative
+// curve, log the window slots, apply a heal on a lost hand, and — on the killing/last hand — either
+// cash in the remaining window as bonus wins (kill) or walk the dealer off (window-out). A round of
+// only pushes/voids never reaches here (Session redeals it — see round.isRedealRound).
+export function applyRound(run: RunState, round: Round): RunState {
   if (round.status !== 'resolved') {
     throw new Error('cannot apply an unresolved round')
   }
   const shift = getShift(run.shiftIndex)
 
-  const net = payout(round)
-  const chipsWon = Math.max(net, 0)
-  const damage = damageForRound(round)
-  const playerWon = damage > 0
-  const dealerWon = !playerWon && roundHasLoss(round)
+  const bjBonus = blackjackPointBonusFor(run.upgrades)
 
-  // The combo (built from surviving hits, see Session.hit) resets when the hand is a total
-  // LOSS — every hand lost or busted, no win/push to hold it. On a split that means all
-  // hands must lose; one winning/pushing hand keeps the streak. So losing a hand (however —
-  // busted or stood-and-beaten) wipes the multiplier, and safe play earns no protection.
-  const comboReset = round.hands.every((hand) => hand.outcome === 'lose' || hand.outcome === 'bust')
+  // One pass over the hands: weighted hits/losses, the per-slot win/loss log, and per-win scoring.
+  // Score is purely the cumulative win curve (basePoints) — no combo multiplier. SCORE: logs are
+  // DEV-only diagnostics.
+  //
+  // WINDOW CLAMP: a hand can't consume more of the dealer's remaining window than is left — a double
+  // (weight 2) played on the LAST open slot counts as 1 (1 hit, 1 window slot, 1 point-win), the
+  // overflow simply doesn't land. So doubling to secure the final hand is fair, never a free 2×.
+  let hits = 0
+  let losses = 0
+  const slots: HandResult[] = []
+  let wins = run.wins
+  let score = run.score
+  let remainingWindow = Math.max(0, shift.maxHands - run.handsThisDealer)
+  for (const hand of round.hands) {
+    const weight = Math.min(handWeight(hand), remainingWindow)
+    remainingWindow -= weight
+    if (weight === 0) {
+      continue // no window left — this hand is over the cap and doesn't count
+    }
+    if (hand.outcome === 'win' || hand.outcome === 'blackjack') {
+      hits += weight
+      const isBlackjackWin = hand.outcome === 'blackjack'
+      const mult = isBlackjackWin ? 1 + bjBonus : 1
+      for (let i = 0; i < weight; i += 1) {
+        slots.push('win')
+        wins += 1
+        const pts = Math.round(basePoints(wins) * mult)
+        score += pts
+        if (import.meta.env.DEV) {
+          console.log(`SCORE: win #${wins} +${pts}${isBlackjackWin ? ' (blackjack)' : ''}`)
+        }
+      }
+    } else if (hand.outcome === 'lose' || hand.outcome === 'bust') {
+      losses += weight
+      for (let i = 0; i < weight; i += 1) {
+        slots.push('loss')
+      }
+    }
+    // push / voided → nothing (no slot, no symbol, no score)
+  }
 
-  // The combo multiplies ALL score this hand earns — the won chip score here, and the kill
-  // bounty below. Read the pre-reset value (a losing hand scores nothing anyway); the reset
-  // is applied to `run.combo` in the return so it takes effect next hand.
-  const combo = comboMultiplier(run.combo)
+  const playerWon = hits > 0
+  const dealerWon = hits === 0 && losses > 0
+  const freeDoubleWin = playerWon && round.hands.some((hand) => isWinningHand(hand) && hand.freeDoubled)
 
-  // A win on a token-free Double lifts that hand's chip score by FREE_DOUBLE_SCORE_BONUS
-  // (the paid Late double is excluded — it never sets freeDoubled).
-  const freeDoubleWin = playerWon && round.hands.some((h) => isWinningHand(h) && h.freeDoubled)
-  const doubleBoost = freeDoubleWin ? FREE_DOUBLE_SCORE_BONUS : 1
+  // Player hearts: a losing round pops one; a win heals (a kill heals more). Computed up front so a
+  // fatal loss (the last heart gone) can pre-empt the normal window advance below and drop straight
+  // into the coda with the current dealer still on-screen (it walks off) — no kill, no score penalty.
+  // `willKill` mirrors the integrity check below (a win that drops the dealer's HP to 0).
+  const willKill = run.integrity - hits <= 0
+  const { hitPoints, roundWins } = heartsAfterRound(run.hitPoints, run.roundWins, round, willKill)
+  const heartDeath = hitPoints <= 0
 
   const roundTokens = tokensForRound(round)
-  let chips = run.chips + net
-  let score = run.score + Math.round(chipsWon * runMultiplier(run) * combo * doubleBoost)
   let tokens = run.tokens + roundTokens
   let tokensThisShift = run.tokensThisShift + roundTokens
   let tokenInflation = run.tokenInflation
 
-  let integrity = run.integrity - damage
-  // Heal-on-win: a late dealer repairs itself when it beats the player, capped at its
-  // own max. Only fires on a dealer-won hand, and shuts off once the dealer is below
-  // HEAL_MIN_HEALTH_FRACTION — too damaged to self-repair, so the endgame can't heal-loop
-  // into a stalemate.
-  if (dealerWon && run.integrity >= shift.maxIntegrity * HEAL_MIN_HEALTH_FRACTION) {
-    integrity = Math.min(shift.maxIntegrity, integrity + healAmount(shift, rng))
+  let integrity = run.integrity - hits
+  let healsThisDealer = run.healsThisDealer
+  // Heal-on-win: a late dealer claws back 1 hit when it beats the player, capped at its own max and
+  // its heal budget, and never off the player's last hit (so the kill stays reachable).
+  if (dealerWon && healsThisDealer < shift.maxHeals && integrity >= HEAL_MIN_HITS) {
+    integrity = Math.min(shift.maxHits, integrity + 1)
+    healsThisDealer += 1
   }
 
   let shiftIndex = run.shiftIndex
-  let handsThisDealer = run.handsThisDealer + 1
+  let handsThisDealer = run.handsThisDealer + slots.length
+  let handLog: HandResult[] = [...run.handLog, ...slots]
   let kills = run.kills
-  let won = false
-  // The 6th kill enters the Banker coda (double-or-nothing) instead of winning outright.
   let coda = run.coda
-  let bankruptcyCoda = run.bankruptcyCoda
 
   if (integrity <= 0) {
-    // The kill bounty scales with the Token eco multiplier, like every other reward.
+    // KILL. Token bounty (feeds powerups) + banked inflation; NO score bounty (the cash-in below IS
+    // the point reward). Cash in every remaining window slot as a bonus win off the same curve.
     const bountyTokens = Math.round(DESTROY_TOKEN * tokenMultiplier(run))
     tokens += bountyTokens
     tokensThisShift += bountyTokens
-    // Destroying the dealer ends the shift: bank inflation from everything earned
-    // against it, softened by the Token eco tier's resistance (see upgrades.ts). Then
-    // reset the tally for the next dealer.
     tokenInflation += inflationIncrement(shift, tokensThisShift, inflationResistanceFor(run.upgrades))
     tokensThisShift = 0
-    // Base bounty (400 × dealer), scaled by the run multiplier (1.5^kills, read pre-this-kill
-    // — run.kills isn't extended until below) and the current combo — a kill lands on a won
-    // hand, so the streak still applies.
-    const bounty = DESTRUCTION_SCORE_BASE * shiftIndex
-    score += Math.round(bounty * runMultiplier(run) * combo)
+
+    const remaining = Math.max(0, shift.maxHands - handsThisDealer)
+    if (import.meta.env.DEV && remaining > 0) {
+      console.log(`SCORE: Dealer ${run.shiftIndex} down — cashing in ${remaining} free win${remaining === 1 ? '' : 's'}`)
+    }
+    let cashInTotal = 0
+    for (let i = 0; i < remaining; i += 1) {
+      wins += 1
+      const pts = Math.round(basePoints(wins))
+      score += pts
+      cashInTotal += pts
+      if (import.meta.env.DEV) {
+        console.log(`SCORE:   free win #${wins} +${pts}`)
+      }
+    }
+    if (import.meta.env.DEV && remaining > 0) {
+      console.log(`SCORE: Dealer ${run.shiftIndex} cash-in = ${remaining} free wins for +${cashInTotal}`)
+    }
+
     kills = [...kills, shiftIndex]
     shiftIndex += 1
     handsThisDealer = 0
-    integrity = getShift(shiftIndex).maxIntegrity
+    healsThisDealer = 0
+    handLog = []
+    integrity = getShift(shiftIndex).maxHits
     if (kills.length >= TOTAL_DEALERS) {
-      // The final dealer is down — enter the Banker coda rather than ending the run: this is the
-      // doorway to the VICTORY banker scoreboard (docs/scoreboards.md). `won` is never set now;
-      // the coda's outcome (cash out / bust) ends the run via Session.
+      // The final dealer is down — enter the Banker coda rather than ending the run.
+      coda = true
+    }
+  } else if (handsThisDealer >= shift.maxHands && !heartDeath) {
+    // WINDOW-OUT: the dealer survived its window and walks off — no kill, no bounty, no upgrade.
+    // (Skipped on a heart-death: that round instead ends the dealer via the coda below, and we keep
+    // the current dealer/handLog so the losing summary still shows before it walks off.)
+    if (shiftIndex >= TOTAL_DEALERS) {
+      // Dealer 6 outlasting its window still opens the banker coda (it always comes out).
       coda = true
     } else {
-      chips += KILL_REWARD_RATIO * getShift(shiftIndex).minBet
+      shiftIndex += 1
+      handsThisDealer = 0
+      healsThisDealer = 0
+      handLog = []
+      tokensThisShift = 0
+      integrity = getShift(shiftIndex).maxHits
     }
   }
 
-  // Bankruptcy redemption: a losing hand that empties the bankroll normally ends the run, but
-  // once the player is deep enough (shiftIndex > BANKRUPTCY_MIN_SHIFT, i.e. Dealer 2+) the Banker
-  // offers a last-chance double-or-nothing instead — the doorway to the BANKRUPTCY banker
-  // scoreboard (docs/scoreboards.md). The run enters the coda with the score taxed to
-  // (1 − BANKRUPTCY_TAX) rather than ending. A losing hand never scores, so `score` here is the
-  // untaxed gross the scoreboard reveals as its "Points" row. (A kill is a win, so this can never
-  // collide with the 6th-kill coda above — chips only hit 0 on a loss.) Broke at Dealer 1 gets
-  // no coda — the run just ends and the final scoreboard reads BANKRUPT.
-  if (!won && !coda && chips <= 0 && shiftIndex > BANKRUPTCY_MIN_SHIFT) {
-    bankruptcyCoda = true
+  if (heartDeath) {
+    // Out of hearts — the current dealer walks off and the run drops into the coda (no kill,
+    // no bounty, no score penalty). A kill can't coincide (a kill round is a win), so this only
+    // pre-empts a normal or window-out loss.
     coda = true
-    score = Math.floor(score * (1 - BANKRUPTCY_TAX))
   }
 
   return {
     ...run,
-    chips,
     score,
     tokens,
     shiftIndex,
@@ -574,22 +569,67 @@ export function applyRound(run: RunState, round: Round, rng: Rng = () => 0.5): R
     handsWon: run.handsWon + (playerWon ? 1 : 0),
     handsLost: run.handsLost + (dealerWon ? 1 : 0),
     freeDoubleWins: run.freeDoubleWins + (freeDoubleWin ? 1 : 0),
+    wins,
     integrity,
-    combo: comboReset ? 0 : run.combo,
+    healsThisDealer,
+    hitPoints,
+    roundWins,
+    handLog,
     tokenInflation,
     tokensThisShift,
     kills,
-    won,
     coda,
-    bankruptcyCoda,
-    // A bankruptcy that routes into the coda is NOT over — the coda's own outcome ends the run.
-    over: won || (chips <= 0 && !bankruptcyCoda),
   }
 }
 
-// Inflation added when a shift's dealer is destroyed: the shift's cap scaled by how
-// close its token earnings came to the denom (min 0, capped at the full cap), then
-// by the Token eco resistance. Guarded so a zero-cap shift (Dealer 6) never inflates.
+// The ordered per-WIN point deltas a resolved round banks — one entry per GREEN CHECK the hand-
+// summary shows: each real winning slot (in hand order), then, on a kill, every cash-in bonus win.
+// Mirrors applyRound's win scoring exactly so the fly-in "+N" texts match the counter. Losses and
+// pushes add no green check, so they're excluded. Returns [] for a non-winning round.
+export function winPointDeltas(run: RunState, round: Round): number[] {
+  if (round.status !== 'resolved') {
+    return []
+  }
+  const bjBonus = blackjackPointBonusFor(run.upgrades)
+  const deltas: number[] = []
+  let wins = run.wins
+  let hits = 0
+  let slotCount = 0
+  // Same WINDOW CLAMP as applyRound (a double on the last open slot counts as 1) so the "+N"s match.
+  let remainingWindow = Math.max(0, getShift(run.shiftIndex).maxHands - run.handsThisDealer)
+  for (const hand of round.hands) {
+    const weight = Math.min(handWeight(hand), remainingWindow)
+    remainingWindow -= weight
+    if (weight === 0) {
+      continue
+    }
+    if (hand.outcome === 'win' || hand.outcome === 'blackjack') {
+      hits += weight
+      slotCount += weight
+      const mult = hand.outcome === 'blackjack' ? 1 + bjBonus : 1
+      for (let i = 0; i < weight; i += 1) {
+        wins += 1
+        deltas.push(Math.round(basePoints(wins) * mult))
+      }
+    } else if (hand.outcome === 'lose' || hand.outcome === 'bust') {
+      slotCount += weight
+    }
+    // push / voided → no slot, no score
+  }
+  // A kill (integrity spent, only reachable on a winning hand — heals are loss-only) cashes in every
+  // remaining window slot as a bonus win off the same curve, in ascending order.
+  if (hits > 0 && run.integrity - hits <= 0) {
+    const remaining = Math.max(0, getShift(run.shiftIndex).maxHands - (run.handsThisDealer + slotCount))
+    for (let i = 0; i < remaining; i += 1) {
+      wins += 1
+      deltas.push(Math.round(basePoints(wins)))
+    }
+  }
+  return deltas
+}
+
+// Inflation added when a shift's dealer is destroyed: the shift's cap scaled by how close its token
+// earnings came to the denom (min 0, capped at the full cap), then by the Token eco resistance.
 function inflationIncrement(shift: Shift, tokensThisShift: number, resistance: number): number {
   if (shift.inflationCap <= 0) {
     return 0
@@ -598,46 +638,9 @@ function inflationIncrement(shift: Shift, tokensThisShift: number, resistance: n
   return shift.inflationCap * frac * resistance
 }
 
-// The unified score multiplier for the given accumulated combo bonus (0..): x1 at no
-// combo, climbing with the risk-weighted hits banked, capped at x2 (COMBO_MAX_BONUS).
-export function comboMultiplier(combo: number): number {
-  return 1 + Math.min(Math.max(combo, 0), COMBO_MAX_BONUS)
-}
 
-// The run's compounding score multiplier: 1.5 per dealer already killed, so score grows
-// exponentially with depth (1 → 1.5 → 2.25 → 3.375 → 5.06 → 7.59 by the boss). Replaces the
-// old flat per-dealer scoreMultiplier; multiplies the won-hand chip score and the kill
-// bounty. Derived from run.kills.length, which applyRound never mutates in place, so within
-// a single applyRound it's constant at 1.5^(kills before this hand) for both the win and the
-// bounty — internally consistent even on the hand that lands a kill.
-export function runMultiplier(run: RunState): number {
-  return Math.pow(1.5, run.kills.length)
-}
-
-// Add a surviving hit's risk-weighted gain to the combo, capped at COMBO_MAX_BONUS. Score
-// only — the hit itself pays nothing; it just grows the multiplier for the wins/kills ahead.
-export function bumpCombo(run: RunState, bustChance: number): RunState {
-  return { ...run, combo: Math.min(COMBO_MAX_BONUS, run.combo + comboGain(bustChance)) }
-}
-
-// HP a healing dealer repairs on a win: a random amount in the shift's [min, max]
-// range (inclusive), or 0 for a dealer that never heals.
-function healAmount(shift: Shift, rng: Rng): number {
-  const [lo, hi] = shift.healOnWin
-  if (hi <= 0) {
-    return 0
-  }
-  return lo + Math.floor(rng() * (hi - lo + 1))
-}
-
-// Whether the player lost or busted at least one hand this round (a dealer win).
-function roundHasLoss(round: Round): boolean {
-  return round.hands.some((hand) => hand.outcome === 'lose' || hand.outcome === 'bust')
-}
-
-// Reward tokens for the round, scaled by how each hand won (see rewards.ts). Hit
-// tokens are credited live by the Session as each hit happens, so they aren't
-// counted here.
+// Reward tokens for the round, scaled by how each hand won (see rewards.ts). Hit tokens are credited
+// live by the Session as each hit happens, so they aren't counted here.
 function tokensForRound(round: Round): number {
   return round.hands.reduce((earned, hand) => earned + handReward(hand, round).tokens, 0)
 }

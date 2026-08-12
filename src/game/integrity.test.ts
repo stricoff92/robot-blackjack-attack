@@ -1,47 +1,63 @@
 import { describe, expect, it } from 'vitest'
 
-import type { Card, Rank, Suit } from './deck'
-import { damageForRound } from './integrity'
-import { freezeDealer, hit, stand, startRound } from './round'
+import type { Card } from './deck'
+import { hitsForRound } from './integrity'
+import { DEFAULT_ROUND_RULES, type HandOutcome, type PlayerHand, type Round } from './round'
 
-function card(rank: Rank, suit: Suit = 'spades'): Card {
+function card(rank: Card['rank'], suit: Card['suit'] = 'spades'): Card {
   return { rank, suit }
 }
 
-describe('damageForRound', () => {
-  it('scales with the standing dealer total the player beat', () => {
-    // Player 20 over a standing dealer 17 — the lowest standing tier.
-    const beat17 = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')], 10))
-    expect(damageForRound(beat17)).toBe(22)
+function hand(outcome: HandOutcome, opts: Partial<PlayerHand> = {}): PlayerHand {
+  return {
+    cards: [card('10'), card('7')],
+    bet: 1,
+    doubled: false,
+    splitAce: false,
+    finished: true,
+    busted: outcome === 'bust',
+    outcome,
+    ...opts,
+  }
+}
+
+function resolved(hands: PlayerHand[]): Round {
+  return {
+    shoe: [],
+    drawIndex: 0,
+    hands,
+    activeIndex: 0,
+    dealer: [card('10'), card('7')],
+    rules: DEFAULT_ROUND_RULES,
+    status: 'resolved',
+    secondChanceArmed: false,
+    burned: null,
+    dealerFrozen: false,
+    mulliganed: false,
+    discarded: [],
+  }
+}
+
+// Dealer health is now integer HITS: every winning hand lands 1 hit ×weight (a doubled win = 2);
+// losses, pushes, and player busts land none. The old damage-by-dealer-total tiers are gone (they
+// live on in the TOKEN reward instead — see rewards.ts).
+describe('hitsForRound', () => {
+  it('lands one hit per winning hand (a natural blackjack included)', () => {
+    expect(hitsForRound(resolved([hand('win')]))).toBe(1)
+    expect(hitsForRound(resolved([hand('blackjack')]))).toBe(1)
   })
 
-  it('hits hardest when the player beats a dealer 20', () => {
-    // Player 7+7, hit a 7 → a non-natural 21 over a standing dealer 20.
-    const shoe = [card('7'), card('7'), card('10'), card('10', 'hearts'), card('7', 'hearts')]
-    const beat20 = stand(hit(startRound(shoe, 10)))
-    expect(damageForRound(beat20)).toBe(52)
+  it('a doubled win lands 2 hits (its stake weight)', () => {
+    expect(hitsForRound(resolved([hand('win', { doubled: true })]))).toBe(2)
   })
 
-  it('deals the least when the dealer busts itself', () => {
-    const shoe = [card('K'), card('Q'), card('K', 'hearts'), card('6'), card('10', 'hearts')]
-    const dealerBust = stand(startRound(shoe, 10)) // dealer 16 draws a ten → 26
-    expect(damageForRound(dealerBust)).toBe(12)
+  it('sums across split hands, counting only the wins', () => {
+    expect(hitsForRound(resolved([hand('win'), hand('lose'), hand('win')]))).toBe(2)
   })
 
-  it('grades a frozen-dealer win as the 17 tier, however high the frozen total', () => {
-    // Dealer frozen on 19; the player's 20 still only earns the 17-tier damage.
-    const round = stand(freezeDealer(startRound([card('K'), card('Q'), card('10'), card('9')], 10)))
-    expect(round.dealerFrozen).toBe(true)
-    expect(damageForRound(round)).toBe(22)
-  })
-
-  it('treats a natural blackjack as its own premium', () => {
-    const natural = startRound([card('A'), card('K'), card('10', 'hearts'), card('7')], 10)
-    expect(damageForRound(natural)).toBe(42)
-  })
-
-  it('lands nothing when the player busts, since the dealer never draws', () => {
-    const playerBust = hit(startRound([card('K'), card('6'), card('9'), card('7'), card('Q')], 10))
-    expect(damageForRound(playerBust)).toBe(0)
+  it('lands nothing on a loss, a push, or a player bust', () => {
+    expect(hitsForRound(resolved([hand('lose')]))).toBe(0)
+    expect(hitsForRound(resolved([hand('push')]))).toBe(0)
+    expect(hitsForRound(resolved([hand('bust')]))).toBe(0)
   })
 })

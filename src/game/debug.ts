@@ -6,11 +6,12 @@
 //   ?forcePairs        — every deal gives the player a splittable pair
 //   ?forcePairs=8      — ...specifically a pair of that rank (2-10, J, Q, K, A)
 //   ?tokens=200        — start the run with this many tokens (test powerups without grinding)
-//   ?chips=5000        — start the run with this many chips (test the wealth-floor bet)
-//   ?points=50000      — start the run with this many score points (test the coda stake + the
-//                        bankruptcy tax reveal without grinding a real score first)
+//   ?points=50000      — start the run with this many score points (test the coda stake without
+//                        grinding a real score first)
 //   ?dealerHealth=50   — start the first dealer at this % health (1-100), e.g. to see the
 //                        low-health eye flicker without playing a dealer down
+//   ?hearts=1          — start with this many player hit points (1..MAX_HEARTS), e.g. to reach the
+//                        heart pop / heal-beam / heart-death coda without grinding losses
 //   ?dealer=6          — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
 //                        to a dealer's colour: 1 blue, 2 purple, 3 green, 4 yellow, 5 red,
 //                        6 the RGB-cycling final dealer
@@ -26,7 +27,7 @@
 // dealer-blackjack outcomes (loss/refund/void/hijack/push) on demand.
 
 import { RANKS, type Rank } from './deck'
-import { TOTAL_DEALERS } from './run'
+import { MAX_HEARTS, TOTAL_DEALERS } from './run'
 import { MAX_UPGRADE_TIER } from './upgrades'
 
 export interface DebugFlags {
@@ -36,12 +37,12 @@ export interface DebugFlags {
   forcePairRank: Rank | null
   /** Start the run with this many tokens; null = the normal starting balance (0). */
   startTokens: number | null
-  /** Start the run with this many chips; null = the normal starting balance (400). */
-  startChips: number | null
   /** Start the run with this many score points; null = the normal starting score (0). */
   startScore: number | null
   /** Start the first dealer at this % health (1-100); null = full. */
   dealerHealth: number | null
+  /** Start the run with this many player hit points (1..MAX_HEARTS); null = full. */
+  hearts: number | null
   /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
   startDealer: number | null
   /** Start with the Sabotage (anti-dealer) path unlocked through this tier (0-3); null = none. */
@@ -60,9 +61,9 @@ const OFF: DebugFlags = {
   forcePairs: false,
   forcePairRank: null,
   startTokens: null,
-  startChips: null,
   startScore: null,
   dealerHealth: null,
+  hearts: null,
   startDealer: null,
   sabotageUpgrade: null,
   chipUpgrade: null,
@@ -83,9 +84,9 @@ export function readDebugFlags(): DebugFlags {
     forcePairs: params.has('forcePairs'),
     forcePairRank,
     startTokens: parseStartTokens(params.get('tokens')),
-    startChips: parseStartChips(params.get('chips')),
     startScore: parseStartScore(params.get('points')),
     dealerHealth: parseDealerHealth(params.get('dealerHealth')),
+    hearts: parseStartHearts(params.get('hearts')),
     startDealer: parseStartDealer(params.get('dealer')),
     sabotageUpgrade: parseUpgradeTier(params.get('sabotageUpgrade')),
     chipUpgrade: parseUpgradeTier(params.get('chipUpgrade')),
@@ -102,16 +103,6 @@ function parseStartTokens(raw: string | null): number | null {
   }
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : null
-}
-
-// A positive integer chip count (>= 1, since 0 chips ends the run), or null if the
-// param is absent/empty/invalid.
-function parseStartChips(raw: string | null): number | null {
-  if (!raw) {
-    return null
-  }
-  const n = Number(raw)
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null
 }
 
 // A non-negative integer starting score, or null if the param is absent/empty/invalid.
@@ -131,6 +122,16 @@ function parseDealerHealth(raw: string | null): number | null {
   }
   const n = Number(raw)
   return Number.isFinite(n) ? Math.min(100, Math.max(1, Math.floor(n))) : null
+}
+
+// A player hit-point count clamped to 1..MAX_HEARTS, or null if absent/empty/invalid — clamped so
+// the run never opens already dead (0) or over-full (>MAX_HEARTS).
+function parseStartHearts(raw: string | null): number | null {
+  if (!raw) {
+    return null
+  }
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.min(MAX_HEARTS, Math.max(1, Math.floor(n))) : null
 }
 
 // A dealer index clamped to 1..TOTAL_DEALERS, or null if absent/empty/invalid — so

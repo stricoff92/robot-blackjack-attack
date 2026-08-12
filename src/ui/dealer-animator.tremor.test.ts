@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
+import { maxHitsFor } from '../game/run'
 import { DealerAnimation } from './dealer-animator'
 
-// Dealer 1's max integrity is 100, so setLevel(n, 1) sets health to exactly n%. Tremors fade
-// in below 50%: every shudder is the SAME noticeable magnitude, but they fire more often the
-// lower the health.
+// setLevel scales integrity by the dealer's max HIT count (maxHitsFor), so passing
+// (pct/100)×maxHits sets the health fraction to exactly pct%. Tremors fade in below 50%: every
+// shudder is the SAME noticeable magnitude, but they fire more often the lower the health.
 function at(healthPct: number): DealerAnimation {
   const d = new DealerAnimation()
-  d.setLevel(healthPct, 1)
+  d.setLevel((healthPct / 100) * maxHitsFor(1), 1)
   return d
 }
 

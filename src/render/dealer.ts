@@ -323,28 +323,7 @@ function drawFigure(
   const mouthW = d.headR * 1.02
   const mouthH = d.headR * 0.3
   const mouthY = d.headCenterY + d.headR * 0.42
-  const mouthX = d.cx - mouthW / 2
-  const mouthTop = mouthY - mouthH / 2
-  const mouthR = d.headR * 0.08
-
-  const energy = voice ? clamp01(voice.energy) : 0
-  const litColor = voice ? MOUTH_TINTS[voice.tint].lit : MOUTH_TINTS.cool.lit
-  ctx.fillStyle = energy > 0.001 ? mixHex(MOUTH, litColor, energy) : MOUTH
-  ctx.beginPath()
-  ctx.roundRect(mouthX, mouthTop, mouthW, mouthH, mouthR)
-  ctx.fill()
-
-  if (voice && voice.open > 0.001) {
-    drawMouthWaves(ctx, mouthX, mouthTop, mouthW, mouthH, mouthR, voice, now)
-  }
-
-  ctx.fillStyle = GRILLE
-  const teeth = 5
-  const sepW = d.headR * 0.055
-  for (let i = 1; i <= teeth; i++) {
-    const x = mouthX + (mouthW * i) / (teeth + 1) - sepW / 2
-    ctx.fillRect(x, mouthTop, sepW, mouthH)
-  }
+  drawVoiceMouth(ctx, d.cx - mouthW / 2, mouthY - mouthH / 2, mouthW, mouthH, d.headR * 0.08, voice, now)
 
   // THE BANKER's monocle, over the right eye (same eye geometry as above). Drawn last so
   // its gold rim sits cleanly over the eye and brow.
@@ -353,6 +332,43 @@ function drawFigure(
   }
 
   ctx.restore()
+}
+
+// The vocoder mouth readout, shared by the dealer figures AND the dealer-6 clown: a rounded
+// panel that lerps from its resting near-black grey toward the emote's lit colour with
+// `voice.energy`, with travelling waves rippling across it per syllable and grille separators
+// ("teeth") over the top. `x,y` is the panel's top-left; `w,h,r` its size + corner radius; sepW
+// (tooth width) scales off `w` so any panel size gets proportioned teeth. Silent (voice null) is
+// the dark resting panel + teeth. Exported so the clown's mouth animates exactly like the dealers'
+// when it laughs along (render/clown.ts frames this same panel with red lips).
+export function drawVoiceMouth(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+  voice: VoiceEmote | null,
+  now: number,
+): void {
+  const energy = voice ? clamp01(voice.energy) : 0
+  const litColor = voice ? MOUTH_TINTS[voice.tint].lit : MOUTH_TINTS.cool.lit
+  ctx.fillStyle = energy > 0.001 ? mixHex(MOUTH, litColor, energy) : MOUTH
+  ctx.beginPath()
+  ctx.roundRect(x, y, w, h, r)
+  ctx.fill()
+
+  if (voice && voice.open > 0.001) {
+    drawMouthWaves(ctx, x, y, w, h, r, voice, now)
+  }
+
+  ctx.fillStyle = GRILLE
+  const teeth = 5
+  const sepW = w * 0.054
+  for (let i = 1; i <= teeth; i++) {
+    const sx = x + (w * i) / (teeth + 1) - sepW / 2
+    ctx.fillRect(sx, y, sepW, h)
+  }
 }
 
 // The voice readout: one or more emissive waves travelling across the lit mouth panel,

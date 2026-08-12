@@ -262,6 +262,24 @@ export function angryGrowlPattern(seed: number, shiftIndex: number): VoicePatter
 }
 
 
+// The CLOWN sidekick's voice: any laugh pattern pitched UP into a sillier, higher register,
+// so the clown echoing dealer 6 reads as a smaller, goofier second character rather than a
+// duplicate of the dealer. Scales the fundamental + every syllable's pitch + the vibrato, and
+// nudges the formants up (a smaller throat), while keeping the exact cadence + wave look — so
+// the clown's cackle lands in step with (just behind) the dealer's, an octave-ish above it.
+const CLOWN_PITCH = 1.7
+export function clownifyLaugh(pattern: VoicePattern): VoicePattern {
+  return {
+    ...pattern,
+    baseHz: pattern.baseHz * CLOWN_PITCH,
+    formantF1: pattern.formantF1 * 1.25,
+    formantF2: pattern.formantF2 * 1.2,
+    formantF3: pattern.formantF3 * 1.1,
+    vibratoHz: pattern.vibratoHz * 1.3,
+    syllables: pattern.syllables.map((s) => ({ ...s, pitch: s.pitch * CLOWN_PITCH })),
+  }
+}
+
 // The shared LOUDNESS envelope of an emote at a given elapsed time (ms from start).
 // Returns null before it starts / after it ends. `open` is the overall gate (fades
 // the mouth glow in/out at the edges); `energy` folds the per-syllable pulse into

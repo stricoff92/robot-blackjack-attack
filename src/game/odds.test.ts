@@ -24,7 +24,7 @@ function craftShoe(front: Rank[]): Card[] {
 }
 
 function roundOf(front: Rank[]): Round {
-  return startRound(craftShoe(front), 10)
+  return startRound(craftShoe(front))
 }
 
 // The dealer's hole card as a peek would reveal it.

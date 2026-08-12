@@ -1,43 +1,39 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from '../game/deck'
-import { startRound } from '../game/round'
-import { rulesForUpgrades } from '../game/upgrades'
+import { stand, startRound } from '../game/round'
 import { ChipAnimation } from './chip-animator'
 
 function card(rank: Rank, suit: Suit = 'spades'): Card {
   return { rank, suit }
 }
 
-// A player 16 losing to the dealer's natural blackjack — resolved right at the deal.
-// With the Anti-dealer T1 upgrade the loss is partly refunded; without it, it isn't.
-function dealerNaturalLoss(antiDealerTier: number) {
-  const rules = rulesForUpgrades({ antiDealer: antiDealerTier, chipEco: 0, tokenEco: 0 })
-  return startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], 10, rules)
+// A resolved single-hand round the player won (20 over a standing 17).
+function wonRound() {
+  return stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')]))
 }
 
-describe('ChipAnimation — Anti-dealer refund', () => {
-  it('marks a dealer-natural loss as refunded only with the T1 upgrade', () => {
-    expect(dealerNaturalLoss(1).hands[0].lostToDealerNatural).toBe(true)
-    expect(dealerNaturalLoss(0).hands[0].lostToDealerNatural).toBeFalsy()
+// The ChipAnimation is now a pure SETTLE-TIMING clock — the chip visuals were removed with the
+// bankroll economy, but the laser / token / coda choreography still paces off its `animEnd`.
+describe('ChipAnimation — settle timing clock', () => {
+  it('placeBets ends a short beat after now, and isAnimating tracks the window', () => {
+    const clock = new ChipAnimation()
+    clock.placeBets(wonRound(), 1000)
+    expect(clock.animEnd).toBeGreaterThan(1000)
+    expect(clock.isAnimating(1000)).toBe(true)
+    expect(clock.isAnimating(clock.animEnd + 1)).toBe(false)
   })
 
-  it('flies the bet to the dealer, then slides a refund back toward the bankroll', () => {
-    const anim = new ChipAnimation()
-    anim.clear(dealerNaturalLoss(1), 0)
-    expect(anim.betChip(0, 5).phase).toBe('toDealer') // beat 1: the bet flies to the dealer
-    expect(anim.betChip(0, anim.animEnd - 5).phase).toBe('refundBack') // beat 2: the refund slides back
-    expect(anim.betChip(0, anim.animEnd + 1).phase).toBe('done')
+  it('resolve extends the clock to settle a winning hand after the given start', () => {
+    const clock = new ChipAnimation()
+    clock.placeBets(wonRound(), 0)
+    clock.resolve(wonRound(), 500)
+    expect(clock.animEnd).toBeGreaterThan(500)
   })
 
-  it('settles a plain dealer-natural loss in a single beat, so a refund runs longer', () => {
-    const plain = new ChipAnimation()
-    plain.clear(dealerNaturalLoss(0), 0)
-    expect(plain.betChip(0, plain.animEnd - 5).phase).toBe('toDealer') // no refund beat
-    expect(plain.betChip(0, plain.animEnd + 1).phase).toBe('done')
-
-    const refunded = new ChipAnimation()
-    refunded.clear(dealerNaturalLoss(1), 0)
-    expect(refunded.animEnd).toBeGreaterThan(plain.animEnd)
+  it('clear settles the table after the given start', () => {
+    const clock = new ChipAnimation()
+    clock.clear(wonRound(), 800)
+    expect(clock.animEnd).toBeGreaterThan(800)
   })
 })

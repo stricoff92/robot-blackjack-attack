@@ -15,7 +15,7 @@ function packed(payload: unknown): string {
 
 // A real, deterministic in-progress round (with its full shoe) for the mid-hand save fixtures.
 function sampleRound(): Round {
-  return startRound(shuffle(createShoe(6), createRng(7)), 20)
+  return startRound(shuffle(createShoe(6), createRng(7)))
 }
 
 function sampleSession(overrides: Partial<import('./persistence').PersistedSession> = {}) {
@@ -54,7 +54,7 @@ describe('persistence', () => {
   })
 
   it('round-trips a full mid-hand session (run + phase + round + flags)', () => {
-    const session = sampleSession({ run: { ...startRun(7), chips: 500, score: 1234, shiftIndex: 2, kills: [1] }, peeked: true })
+    const session = sampleSession({ run: { ...startRun(7), score: 1234, shiftIndex: 2, kills: [1] }, peeked: true })
     saveSession(session)
     expect(loadSession()).toEqual(session)
   })
@@ -107,7 +107,7 @@ describe('persistence', () => {
   })
 
   it('RESUMES a coda save (the bankruptcy/victory coda fix — coda is no longer rejected)', () => {
-    const session = sampleSession({ phase: 'coda', round: null, run: { ...startRun(1), coda: true, bankruptcyCoda: true } })
+    const session = sampleSession({ phase: 'coda', round: null, run: { ...startRun(1), coda: true } })
     saveSession(session)
     const loaded = loadSession()
     expect(loaded).not.toBeNull()

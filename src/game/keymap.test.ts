@@ -11,8 +11,8 @@ import { applyUpgrade, RULES_VERSION, startRun } from './run'
 // array + nested-object fields made non-trivial (kills populated, an upgrade unlocked) so the
 // recursion — and every code in the dictionary — is exercised end-to-end.
 function sampleSave() {
-  const run = { ...applyUpgrade(startRun(7), 'antiDealer'), chips: 500, score: 1234, kills: [1, 2] }
-  const round = startRound(shuffle(createShoe(6), createRng(7)), 20)
+  const run = { ...applyUpgrade(startRun(7), 'antiDealer'), score: 1234, kills: [1, 2] }
+  const round = startRound(shuffle(createShoe(6), createRng(7)))
   return { version: RULES_VERSION, run, phase: 'playing', round, peeked: true, codaRedeal: false, upgradePending: false }
 }
 

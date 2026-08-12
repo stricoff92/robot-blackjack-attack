@@ -3,12 +3,12 @@
 // the RunState but the live phase + the in-progress round + the transient flags a refresh must
 // preserve. That exactness is the anti-cheat: without it, a refresh rewound to the last stable
 // checkpoint, and because the deck is deterministic (see [[run-persistence]]) that checkpoint
-// re-dealt the very hand you were in — letting you replay a lost hand (worst of all, escape the
-// bankruptcy coda) with full foreknowledge. Resuming the exact round instead makes a refresh a
+// re-dealt the very hand you were in — letting you replay a lost hand (worst of all, retry the
+// coda's double-or-nothing) with full foreknowledge. Resuming the exact round instead makes a refresh a
 // no-op: same cards, same turn, no advantage.
 //
-// We snapshot the ENTIRE RunState (the score multiplier is 1.5^kills, so kills[] must survive, and
-// upgrades / combo / token inflation are all live inputs) plus the Round (which carries the whole
+// We snapshot the ENTIRE RunState (kills[] gates the upgrade picks + the coda, and wins / upgrades /
+// token inflation are all live inputs) plus the Round (which carries the whole
 // shoe — a few KB, still far under the 1 MB SDK.data cap). The save is stamped with RULES_VERSION
 // so a snapshot from an older rule set (or the pre-resume-exact save shape) is discarded rather
 // than resumed into incompatible state. Storage goes through the platform layer: SDK.data on
@@ -19,7 +19,7 @@ import { loadValue, removeValue, saveValue } from '../platform/crazygames'
 import { decodeSaveKeys, encodeSaveKeys } from './keymap'
 import { pack, unpack } from './obfuscate'
 import type { Round } from './round'
-import { RULES_VERSION, type RunState } from './run'
+import { MAX_HEARTS, RULES_VERSION, type RunState } from './run'
 import type { Phase } from './session'
 
 const RUN_KEY = 'rba.run'
@@ -65,7 +65,7 @@ export function saveSession(session: PersistedSession): void {
 // The resumable session, or null when there's nothing to resume: no save, a parse error, a stale
 // RULES_VERSION (this includes the pre-resume-exact save shape), a malformed run, an unresumable
 // phase, or a run that's already finished (over). A coda IS now resumable (previously rejected) —
-// that's the fix for the bankruptcy/victory coda refresh escapes.
+// that's the fix for the coda refresh escapes.
 export function loadSession(): PersistedSession | null {
   const raw = loadValue(RUN_KEY)
   if (!raw) {
@@ -97,6 +97,14 @@ export function loadSession(): PersistedSession | null {
   if (typeof run.deckState !== 'number' || !Number.isFinite(run.deckState)) {
     run.deckState = run.seed >>> 0
   }
+  // Backfill player hearts (defensive — a pre-v31 save is already rejected on the version check
+  // above, but never let an absent count read as NaN): full hearts, empty streak history.
+  if (typeof run.hitPoints !== 'number' || !Number.isFinite(run.hitPoints)) {
+    run.hitPoints = MAX_HEARTS
+  }
+  if (!Array.isArray(run.roundWins)) {
+    run.roundWins = []
+  }
   return {
     run,
     phase,
@@ -119,7 +127,7 @@ function isValidRun(run: unknown): run is RunState {
     return false
   }
   const r = run as Record<string, unknown>
-  const numbers = ['chips', 'score', 'tokens', 'shiftIndex', 'integrity', 'combo', 'handsPlayed']
+  const numbers = ['score', 'tokens', 'shiftIndex', 'integrity', 'handsPlayed', 'wins']
   if (!numbers.every((key) => typeof r[key] === 'number' && Number.isFinite(r[key]))) {
     return false
   }

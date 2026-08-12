@@ -11,7 +11,7 @@
 // Render-only, mirroring cards.ts: the game builds the SpecReadout (import-free of game
 // logic — just strings + a colour kind) and this paints it.
 
-import { dealerCountAnchor, drawHoloText, playerCountAnchor, type HoloTextStyle } from './cards'
+import { drawHoloText, handBand, type HoloTextStyle } from './cards'
 import { nexusHoloLight, type HoloRayTarget } from './nexus'
 import type { Layout } from './scene'
 
@@ -72,13 +72,8 @@ export function drawSpecSheet(
   now = 0,
 ): HoloRayTarget[] {
   // The clear band between the two counts — the same one the Analyze readout uses.
-  const dc = dealerCountAnchor(l)
-  const pc = playerCountAnchor(l, 1, 0)
-  const countPx = dc.size
-  const bandTop = dc.y + countPx * 0.7
-  const bandBottom = pc.y - countPx * 0.7
+  const { top: bandTop, bottom: bandBottom, center: bandMid } = handBand(l)
   const bandH = Math.max(1, bandBottom - bandTop)
-  const bandMid = (bandTop + bandBottom) / 2
   const cx = l.width / 2
 
   const scale = Math.min(l.width, l.height)

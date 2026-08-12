@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from './deck'
 import { handReward } from './rewards'
-import { hit, payout, stand, startRound, type Round } from './round'
+import { hit, stand, startRound, type Round } from './round'
 import { applyUpgrade, hasAvailableUpgrade, startRun } from './run'
 import { Session } from './session'
 import {
+  blackjackPointBonusFor,
   bumpUpgrade,
   emptyUpgrades,
   inflationResistanceFor,
@@ -30,26 +31,26 @@ function rules(overrides: Partial<RunUpgrades>) {
 }
 
 describe('rulesForUpgrades', () => {
-  it('maps chip-eco tiers to the blackjack payout and push-wins', () => {
-    // Default: 3:2 blackjack, pushes stay pushes.
-    expect(rules({}).blackjackPayoutNumerator).toBe(3)
-    expect(rules({}).blackjackPayoutDenominator).toBe(2)
+  it('maps chip-eco (Payout) tiers to the blackjack point bonus and push-wins', () => {
+    // Default: no point bonus, pushes stay pushes.
+    expect(blackjackPointBonusFor(emptyUpgrades())).toBe(0)
     expect(rules({}).pushWinsToPlayer).toBe(false)
-    // T1 → 2:1, T2 → 3:1.
-    expect(rules({ chipEco: 1 }).blackjackPayoutNumerator).toBe(2)
-    expect(rules({ chipEco: 1 }).blackjackPayoutDenominator).toBe(1)
-    expect(rules({ chipEco: 2 }).blackjackPayoutNumerator).toBe(3)
-    expect(rules({ chipEco: 2 }).blackjackPayoutDenominator).toBe(1)
+    // T1 → +50%, T2 → +100% points on a natural blackjack (a scoring effect, not a settlement rule).
+    expect(blackjackPointBonusFor({ ...emptyUpgrades(), chipEco: 1 })).toBe(0.5)
+    expect(blackjackPointBonusFor({ ...emptyUpgrades(), chipEco: 2 })).toBe(1)
     // T3 → the player wins all pushes.
     expect(rules({ chipEco: 3 }).pushWinsToPlayer).toBe(true)
   })
 
-  it('maps anti-dealer tiers to refund, void, and hijack', () => {
-    expect(rules({ antiDealer: 1 }).dealerNaturalRefundRatio).toBeCloseTo(0.75)
+  it('maps anti-dealer (Sabotage) tiers to dealer-21 energy, redeal, and hijack', () => {
+    // T1's +20-energy flag stays on at every tier (the energy pays at all three).
+    expect(rules({ antiDealer: 1 }).dealer21Energy).toBe(true)
     expect(rules({ antiDealer: 1 }).voidDealer21).toBe(false)
     expect(rules({ antiDealer: 1 }).hijackDealerNatural).toBe(false)
+    expect(rules({ antiDealer: 2 }).dealer21Energy).toBe(true)
     expect(rules({ antiDealer: 2 }).voidDealer21).toBe(true)
     expect(rules({ antiDealer: 2 }).hijackDealerNatural).toBe(false)
+    expect(rules({ antiDealer: 3 }).dealer21Energy).toBe(true)
     expect(rules({ antiDealer: 3 }).hijackDealerNatural).toBe(true)
   })
 
@@ -85,90 +86,74 @@ describe('upgrade bookkeeping', () => {
   })
 })
 
-describe('chip eco — payout', () => {
-  it('pays a natural blackjack 2:1 with T1', () => {
-    const round = startRound([card('A'), card('K'), card('10', 'hearts'), card('7')], 10, rules({ chipEco: 1 }))
-    expect(round.hands[0].outcome).toBe('blackjack')
-    expect(payout(round)).toBe(20) // 2:1 instead of the default 3:2 (15)
-  })
-
-  it('pays a natural blackjack 3:1 with T2', () => {
-    const round = startRound([card('A'), card('K'), card('10', 'hearts'), card('7')], 10, rules({ chipEco: 2 }))
-    expect(round.hands[0].outcome).toBe('blackjack')
-    expect(payout(round)).toBe(30) // 3:1
-  })
-
-  it('no longer lifts a made 21 to a natural — the hand plays on', () => {
+describe('chip eco — Payout settlement', () => {
+  it('does not lift a made 21 to a natural — the hand plays on', () => {
     // Player 7+4 hits a 10 to make 21; without auto-blackjack the round keeps going.
     const shoe = [card('7'), card('4'), card('10', 'hearts'), card('6'), card('10', 'diamonds')]
-    const round = hit(startRound(shoe, 10, rules({ chipEco: 2 })))
+    const round = hit(startRound(shoe, rules({ chipEco: 2 })))
     expect(round.status).toBe('player-turn')
     expect(round.dealer).toHaveLength(2) // dealer drew nothing yet
   })
 
-  it('wins a genuine push as a chips-only win with T3 (no damage)', () => {
-    // Player 20 vs dealer 20 is normally a push; Payout T3 pays it to the player.
-    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('10', 'diamonds')], 10, rules({ chipEco: 3 })))
+  it('wins a genuine push as a chips-only win with T3, graded at the floor token tier', () => {
+    // Player 20 vs dealer 20 is normally a push; Payout T3 pays it to the player as a win.
+    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('10', 'diamonds')], rules({ chipEco: 3 })))
     expect(round.hands[0].outcome).toBe('win')
     expect(round.hands[0].chipsOnly).toBe(true)
-    expect(payout(round)).toBe(10) // even money on the tie
-    expect(reward(round)).toEqual({ damage: 0, tokens: 0 }) // chips only, no damage/tokens
+    expect(reward(round)).toEqual({ tokens: 8 }) // floor tier — no dealer total was beaten
   })
 
   it('leaves a genuine push a push without T3', () => {
-    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('10', 'diamonds')], 10, rules({})))
+    const round = stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('10', 'diamonds')], rules({})))
     expect(round.hands[0].outcome).toBe('push')
   })
 })
 
-describe('anti-dealer — sabotage', () => {
-  it('refunds 75% of the bet on a loss to a dealer natural (T1)', () => {
-    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], 10, rules({ antiDealer: 1 }))
+describe('anti-dealer — Sabotage settlement', () => {
+  it('leaves a loss to a dealer natural a plain loss at T1 (energy is credited by the Session, not here)', () => {
+    // The +20-energy bonus fires on the dealer's 21 in Session.settle_ (see session.test.ts); the pure
+    // round resolution just settles the loss — no settlement flag, no window/redeal change.
+    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], rules({ antiDealer: 1 }))
     expect(round.hands[0].outcome).toBe('lose')
-    expect(payout(round)).toBe(-3) // lose only 25% of the 10 bet
   })
 
   it('voids a dealt dealer natural into a wash (T2)', () => {
-    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], 10, rules({ antiDealer: 2 }))
+    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], rules({ antiDealer: 2 }))
     expect(round.hands[0].outcome).toBe('voided')
-    expect(payout(round)).toBe(0)
-    expect(reward(round)).toEqual({ damage: 0, tokens: 0 })
+    expect(reward(round)).toEqual({ tokens: 0 })
   })
 
   it('voids a dealer that hits to 21 (T2)', () => {
     // Player stands on 16; dealer 10+6 draws the 5 to make 21.
-    const round = stand(startRound([card('9'), card('7'), card('10', 'hearts'), card('6'), card('5')], 10, rules({ antiDealer: 2 })))
+    const round = stand(startRound([card('9'), card('7'), card('10', 'hearts'), card('6'), card('5')], rules({ antiDealer: 2 })))
     expect(round.dealer.map((c) => c.rank)).toEqual(['10', '6', '5'])
     expect(round.hands[0].outcome).toBe('voided')
-    expect(payout(round)).toBe(0)
   })
 
   it('pays a voided dealer 21 out as a chips-only win with Payout T3 (T2 + chip T3)', () => {
-    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], 10, rules({ antiDealer: 2, chipEco: 3 }))
+    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], rules({ antiDealer: 2, chipEco: 3 }))
     expect(round.hands[0].outcome).toBe('win')
     expect(round.hands[0].chipsOnly).toBe(true)
-    expect(payout(round)).toBe(10)
-    expect(reward(round)).toEqual({ damage: 0, tokens: 0 })
+    expect(reward(round)).toEqual({ tokens: 8 }) // floor tier
   })
 
   it('hijacks a dealer natural into a player blackjack (T3)', () => {
-    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], 10, rules({ antiDealer: 3 }))
+    const round = startRound([card('9'), card('7'), card('A'), card('K', 'hearts')], rules({ antiDealer: 3 }))
     expect(round.hands[0].outcome).toBe('blackjack')
-    expect(payout(round)).toBe(15) // paid as a blackjack — 3:2 without the Payout upgrade
-    expect(reward(round)).toEqual({ damage: 42, tokens: 21 }) // hijack deals real blackjack damage
+    expect(reward(round)).toEqual({ tokens: 21 }) // a real blackjack — top token tier
   })
 
   it('turns a natural-vs-natural push into a player win under hijack (T3)', () => {
-    const round = startRound([card('A'), card('K'), card('A', 'hearts'), card('K', 'hearts')], 10, rules({ antiDealer: 3 }))
+    const round = startRound([card('A'), card('K'), card('A', 'hearts'), card('K', 'hearts')], rules({ antiDealer: 3 }))
     expect(round.hands[0].outcome).toBe('blackjack')
   })
 })
 
 describe('token eco', () => {
-  it('scales a win reward by the token multiplier, leaving damage untouched', () => {
+  it('scales a win reward by the token multiplier', () => {
     const shoe = [card('K'), card('Q'), card('10', 'hearts'), card('7')] // player 20 beats dealer 17
-    expect(reward(stand(startRound(shoe, 10, rules({ tokenEco: 2 }))))).toEqual({ damage: 22, tokens: 9 }) // 8 * 1.18
-    expect(reward(stand(startRound(shoe, 10, rules({ tokenEco: 3 }))))).toEqual({ damage: 22, tokens: 10 }) // 8 * 1.30
+    expect(reward(stand(startRound(shoe, rules({ tokenEco: 2 }))))).toEqual({ tokens: 9 }) // 8 * 1.18
+    expect(reward(stand(startRound(shoe, rules({ tokenEco: 3 }))))).toEqual({ tokens: 10 }) // 8 * 1.30
   })
 
   it('resists token inflation, hardening across the tiers', () => {
@@ -205,8 +190,8 @@ describe('Session choose-upgrade flow', () => {
       expect(session.snapshot().run.upgrades.chipEco).toBe(1)
 
       session.deal()
-      // The pick threads into the next round's rules (2:1 blackjack payout at T1).
-      expect(session.snapshot().round!.rules.blackjackPayoutDenominator).toBe(1)
+      // The pick threads into the run (Payout T1 → a +50% blackjack point bonus).
+      expect(blackjackPointBonusFor(session.snapshot().run.upgrades)).toBe(0.5)
       return
     }
     throw new Error('no seed reached a first-kill upgrade choice')

@@ -3,6 +3,8 @@ import { cardValue, evaluateHand, isBlackjack, isBust } from './hand'
 
 export type RoundStatus = 'player-turn' | 'dealer-turn' | 'resolved'
 export type HandOutcome = 'blackjack' | 'win' | 'push' | 'voided' | 'lose' | 'bust'
+// One consumed window slot's result, for the dealer hand-summary (see run.handLog).
+export type HandResult = 'win' | 'loss'
 
 // How the dealer plays a soft 17: 'stand' (S17, the friendly default), 'hit' (H17 —
 // always draws), or 'smart' (draws only when it isn't already beating the player —
@@ -15,23 +17,21 @@ export interface RoundRules {
   /** The highest HARD total the 'smart' dealer will hit when strictly behind (17 for a
    *  healthy dealer; Dealer 6 raises it toward 20 as it nears death — see run.ts). */
   dealerHardHitCeiling: number
-  blackjackPayoutNumerator: number
-  blackjackPayoutDenominator: number
   allowSplit: boolean
-  doubleWinBonusRatio: number
   // Roguelite upgrades (see game/upgrades.ts), folded in per-round at the deal.
-  // Payout T3: a genuine push (player total == dealer total) is awarded to the
-  // player as a chips-only win — no damage, no reward tokens. Also upgrades a
-  // Sabotage-voided dealer 21 (see voidDealer21) into that same chips-only win.
+  // Payout T3: a genuine push (player total == dealer total), and a Sabotage-voided dealer 21, are
+  // awarded to the player as a WIN (a hit + points) instead of redealing.
   pushWinsToPlayer: boolean
-  // Sabotage T2: any dealer 21 (a dealt natural OR a hit to 21), while the player is
-  // under 21, voids the hand — a wash (bet returned, no damage), not a push. With
-  // pushWinsToPlayer it instead pays out as a chips-only win.
+  // Sabotage T2: any dealer 21 (a dealt natural OR a hit to 21), while the player is under 21, voids
+  // the hand — a wash the Session redeals (no window slot spent), not a loss. With pushWinsToPlayer
+  // it instead resolves as a win.
   voidDealer21: boolean
   // Sabotage T3: a dealt dealer natural is stolen — the player takes the win.
   hijackDealerNatural: boolean
-  // Sabotage T1: fraction of the bet refunded on a loss to a dealer natural.
-  dealerNaturalRefundRatio: number
+  // Sabotage T1: any dealer 21 (a dealt natural OR a hit to 21) pays a flat energy bonus, whatever the
+  // hand's outcome. The credit is a run-state effect applied in Session.settle_ (SABOTAGE_DEALER21_ENERGY),
+  // not a settlement rule — this flag is just the "the run owns Sabotage" signal the credit + spec-sheet read.
+  dealer21Energy: boolean
   // Token eco: multiplier applied to every token reward this round.
   tokenMultiplier: number
 }
@@ -39,35 +39,32 @@ export interface RoundRules {
 export const DEFAULT_ROUND_RULES: RoundRules = {
   dealerSoft17: 'stand',
   dealerHardHitCeiling: 17,
-  blackjackPayoutNumerator: 3,
-  blackjackPayoutDenominator: 2,
   allowSplit: true,
-  doubleWinBonusRatio: 0,
   pushWinsToPlayer: false,
   voidDealer21: false,
   hijackDealerNatural: false,
-  dealerNaturalRefundRatio: 0,
+  dealer21Energy: false,
   tokenMultiplier: 1,
 }
 
 export interface PlayerHand {
   cards: Card[]
+  // Vestigial since chips were removed — a hand's stake WEIGHT comes from `doubled` (see
+  // run.handWeight), not this. Kept as a constant 1 to avoid churning the round struct; it carries
+  // no economy meaning.
   bet: number
   doubled: boolean
   splitAce: boolean
   finished: boolean
   busted: boolean
   outcome: HandOutcome | null
-  // Set when this hand's loss was to a dealer natural, so the Sabotage T1 refund
-  // (rules.dealerNaturalRefundRatio) can pay part of the bet back.
-  lostToDealerNatural?: boolean
-  // Set on a chips-only win (Payout T3): a push, or a Sabotage-voided dealer 21,
-  // that the Payout upgrade paid out. Pays chips like a win but deals no damage
-  // and no reward tokens (see rewards.ts).
+  // Set on a win that came from a push or a Sabotage-voided dealer 21 being converted to a win by
+  // Payout T3. Scores + lands a hit like any win, but grades its TOKENS at the floor tier — there
+  // was no dealer total to beat (see rewards.ts).
   chipsOnly?: boolean
-  // Set when this hand was doubled via the standard, token-free Double (doubleDown),
-  // as opposed to the paid Late double powerup. Winning a free-doubled hand earns a
-  // score boost (see run.ts FREE_DOUBLE_SCORE_BONUS).
+  // Set when this hand was doubled via the standard, token-free Double (doubleDown), as opposed to
+  // the paid Late double powerup. A free-doubled win is tallied for the score screen (freeDoubleWins);
+  // it carries no scoring effect (the double's reward is that it counts as 2 wins — see run.ts).
   freeDoubled?: boolean
 }
 
@@ -93,11 +90,11 @@ export interface Round {
 const MAX_HANDS = 2
 const DEALER_STANDS_AT = 17
 
-export function startRound(shoe: Card[], bet: number, rules: RoundRules = DEFAULT_ROUND_RULES): Round {
+export function startRound(shoe: Card[], rules: RoundRules = DEFAULT_ROUND_RULES): Round {
   const round: Round = {
     shoe,
     drawIndex: 4,
-    hands: [newHand([shoe[0], shoe[1]], bet, false)],
+    hands: [newHand([shoe[0], shoe[1]], false)],
     activeIndex: 0,
     dealer: [shoe[2], shoe[3]],
     rules,
@@ -136,6 +133,39 @@ export function canDouble(round: Round): boolean {
 
 export function isWinningHand(hand: PlayerHand): boolean {
   return hand.outcome === 'win' || hand.outcome === 'blackjack'
+}
+
+// A hand's stake WEIGHT: 2 if it was doubled (the doubled hand risks — and pays — twice), else 1.
+// Replaces the old chip bet exposure. Drives window cost, hits landed, and points (see run.ts).
+export function handWeight(hand: PlayerHand): number {
+  return hand.doubled ? 2 : 1
+}
+
+// The window slots a resolved round consumes and their win/loss result — one entry per WEIGHT unit
+// of each non-pushed hand (a double win → ['win','win']; a split → one per hand). Pushes/voids
+// contribute nothing (they never consume the window — see isRedealRound). Drives run.handLog.
+export function roundTally(round: Round): { hits: number; losses: number; slots: HandResult[] } {
+  let hits = 0
+  let losses = 0
+  const slots: HandResult[] = []
+  for (const hand of round.hands) {
+    const weight = handWeight(hand)
+    if (hand.outcome === 'win' || hand.outcome === 'blackjack') {
+      hits += weight
+      for (let i = 0; i < weight; i += 1) slots.push('win')
+    } else if (hand.outcome === 'lose' || hand.outcome === 'bust') {
+      losses += weight
+      for (let i = 0; i < weight; i += 1) slots.push('loss')
+    }
+  }
+  return { hits, losses, slots }
+}
+
+// A round that lands nothing — every hand pushed or voided (a wash). It consumes no window slot; the
+// Session deals a fresh round instead of advancing the dealer. With Payout T3 a push resolves as a
+// win, so this is never true then.
+export function isRedealRound(round: Round): boolean {
+  return round.hands.length > 0 && round.hands.every((hand) => hand.outcome === 'push' || hand.outcome === 'voided')
 }
 
 export function hit(round: Round): Round {
@@ -204,11 +234,11 @@ function applySplit(round: Round): Round {
   // split of, say, A+7 makes two ordinary hands that each play on normally.
   const splittingAces = active.cards[0].rank === 'A' && active.cards[1].rank === 'A'
   const handA = finalizeSplitHand(
-    newHand([active.cards[0], round.shoe[round.drawIndex]], active.bet, splittingAces),
+    newHand([active.cards[0], round.shoe[round.drawIndex]], splittingAces),
     splittingAces,
   )
   const handB = finalizeSplitHand(
-    newHand([active.cards[1], round.shoe[round.drawIndex + 1]], active.bet, splittingAces),
+    newHand([active.cards[1], round.shoe[round.drawIndex + 1]], splittingAces),
     splittingAces,
   )
   const hands = round.hands.slice()
@@ -248,7 +278,7 @@ export function mulligan(round: Round): Round {
   const active = activeHand(round)
   const cards = [round.shoe[round.drawIndex], round.shoe[round.drawIndex + 1]]
   const redealt: Round = {
-    ...replaceHand(round, round.activeIndex, newHand(cards, active.bet, false)),
+    ...replaceHand(round, round.activeIndex, newHand(cards, false)),
     drawIndex: round.drawIndex + 2,
     mulliganed: true,
     // The tossed opening cards are now spent + known; keep them out of the shoe odds.
@@ -279,18 +309,8 @@ export function returnCard(round: Round): Round {
   return advanceHand({ ...replaceHand(round, round.activeIndex, hand), drawIndex: round.drawIndex - 1 })
 }
 
-export function payout(round: Round): number {
-  return round.hands.reduce((total, hand) => total + handPayout(hand, round.rules), 0)
-}
-
-// Net chips won (+) or lost (-) on a single settled hand — used to label each
-// hand's result, so split hands each show their own win/loss.
-export function handNet(hand: PlayerHand, rules: RoundRules): number {
-  return handPayout(hand, rules)
-}
-
-function newHand(cards: Card[], bet: number, splitAce: boolean): PlayerHand {
-  return { cards, bet, doubled: false, splitAce, finished: false, busted: false, outcome: null }
+function newHand(cards: Card[], splitAce: boolean): PlayerHand {
+  return { cards, bet: 1, doubled: false, splitAce, finished: false, busted: false, outcome: null }
 }
 
 function finalizeSplitHand(hand: PlayerHand, splittingAces: boolean): PlayerHand {
@@ -311,7 +331,6 @@ function applyDouble(round: Round, free: boolean): Round {
   const hand: PlayerHand = {
     ...active,
     cards,
-    bet: active.bet * 2,
     doubled: true,
     freeDoubled: free,
     finished: true,
@@ -489,8 +508,9 @@ function settleAgainstDealer(round: Round): Round {
   return { ...round, hands, status: 'resolved' }
 }
 
-// The settled outcome for one player hand vs the dealer, plus whether it's a
-// chips-only win (Payout T3 paying out a push or a Sabotage-voided dealer 21).
+// The settled outcome for one player hand vs the dealer, plus whether it's a converted win
+// (Payout T3 turning a push or a Sabotage-voided dealer 21 into a win — flagged chipsOnly, a
+// legacy name; it now lands a hit + points but grades its tokens at the floor tier, see rewards.ts).
 function judgeHand(
   playerTotal: number,
   dealerTotal: number,
@@ -498,8 +518,8 @@ function judgeHand(
   dealer21: boolean,
   rules: RoundRules,
 ): { outcome: HandOutcome; chipsOnly?: boolean } {
-  // Sabotage T2: a dealer that hit to 21 voids the player's (sub-21) hand — a wash,
-  // unless Payout T3 upgrades it into a chips-only win.
+  // Sabotage T2: a dealer that hit to 21 voids the player's (sub-21) hand — a redeal (the Session
+  // re-deals a voided round, no window slot spent), unless Payout T3 turns it into a win.
   if (dealer21 && rules.voidDealer21 && playerTotal < 21) {
     return rules.pushWinsToPlayer ? { outcome: 'win', chipsOnly: true } : { outcome: 'voided' }
   }
@@ -509,7 +529,7 @@ function judgeHand(
   if (playerTotal < dealerTotal) {
     return { outcome: 'lose' }
   }
-  // A genuine tie: Payout T3 pays it out (chips only), otherwise it pushes.
+  // A genuine tie: Payout T3 resolves it as a win, otherwise it pushes (which the Session redeals).
   return rules.pushWinsToPlayer ? { outcome: 'win', chipsOnly: true } : { outcome: 'push' }
 }
 
@@ -523,10 +543,9 @@ function resolveOpeningNaturals(round: Round): Round {
   const rules = round.rules
   let outcome: HandOutcome
   let chipsOnly = false
-  let lostToDealerNatural = false
   if (playerBlackjack && dealerNatural) {
     // Both naturals: a push, unless Sabotage T3 hijacks it into a player blackjack
-    // or Payout T3 pays the push out (chips only).
+    // or Payout T3 turns the push into a win.
     if (rules.hijackDealerNatural) {
       outcome = 'blackjack'
     } else if (rules.pushWinsToPlayer) {
@@ -538,9 +557,9 @@ function resolveOpeningNaturals(round: Round): Round {
   } else if (playerBlackjack) {
     outcome = 'blackjack'
   } else {
-    // Dealer natural, player without one. Sabotage ladder: T3 hijacks it (a player
-    // blackjack win, with damage), T2 voids it (a wash, or a chips-only win with
-    // Payout T3), T1 leaves it a loss but flags it for the partial refund.
+    // Dealer natural, player without one. Sabotage ladder: T3 hijacks it (a player blackjack win —
+    // a hit + points), T2 voids it (a redeal, or a win with Payout T3), T1 leaves it a plain loss
+    // (its +20 energy fires off the dealer's 21 in Session.settle_, independent of the outcome).
     if (rules.hijackDealerNatural) {
       outcome = 'blackjack'
     } else if (rules.voidDealer21) {
@@ -552,35 +571,13 @@ function resolveOpeningNaturals(round: Round): Round {
       }
     } else {
       outcome = 'lose'
-      lostToDealerNatural = rules.dealerNaturalRefundRatio > 0
     }
   }
   return {
     ...round,
-    hands: [{ ...player, finished: true, outcome, chipsOnly, lostToDealerNatural }],
+    hands: [{ ...player, finished: true, outcome, chipsOnly }],
     status: 'resolved',
   }
-}
-
-function handPayout(hand: PlayerHand, rules: RoundRules): number {
-  const outcome = hand.outcome
-  if (!outcome) {
-    throw new Error('cannot compute payout before the hand resolves')
-  }
-  if (outcome === 'blackjack') {
-    return Math.floor(hand.bet * (rules.blackjackPayoutNumerator / rules.blackjackPayoutDenominator))
-  }
-  if (outcome === 'win') {
-    return Math.floor(hand.bet * (1 + (hand.doubled ? rules.doubleWinBonusRatio : 0)))
-  }
-  if (outcome === 'push' || outcome === 'voided') {
-    return 0
-  }
-  // Sabotage T1: part of the bet is refunded on a loss to a dealer natural.
-  if (outcome === 'lose' && hand.lostToDealerNatural && rules.dealerNaturalRefundRatio > 0) {
-    return -(hand.bet - Math.floor(hand.bet * rules.dealerNaturalRefundRatio))
-  }
-  return -hand.bet
 }
 
 function requirePlayerTurn(round: Round): void {
