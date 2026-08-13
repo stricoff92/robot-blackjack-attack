@@ -10,8 +10,11 @@
     <!-- CrazyGames SDK v3 (ads, gameplay events, leaderboard submit, iframe-safe storage). Loaded
          from their CDN — not npm — and exposed as window.CrazyGames.SDK. It is absent off-platform
          (and may fail to load if blocked); the game degrades gracefully, see
-         src/platform/crazygames.ts. Classic script in <head> so it runs before the deferred module. -->
-    <script src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
+         src/platform/crazygames.ts. `defer` so it does NOT block HTML parsing / first paint (a
+         plain <script> in <head> stalls <body> — and the boot splash — until it downloads, which
+         is slow on mobile). defer still runs it BEFORE the deferred module (document order), so
+         window.CrazyGames.SDK is present when main.ts calls initCrazyGames(). -->
+    <script defer src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
     <style>
       html,
       body {
@@ -44,10 +47,86 @@
         display: block;
         touch-action: none;
       }
+      /* Instant boot splash — pure static HTML/CSS so it paints on the FIRST frame, before the
+         JS bundle + CrazyGames SDK init resolve (that gap was a dark screen for 1-2s on mobile).
+         main.ts fades + removes #boot-splash once the game view has mounted. No web fonts (the
+         pixel title face isn't loaded yet) and no assets — just the game's palette. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        /* Above every in-game layer (game-view.css tops out around z-index 40) so nothing —
+           the title-screen battery pill, tap catcher, etc. — pokes through during the fade. */
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #0b0b12;
+        opacity: 1;
+        transition: opacity 0.35s ease;
+      }
+      #boot-splash.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .boot-wordmark {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        font-family: "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        line-height: 1;
+        font-size: clamp(20px, 6vw, 40px);
+        color: rgba(226, 26, 26, 0.95);
+        text-shadow: 0 0 18px rgba(226, 26, 26, 0.45);
+        animation: boot-pulse 1.4s ease-in-out infinite;
+      }
+      #boot-splash .boot-spinner {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 3px solid rgba(64, 224, 208, 0.18);
+        border-top-color: rgba(64, 224, 208, 0.9);
+        animation: boot-spin 0.8s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes boot-pulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .boot-wordmark {
+          animation: none;
+          opacity: 0.9;
+        }
+        #boot-splash .boot-spinner {
+          animation-duration: 1.6s;
+        }
+      }
     </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="boot-wordmark">
+        <span>ROBOT</span>
+        <span>BLACKJACK</span>
+        <span>ATTACK</span>
+      </div>
+      <div class="boot-spinner"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

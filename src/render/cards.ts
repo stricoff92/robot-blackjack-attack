@@ -568,7 +568,7 @@ function drawCount(
   ctx.textBaseline = 'middle'
 
   ctx.textAlign = 'center'
-  ctx.font = `bold ${countPx}px system-ui, sans-serif`
+  ctx.font = `bold ${countPx}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
   // Everything the readout shows is projected by the holo — the count, the Win/Lose/Push
   // result, and any score note — all rendered as translucent glowing light + the shared
   // flicker, and each returning a ray-target box so the fans land on exactly this text.
@@ -580,7 +580,7 @@ function drawCount(
   if (result) {
     ctx.textAlign = 'left'
     const rSize = Math.round(countPx * 0.78)
-    ctx.font = `bold ${rSize}px system-ui, sans-serif`
+    ctx.font = `bold ${rSize}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
     const lx = centerX + countW / 2 + gap
     drawHoloText(ctx, result.label, lx, y, rSize, holoStyleFromHex(resultColor(result.tone)), now)
     boxes.push(leftTextBox(ctx, result.label, lx, y, rSize))
@@ -588,7 +588,7 @@ function drawCount(
 
   if (note) {
     const nSize = Math.round(countPx * 0.6)
-    ctx.font = `bold ${nSize}px system-ui, sans-serif`
+    ctx.font = `bold ${nSize}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
     ctx.textAlign = 'left'
     // Stacked over the count (left edges aligned) or off to its side.
     const nx = note.side === 'above' ? centerX - countW / 2 : centerX + countW / 2 + gap
@@ -938,7 +938,7 @@ export function drawBustBlock(
     ctx.globalAlpha = Math.min(1, frame.shield)
     ctx.textBaseline = 'alphabetic'
     ctx.textAlign = 'center'
-    ctx.font = `bold ${Math.round(clamp(cardH * 0.2, 20, 28) * 0.9)}px system-ui, sans-serif`
+    ctx.font = `bold ${Math.round(clamp(cardH * 0.2, 20, 28) * 0.9)}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
     shadowText(ctx, 'BUST', x + w / 2, y - h * 0.14, BUST_BLOCK_RED)
     ctx.restore()
   }

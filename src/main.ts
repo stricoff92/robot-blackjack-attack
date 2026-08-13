@@ -91,6 +91,19 @@ setSaverDpr(isBatterySaver(), saverDprOverride)
 mountGameView(root)
 loadingStop()
 
+// The game view is mounted — fade out and remove the instant boot splash (index.html) so it
+// hands off to the tap-to-start screen. Waiting one frame lets the first canvas frame paint
+// before the splash's opacity transition starts, so there's no dark flash in the gap.
+const bootSplash = document.getElementById('boot-splash')
+if (bootSplash) {
+  requestAnimationFrame(() => {
+    bootSplash.classList.add('is-hidden')
+    const removeSplash = (): void => bootSplash.remove()
+    bootSplash.addEventListener('transitionend', removeSplash, { once: true })
+    window.setTimeout(removeSplash, 600) // fallback if transitionend never fires
+  })
+}
+
 // Dev-only audio audition hook: `window.sfx` lets you fire a sound straight from the console so
 // tweaks can be heard without playing to their trigger. Handy for the robotic Banker clap — A/B
 // `sfx.playHandClap()` against the raw `sfx.play('hand-clap')`, edit the HAND_CLAP_* constants in

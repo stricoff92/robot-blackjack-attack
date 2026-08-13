@@ -43,8 +43,12 @@ export const TITLE_LINES = ['ROBOT', 'BLACKJACK', 'ATTACK']
 export const TITLE_RED = 'rgba(226, 26, 26, 0.95)'
 
 // A bold system font — the tap line, and the title's fallback until the pixel .ttf loads.
+// NOTE: the family stack uses CONCRETE names only — NEVER `system-ui` / `-apple-system` here.
+// iOS/iPadOS Safari's canvas 2D `font` setter rejects those generic keywords outright (the whole
+// assignment is ignored, so the text draws in a leftover/default face). This stack resolves in
+// every platform's canvas. Same rule applies to every other canvas `ctx.font` in the render code.
 export function boldSystemFont(px: number, weight = 800): string {
-  return `${weight} ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  return `${weight} ${px}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
 }
 
 // The title's own face: the Sixtyfour display font once loaded, else the bold system fallback so

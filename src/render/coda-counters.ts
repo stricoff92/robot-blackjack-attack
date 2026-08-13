@@ -468,7 +468,7 @@ function drawCrystal(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   const cy = y + h * 0.46
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.font = `800 ${fontPx}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  ctx.font = `800 ${fontPx}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
   ctx.fillStyle = style.numberShadow
   ctx.fillText(text, cx, cy + fontPx * 0.06)
   const num = ctx.createLinearGradient(cx, cy - fontPx * 0.5, cx, cy + fontPx * 0.5)
@@ -531,7 +531,7 @@ function drawCrystal(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
 // Largest whole-pixel font that fits `text` within (maxW, maxH).
 function fitFont(ctx: CanvasRenderingContext2D, text: string, maxW: number, maxH: number): number {
   let size = Math.floor(maxH)
-  ctx.font = `800 ${size}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  ctx.font = `800 ${size}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
   const w = ctx.measureText(text).width
   if (w > maxW) {
     size = Math.max(6, Math.floor(size * (maxW / w)))

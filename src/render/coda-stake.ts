@@ -49,7 +49,7 @@ interface StakeLine {
 }
 
 function boldFont(px: number, weight = 800): string {
-  return `${weight} ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  return `${weight} ${px}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
 }
 
 // Draw the double-or-nothing banker scoreboard and RETURN its box (one ray-target). `age` = ms

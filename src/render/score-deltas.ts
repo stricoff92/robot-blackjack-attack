@@ -95,7 +95,7 @@ export function drawScoreDeltas(
 function drawDelta(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, px: number, alpha: number): void {
   ctx.save()
   ctx.globalAlpha = alpha
-  ctx.font = `800 ${px}px system-ui, -apple-system, "Segoe UI", sans-serif`
+  ctx.font = `800 ${px}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
   // Dark halo first (a couple of offset strokes' worth via shadow), then the glowing green core.
   ctx.shadowColor = HALO
   ctx.shadowBlur = px * 0.5

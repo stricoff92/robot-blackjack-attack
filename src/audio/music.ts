@@ -13,14 +13,14 @@ import { createAudioContext } from './context'
 
 // Vite fingerprints each asset URL; fetch() then pulls it (from cache after the
 // first load) for decodeAudioData. The filenames contain spaces — Vite handles it.
-import canneryUrl from '../assets/Kevin MacLeod-The Cannery.ogg'
-import serpentineUrl from '../assets/Kevin MacLeod-Serpentine-Trek.ogg'
-import maestroUrl from '../assets/Kevin MacLeod-One-eyed-Maestro.ogg'
-import machinationsUrl from '../assets/Kevin-MacLeod-Machinations.ogg'
-import getawayUrl from '../assets/Kevin MacLeod-Mistake the Getaway.ogg'
-import bustUrl from '../assets/Kevin MacLeod Trio for Piano Violin and Viola.ogg'
-import cashoutUrl from '../assets/Kevin MacLeod-Enigma.ogg'
-import decisionsUrl from '../assets/KevinMacLeodDecisions.ogg'
+import canneryUrl from '../assets/Kevin MacLeod-The Cannery.m4a'
+import serpentineUrl from '../assets/Kevin MacLeod-Serpentine-Trek.m4a'
+import maestroUrl from '../assets/Kevin MacLeod-One-eyed-Maestro.m4a'
+import machinationsUrl from '../assets/Kevin-MacLeod-Machinations.m4a'
+import getawayUrl from '../assets/Kevin MacLeod-Mistake the Getaway.m4a'
+import bustUrl from '../assets/Kevin MacLeod Trio for Piano Violin and Viola.m4a'
+import cashoutUrl from '../assets/Kevin MacLeod-Enigma.m4a'
+import decisionsUrl from '../assets/KevinMacLeodDecisions.m4a'
 
 export type TrackName =
   | 'cannery'

@@ -125,7 +125,7 @@ function drawFace(ctx: Ctx2D, x: number, y: number, w: number, h: number, card: 
 
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
-  ctx.font = `bold ${h * 0.2}px system-ui, sans-serif`
+  ctx.font = `bold ${h * 0.2}px "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif`
   ctx.fillText(card.rank, x + w * 0.1, y + h * 0.07)
   ctx.font = `${h * 0.15}px serif`
   ctx.fillText(suit, x + w * 0.1, y + h * 0.28)
