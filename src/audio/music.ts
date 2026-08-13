@@ -41,17 +41,33 @@ interface TrackDef {
    * change one at runtime.
    */
   baseVolume: number
+  /**
+   * DEV-only audition override: set on a track to make the soundtrack OPEN with it instead of "The
+   * Cannery" (like a temporary OPENING_TRACK), so you can hear that track in game immediately rather
+   * than waiting for the random rotation to reach it. First flagged track wins if several are set.
+   * Compiled out of production — a stray `force` left here is inert in the build, so the shipped game
+   * always opens with OPENING_TRACK. For a live jump without an edit, use music.advanceTrack() in the
+   * console (window.music dev hook).
+   */
+  force?: boolean
 }
 
+// baseVolumes below normalize every track to the same perceived loudness (EBU R128 integrated
+// −20 LUFS), measured with `ffmpeg ebur128` — the source tracks were mastered up to 17 dB apart,
+// which no ear can balance reliably. Each value = 10^((−20 − rawLUFS)/20). Attenuation-only where
+// possible; the two >1 boosts (bust/cashout) sit within the tracks' true-peak headroom. Machinations
+// was 9 dB too quiet to raise by gain without clipping, so its FILE was re-encoded through
+// `loudnorm` to −20 LUFS and it stays at 1.0. To re-measure after swapping an asset, re-run ebur128.
+// The overall music level is the master (setVolume, wired in main.ts) on TOP of these.
 const TRACKS: Record<TrackName, TrackDef> = {
-  cannery: { url: canneryUrl, baseVolume: 0.4 },
-  serpentine: { url: serpentineUrl, baseVolume: 1 },
-  maestro: { url: maestroUrl, baseVolume: 1 },
-  machinations: { url: machinationsUrl, baseVolume: 1 },
-  getaway: { url: getawayUrl, baseVolume: 1 },
-  bust: { url: bustUrl, baseVolume: 1 },
-  cashout: { url: cashoutUrl, baseVolume: 1 },
-  decisions: { url: decisionsUrl, baseVolume: 1 },
+  cannery: { url: canneryUrl, baseVolume: 0.45 ,},
+  serpentine: { url: serpentineUrl, baseVolume: 1, },
+  maestro: { url: maestroUrl, baseVolume: 0.6, },
+  machinations: { url: machinationsUrl, baseVolume: 1, },
+  getaway: { url: getawayUrl, baseVolume: 1.5,},
+  bust: { url: bustUrl, baseVolume: 2.6, },
+  cashout: { url: cashoutUrl, baseVolume: 2,},
+  decisions: { url: decisionsUrl, baseVolume: 2.5,},
 }
 
 const ALL_TRACKS = Object.keys(TRACKS) as TrackName[]
@@ -82,6 +98,19 @@ const CODA_FADE_IN_MS = 60
 const DECISIONS_FADE_IN_MS = 500
 // "The Cannery" always plays first.
 const OPENING_TRACK: TrackName = 'cannery'
+
+// The track the soundtrack actually opens on. Normally OPENING_TRACK; in DEV a track flagged
+// `force: true` in TRACKS wins, so you can audition it in game (see TrackDef.force). The whole
+// override is dead code in production (import.meta.env.DEV is statically false → tree-shaken).
+function openingTrack(): TrackName {
+  if (import.meta.env.DEV) {
+    const forced = ALL_TRACKS.find((name) => TRACKS[name].force)
+    if (forced) {
+      return forced
+    }
+  }
+  return OPENING_TRACK
+}
 
 class MusicService {
   private ctx_: AudioContext | null = null
@@ -125,7 +154,7 @@ class MusicService {
       return
     }
     this.started_ = true
-    void this.playTrack_(OPENING_TRACK)
+    void this.playTrack_(openingTrack())
   }
 
   // Master music level (1 = 100%), applied to every track. Persists across tracks.

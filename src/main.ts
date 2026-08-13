@@ -26,6 +26,13 @@ voice.prime()
 // until then). "The Cannery" opens; the other tracks download lazily as each
 // becomes the next to play. start() is idempotent, so the extra listener that
 // doesn't fire is harmless — we remove both once music is going.
+// Overall music loudness ceiling — a single master multiplier over every track (the per-track
+// baseVolumes in music.ts already sit the tracks at one equal loudness beneath this). Kept under
+// the SFX so music stays a bed, not a wall. Tune by ear with `music.setVolume(x)` in the console
+// (see the dev hook below) and bake the value you land on in here.
+const MUSIC_LEVEL = 0.4
+music.setVolume(MUSIC_LEVEL)
+
 const startMusic = (): void => {
   music.start()
   window.removeEventListener('pointerdown', startMusic)
@@ -104,10 +111,14 @@ if (bootSplash) {
   })
 }
 
-// Dev-only audio audition hook: `window.sfx` lets you fire a sound straight from the console so
-// tweaks can be heard without playing to their trigger. Handy for the robotic Banker clap — A/B
-// `sfx.playHandClap()` against the raw `sfx.play('hand-clap')`, edit the HAND_CLAP_* constants in
-// audio/sfx.ts, and HMR reloads them live. Compiled out of the production build.
+// Dev-only audio audition hooks. `window.sfx` fires a sound straight from the console so tweaks
+// can be heard without playing to their trigger (A/B `sfx.playHandClap()` vs the raw
+// `sfx.play('hand-clap')`, edit the HAND_CLAP_* constants in audio/sfx.ts, HMR reloads them live).
+// `window.music` dials the mix live: `music.setVolume(0.5)` for the overall level, `music.setBaseVolume('maestro', 0.4)`
+// for one track's balance, `music.advanceTrack()` to jump to the next track and A/B them. Land on
+// values by ear, then bake MUSIC_LEVEL (above) and the TRACKS baseVolumes (audio/music.ts) in.
+// Compiled out of the production build.
 if (import.meta.env.DEV) {
   ;(window as unknown as { sfx: typeof sfx }).sfx = sfx
+  ;(window as unknown as { music: typeof music }).music = music
 }

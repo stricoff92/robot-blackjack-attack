@@ -91,13 +91,13 @@ const SFX: Record<SfxName, SfxDef> = {
   // The deck riffle at the end of a hand.
   shuffle: { url: shuffleUrl, gain: 1, rateVariance: 0 },
   // A single card flying out of the shoe — jittered so a full deal doesn't machine-gun.
-  'draw-card': { url: drawCardUrl, gain: 1, rateVariance: 0.25 },
+  'draw-card': { url: drawCardUrl, gain: 0.6, rateVariance: 0.25 },
   // The choose-upgrade buttons surfacing after a kill.
   'upgrade-menu': { url: upgradeMenuUrl, gain: 1, rateVariance: 0 },
   // An upgrade path being picked.
   'upgrade-selected': { url: upgradeSelectedUrl, gain: 1, rateVariance: 0 },
   // A powerup / ability fired (peek, return, freeze…).
-  ability: { url: abilityUrl, gain: 1, rateVariance: 0.25 },
+  ability: { url: abilityUrl, gain: 0.6, rateVariance: 0.25 },
   // The hand result revealed against the player — the source is hot (louder than the rest at full
   // gain) so it's still trimmed, but raised from 0.5 so the loss sting reads clearly on the summary.
   'player-lost': { url: playerLostUrl, gain: 0.8, rateVariance: 0.25 },
@@ -113,7 +113,7 @@ const SFX: Record<SfxName, SfxDef> = {
   // The nexus laser firing at the dealer — turned down; the attack was overbearing.
   'laser-prepare': { url: laserPrepareUrl, gain: 0.5, rateVariance: 0 },
   // The beam impacting the dealer as damage is dealt (a heavy hit) — turned down too.
-  'laser-impact': { url: laserImpactUrl, gain: 0.5, rateVariance: 0 },
+  'laser-impact': { url: laserImpactUrl, gain: 0.43, rateVariance: 0 },
   // The dealer figure blowing apart when killed.
   'dealer-death': { url: dealerDeathUrl, gain: 0.9, rateVariance: 0 },
   // A boot landing as the dealer walks in — fired once per footfall (see the walk-in
@@ -136,7 +136,7 @@ const HEAL_GAIN = 0.2
 
 // Master level of the synth "points roll" (playPointsRoll) — the ticking flutter under
 // the score counter as it climbs. Sustained, so kept quiet under the token-land pings.
-const POINTS_ROLL_GAIN = 0.15
+const POINTS_ROLL_GAIN = 0.12
 
 // The Banker's slow clap — a ROBOTIC re-voicing (playHandClap). The raw sample reads as a cheap
 // soundboard clap that doesn't fit the game, so each slap is run through a filter chain into a

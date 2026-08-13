@@ -3324,12 +3324,10 @@ class GameView {
 
   private openCredits_(): void {
     this.creditsPanel_?.classList.remove('is-hidden')
-    sfx.play('ability') // the nexus projector cue, shared with the ability guide
   }
 
   private closeCredits_(): void {
     this.creditsPanel_?.classList.add('is-hidden')
-    sfx.play('ability')
   }
 
   // Remove the Credits link + modal when the run starts (called from every intro-exit path, beside
@@ -4823,7 +4821,7 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
     heading: 'Music',
     lines: [
       'Kevin MacLeod (incompetech.com)',
-      'Licensed under Creative Commons: By Attribution 4.0',
+      'Licensed under Creative Commons: By 4.0',
       'creativecommons.org/licenses/by/4.0/',
       'Decisions, Enigma, Machinations, Mistake the Getaway,',
       'One-eyed Maestro, Serpentine Trek, The Cannery,',
@@ -4834,18 +4832,24 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
     heading: 'Sound effects',
     lines: [
       'Helton Yan',
-      'Licensed under Creative Commons: By Attribution 4.0',
+      'Licensed under Creative Commons: By 4.0',
       'creativecommons.org/licenses/by/4.0/',
     ],
   },
   {
-    heading: 'Icons',
+    heading: 'Art',
     lines: [
       'Poker chip icons by IconsNova (Flaticon)',
       'Battery icons by Prosymbols Premium (Flaticon)',
       'Star icons by Magnific (Flaticon)',
       'Green icons by Hilmy Abiyyu A. (Flaticon)',
       'Thief icons by Hight Quality Icons (Flaticon)',
+    ],
+  },
+  {
+    heading: 'Created By',
+    lines: [
+      'Jonathan Stricoff, Toadworks LLC, All Rights Reserved',
     ],
   },
 ]
