@@ -15,7 +15,8 @@ import { clearRun, loadSession, type PersistedSession } from '../game/persistenc
 import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../platform/crazygames'
 import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
-import type { LayeredCanvas } from '../render/canvas'
+import { deviceDpr, type LayeredCanvas } from '../render/canvas'
+import { createSpriteCanvas, type SpriteCanvas } from '../render/sprite-canvas'
 import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, setHoloFlickerStatic, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { drawDamageFx } from '../render/damage-fx'
 import { abbreviateCount } from '../render/format'
@@ -72,19 +73,18 @@ const UPGRADE_ICONS: Record<UpgradePath, string> = {
   tokenEco: powerUrl,
 }
 
-// Canvas layers, bottom → top. The dealer figure sits between the room ('back')
-// and the felt/rail ('table') so the rail overlaps its lower body (and death
-// debris) — it reads as standing behind the table. Chips sit ABOVE cards so
-// flying chips (deal / payout) pass in front of the cards; the bet chips rest in
-// the betting circle well below the cards, so nothing overlaps at rest. 'fx'
-// carries the nexus laser strike (above the table + cards, below the reward tokens
-// that fly up to the counter). The 'mask' layer is on top of everything: a darkness
-// that the Analyze projection lights through, and the dealer's emissive eye glow
-// (the HTML button/counter overlay sits above it, so those stay bright).
-// The 'clown' layer sits right beside 'dealer' (both below the felt/rail, so their lower bodies
-// tuck behind the table): the dealer-6 clown sidekick, drawn there so it can slide in/out on its
-// own without disturbing the dealer's layer.
-const LAYERS = ['back', 'dealer', 'clown', 'table', 'cards', 'chips', 'fx', 'hearts', 'tokens', 'deltas', 'mask'] as const
+// Canvas layers (canvases), bottom → top. Merged from 11 single-purpose layers into 6 grouped
+// canvases to cut per-frame compositing + GPU memory (each canvas is a full-screen backing store the
+// browser composites every painted frame). Each group is repainted by a render wrapper (renderCast_/
+// renderPlay_/renderNexus_/renderOverlay_) that clears the canvas ONCE, then paints its members in
+// z-order — so a partial redraw can't wipe a sibling. Z-order (and the reasons) are preserved:
+//  - 'room'    = the backdrop (static; painted only on resize).
+//  - 'cast'    = dealer + clown figures. BELOW 'felt' so the rail hides their lower bodies + death debris.
+//  - 'felt'    = table felt/rail + resting deck (static; painted by paintTable_ on deck/resize events).
+//  - 'play'    = dealt cards + all holo readouts + the coda pot (cards below chips, as before).
+//  - 'nexus'   = the floating nexus device + laser (its own canvas: it hovers continuously + strikes on wins).
+//  - 'overlay' = hearts, flying tokens, "+N" score deltas, and (top, additive) the eye-glow + holo ray fans.
+const LAYERS = ['room', 'cast', 'felt', 'play', 'nexus', 'overlay'] as const
 
 // The final scoreboard has two pages (run summary + performance stats), flipped by the ‹ › pager.
 const SCORE_PAGES = 2
@@ -363,6 +363,20 @@ class GameView {
   // start-stamped draws (cards, dealer figure) at THIS while idle, so they hold their real resting
   // pose (drawing them at an absolute constant would place them before their walk-in). See frame_.
   private freezeAt_ = 0
+  // Like freezeAt_ but for the dealer FIGURE specifically: the last time the dealer was doing its OWN
+  // choreography (a hit/kill/walk-in/emote). In battery saver the figure clock freezes here whenever
+  // the dealer isn't attacking/emoting — so a wounded dealer's ambient sparks + eye-flicker DON'T come
+  // alive just because something else (dealing cards) is animating. Damage FX play only when attacked.
+  private dealerFreezeAt_ = 0
+  private lastDealerChoreographing_ = false
+  // Per-canvas dirty flags (Stage B). The 'cast' (robot figure) and 'nexus' (device) canvases are
+  // skipped when nothing on them changed — the figure/device are otherwise redrawn every frame. Set
+  // true by markGroupsDirty_ (via ensureLoop_, so every action/wake) and by the per-frame "active"
+  // checks (an animator running); cleared after a redraw. 'play' + 'overlay' still redraw every
+  // rendered frame (they carry the holo readouts / frameProjections, whose many timed reveals make
+  // gating them risky — and they already park when idle). Start dirty so the first frame paints.
+  private castDirty_ = true
+  private nexusDirty_ = true
   private lastAnimating_ = false
   // Edge tracker for the dealer-death pause: when it clears, buttons re-enable.
   private lastDealerBlocking_ = false
@@ -504,6 +518,14 @@ class GameView {
   // each — so a ray exists iff its number is on screen, at exactly its position. Cleared at
   // the top of drawCards (the first draw of the frame); read in drawMask (after drawChips).
   private frameProjections_: HoloRayTarget[] = []
+  // Battery-saver holo-ray cache: in saver mode the ray fans are static (their shimmer clock is a
+  // constant), so instead of rebuilding 5 gradients + filling 5 additive triangles per readout every
+  // awake frame, we bake them ONCE to this offscreen canvas and blit it, rebuilding only when the
+  // projection geometry actually changes (a count moved, a readout appeared) — see drawHoloProjection_.
+  // `key` fingerprints that geometry; null canvas = not yet built. Untouched outside saver mode.
+  private holoCache_: SpriteCanvas | null = null
+  private holoCacheKey_ = ''
+  private holoCacheDpr_ = 0
   // The ending hand's round, retained so its cards can be gathered back into
   // the deck after the Session has already cleared `state.round`.
   private collectRound_: Round | null = null
@@ -911,15 +933,11 @@ class GameView {
     const canvas = this.stage_.canvas
     const layout = computeLayout(canvas.width, canvas.height)
     this.paintTable_(canvas, layout, this.tableHasDeck_())
-    this.drawDealerFigure_(canvas, layout, t)
     this.updateClown_(t) // a run resumed at dealer 6 snaps the clown to standing beside it
-    this.drawClownFigure_(canvas, layout, t)
-    this.drawCards_(canvas, layout, t)
-    this.drawChips_(canvas, layout, t)
-    this.drawHearts_(canvas, layout, t)
-    this.drawTokens_(canvas, layout, t)
-    this.drawMask_(canvas, layout, t, t)
-    this.drawFx_(canvas, layout, t, t)
+    this.renderCast_(canvas, layout, t, !this.batterySaver_ || this.dealer_.isSequencing(t)) // sparks only if mid-attack
+    this.renderPlay_(canvas, layout, t)
+    this.renderNexus_(canvas, layout, t, t)
+    this.renderOverlay_(canvas, layout, t, t, t)
     this.lastAnimating_ = false
     this.syncOverlay_(t)
     this.ensureLoop_()
@@ -1008,18 +1026,14 @@ class GameView {
     const layout = computeLayout(canvas.width, canvas.height)
     const t = now()
     this.anim_.setNow(t)
-    this.scene_.drawBackground(canvas.layers.back.ctx, layout)
+    this.scene_.drawBackground(canvas.layers.room.ctx, layout)
     this.paintTable_(canvas, layout, this.tableHasDeck_())
-    // Repaint the dealer + strike fx at their CURRENT animated state, so a resize
+    // Repaint every dynamic group at its CURRENT animated state, so a resize
     // mid-death/mid-strike doesn't blank the figure or the beam.
-    this.drawDealerFigure_(canvas, layout, t)
-    this.drawClownFigure_(canvas, layout, t)
-    this.drawCards_(canvas, layout, t)
-    this.drawChips_(canvas, layout, t)
-    this.drawHearts_(canvas, layout, t)
-    this.drawTokens_(canvas, layout, t)
-    this.drawMask_(canvas, layout, t, t)
-    this.drawFx_(canvas, layout, t, t)
+    this.renderCast_(canvas, layout, t, !this.batterySaver_ || this.dealer_.isSequencing(t)) // sparks only if mid-attack
+    this.renderPlay_(canvas, layout, t)
+    this.renderNexus_(canvas, layout, t, t)
+    this.renderOverlay_(canvas, layout, t, t, t)
     // Re-anchor the score pager to the new layout (it reads band coords from the current size).
     this.syncScorePager_()
     // A resize / orientation change reaches here via the stage ResizeObserver — re-check whether the
@@ -1074,7 +1088,7 @@ class GameView {
 
   // Repaint the table layer (felt + rail), optionally with the static deck.
   private paintTable_(canvas: LayeredCanvas, layout: Layout, withDeck: boolean): void {
-    const ctx = canvas.layers.table.ctx
+    const ctx = canvas.layers.felt.ctx // single-layer group: keeps its own clear
     ctx.clearRect(0, 0, layout.width, layout.height)
     this.scene_.drawTable(ctx, layout)
     // The nexus device (damage + tokens originate from it) floats in a hover, so it's
@@ -1106,12 +1120,44 @@ class GameView {
     return !this.deckOnCards_ && !this.deckHidden_ && !this.rgbActive_()
   }
 
+  // --- Per-group canvas render -----------------------------------------------------------------
+  // Each grouped canvas is repainted by ONE wrapper that clears the shared canvas once, then paints
+  // its members in z-order — so a partial redraw can never wipe a sibling. All render sites (frame_,
+  // the settle re-render, resumeSettled_, onResize_) go through these. renderPlay_ MUST run before
+  // renderOverlay_ each frame: cards/chips populate frameProjections_, which the mask's ray fans read.
+  private renderCast_(canvas: LayeredCanvas, layout: Layout, figureNow: number, sparks: boolean): void {
+    canvas.layers.cast.ctx.clearRect(0, 0, layout.width, layout.height)
+    this.drawDealerFigure_(canvas, layout, figureNow, sparks)
+    this.drawClownFigure_(canvas, layout, figureNow)
+  }
+
+  private renderPlay_(canvas: LayeredCanvas, layout: Layout, cardsNow: number): void {
+    canvas.layers.play.ctx.clearRect(0, 0, layout.width, layout.height)
+    this.drawCards_(canvas, layout, cardsNow) // resets + populates frameProjections_
+    this.drawChips_(canvas, layout, cardsNow)
+  }
+
+  private renderNexus_(canvas: LayeredCanvas, layout: Layout, bodyNow: number, laserNow: number): void {
+    this.drawFx_(canvas, layout, bodyNow, laserNow) // single-layer group — drawStrikeFx clears the nexus canvas itself
+  }
+
+  private renderOverlay_(canvas: LayeredCanvas, layout: Layout, ambientNow: number, fxNow: number, figureNow: number): void {
+    canvas.layers.overlay.ctx.clearRect(0, 0, layout.width, layout.height)
+    this.drawHearts_(canvas, layout, fxNow)
+    this.drawTokens_(canvas, layout, fxNow)
+    this.drawScoreDeltas_(canvas, layout, fxNow)
+    // The dealer eye glow rides the FIGURE clock (figureNow), not fxNow — the emissive glow is part of
+    // the dealer's damage FX, so like its sparks it must freeze during a deal and flicker only while the
+    // dealer itself is active (attack/emote). Holo rays use ambientNow; hearts/tokens/deltas use fxNow.
+    this.drawMask_(canvas, layout, ambientNow, figureNow)
+  }
+
   // The dealer layer: the animated robot figure, below the rail so its lower body
   // and death debris tuck behind the table. A wounded dealer (< 75% health) also sparks
   // and smokes here — the diegetic replacement for the old health bar — over the figure
   // but still behind the rail, so downward sparks tuck away like the lower body does.
   private drawDealerFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number, sparks = true): void {
-    const ctx = canvas.layers.dealer.ctx
+    const ctx = canvas.layers.cast.ctx // shared with the clown; renderCast_ clears it once
     drawDealer(ctx, layout, this.dealer_, timestamp)
     // Only while the figure is STANDING at its home spot — the burst origins are the
     // resting figure, so sparks must not show while it's dying, walking in, or off. `sparks` lets
@@ -1124,7 +1170,7 @@ class GameView {
   // The clown layer: the dealer-6 sidekick, standing to the dealer's right (below the rail like
   // the dealer). A pure render — the state was advanced by updateClown_ earlier in the frame.
   private drawClownFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    drawClown(canvas.layers.clown.ctx, layout, this.clown_, timestamp)
+    drawClown(canvas.layers.cast.ctx, layout, this.clown_, timestamp)
   }
 
   // Advance the clown from the dealer's state (once per frame) and fire its laughs. The clown
@@ -1192,13 +1238,13 @@ class GameView {
       chargeUp: this.nexus_.chargeUp(laserNow),
       healBeam: this.nexus_.healBeam(laserNow),
     }
-    drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer_, charge, laserNow, bodyNow)
+    drawStrikeFx(canvas.layers.nexus.ctx, layout, this.dealer_, charge, laserNow, bodyNow)
   }
 
-  // The only per-frame work: clear + repaint the cards layer.
+  // Paints the dealt cards + holo readouts onto the shared 'play' canvas (renderPlay_ clears it first,
+  // then calls this and drawChips_). Populates frameProjections_ for the mask's ray fans.
   private drawCards_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.cards.ctx
-    ctx.clearRect(0, 0, layout.width, layout.height)
+    const ctx = canvas.layers.play.ctx
     // Start the frame's projected-number collection fresh; drawHands / drawAnalysis (here)
     // and drawChips (next) append to it, and drawMask fires the ray fans at it. Reuse the
     // array (truncate, don't reallocate) so a settled frame produces no garbage here.
@@ -1357,14 +1403,14 @@ class GameView {
   // The top overlay layer (additive light, no scene dimming): the dealer's emissive
   // eye glow, plus the 5-ray fans the always-on holo projector casts onto every readout.
   // (The holo lens's own glow lives on the fx layer, drawn by drawStrikeFx.)
-  // Two clocks so battery saver can freeze the ambient while the dealer's damage FX still pulses:
-  // the holo rays/projection are ambient (drawn at `ambientTs` — frozen in saver so they read as
-  // static), while the eye glow/flicker is part of the damage FX (drawn at `fxTs` — live during a
-  // pulse ON window). Outside battery saver the two are identical (both live), so nothing changes.
-  private drawMask_(canvas: LayeredCanvas, layout: Layout, ambientTs: number, fxTs: number): void {
-    const ctx = canvas.layers.mask.ctx
-    ctx.clearRect(0, 0, layout.width, layout.height)
-    drawDealerEyeGlow(ctx, layout, this.dealer_.eyeGlow(fxTs))
+  // Two clocks so battery saver can freeze the ambient independently of the dealer: the holo rays are
+  // ambient (drawn at `ambientTs` — a frozen constant in saver so they read as static), while the eye
+  // glow/flicker is part of the dealer's damage FX and rides `eyeGlowTs` = the FIGURE clock (frozen
+  // during a deal, live only while the dealer is attacked/emoting — matching its sparks + eye shapes).
+  // Outside battery saver both are live, so nothing changes.
+  private drawMask_(canvas: LayeredCanvas, layout: Layout, ambientTs: number, eyeGlowTs: number): void {
+    const ctx = canvas.layers.overlay.ctx // shared; renderOverlay_ clears it once, then paints its members
+    drawDealerEyeGlow(ctx, layout, this.dealer_.eyeGlow(eyeGlowTs))
     this.drawHoloProjection_(ctx, layout, ambientTs)
   }
 
@@ -1374,7 +1420,52 @@ class GameView {
   // so a ray fan exists iff its number is on screen, at exactly its position. No ray can
   // lead or lag its number. Each fan gets its own seed so their flicker stays independent.
   private drawHoloProjection_(ctx: CanvasRenderingContext2D, layout: Layout, timestamp: number): void {
-    this.frameProjections_.forEach((box, i) => drawHoloRays(ctx, layout, box, HOLO_RAYS_PER, timestamp, i * 1000))
+    const boxes = this.frameProjections_
+    // Normal mode: the fans flicker every frame (the shimmer is live), so draw them straight — caching
+    // would only add a bake+blit on top of the same fill work. Saver mode: the shimmer clock is frozen
+    // (timestamp is a constant), so the fans are pixel-identical until a readout moves — cache + blit.
+    if (!this.batterySaver_) {
+      boxes.forEach((box, i) => drawHoloRays(ctx, layout, box, HOLO_RAYS_PER, timestamp, i * 1000))
+      return
+    }
+    if (boxes.length === 0) {
+      return // nothing projected this frame — draw (and blit) nothing
+    }
+    // Fingerprint what the fans depend on: the frozen clock, viewport (drives the lens/apex), and each
+    // box's rounded geometry. Unchanged key ⇒ the baked bitmap is still valid ⇒ skip the refill, blit.
+    let key = `${timestamp}|${layout.width}x${layout.height}`
+    for (const b of boxes) {
+      key += `|${b.left | 0},${b.right | 0},${b.top | 0},${b.bottom | 0},${(b.fade ?? 1).toFixed(2)},${b.clampToNexus ? 1 : 0}`
+    }
+    const dpr = deviceDpr()
+    if (key !== this.holoCacheKey_ || dpr !== this.holoCacheDpr_ || !this.holoCache_) {
+      const cache = this.ensureHoloCache_(layout, dpr)
+      const cctx = cache.ctx
+      cctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      cctx.clearRect(0, 0, layout.width, layout.height)
+      boxes.forEach((box, i) => drawHoloRays(cctx, layout, box, HOLO_RAYS_PER, timestamp, i * 1000))
+      this.holoCacheKey_ = key
+      this.holoCacheDpr_ = dpr
+    }
+    // Blit the baked fans additively — identical to drawing each ray with 'lighter' straight onto the
+    // overlay (addition is associative), but one composite instead of ~5×N gradient triangles.
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.drawImage(this.holoCache_!.canvas, 0, 0, layout.width, layout.height)
+    ctx.restore()
+  }
+
+  // The saver-mode holo-ray backing canvas, (re)allocated at device resolution when missing or when a
+  // resize/dpr change invalidates the last one.
+  private ensureHoloCache_(layout: Layout, dpr: number): SpriteCanvas {
+    const w = Math.round(layout.width * dpr)
+    const h = Math.round(layout.height * dpr)
+    let cache = this.holoCache_
+    if (!cache || cache.canvas.width !== w || cache.canvas.height !== h) {
+      cache = createSpriteCanvas(w, h)
+      this.holoCache_ = cache
+    }
+    return cache
   }
 
   // The Analyze projection to paint this frame (live or flickering out), with the
@@ -1820,8 +1911,7 @@ class GameView {
   // Chips/bankroll are gone; this layer now only carries the coda's glass winnings counters (the
   // double-or-nothing pot made physical). The dealer hand-summary is a nexus projection (drawCards_).
   private drawChips_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.chips.ctx
-    ctx.clearRect(0, 0, layout.width, layout.height)
+    const ctx = canvas.layers.play.ctx // shared with cards; renderPlay_ clears it once (drawCards_ runs first)
     // The glass pot appears with the coda proper — held back while a heart-death is still popping its
     // final chip on the way in (heartDeathPending_), so the two don't overlap.
     if (this.state_.run.coda && !this.heartDeathPending_) {
@@ -1833,15 +1923,13 @@ class GameView {
   // clears once the coda begins (hit points are a normal-play resource), except while the fatal pop
   // is still animating in on a heart-death entry.
   private drawHearts_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.hearts.ctx
+    const ctx = canvas.layers.overlay.ctx // shared; renderOverlay_ clears it once (no clear here)
     // Nothing on the tap-to-start / title screen — the hearts belong to a live run, and they ease in
     // once it begins (fade below).
     if (!this.started_) {
-      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
     if (this.state_.run.coda && !this.heartDeathPending_ && !this.hearts_.isAnimating(timestamp)) {
-      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
     const fade = Math.min(1, Math.max(0, (timestamp - this.startedAt_) / HEARTS_FADE_MS))
@@ -2025,9 +2113,8 @@ class GameView {
   }
 
   private drawScoreDeltas_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.deltas.ctx
+    const ctx = canvas.layers.overlay.ctx // shared; renderOverlay_ clears it once (no clear here)
     if (!this.scoreDeltas_.isAnimating(timestamp)) {
-      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
     drawScoreDeltas(ctx, layout, this.scoreDeltas_, timestamp, this.scoreDeltaTarget_())
@@ -2060,9 +2147,8 @@ class GameView {
   // The top layer: reward tokens flying up to the counter. Cleared and left blank
   // whenever nothing is in the air (which is most of the time).
   private drawTokens_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
-    const ctx = canvas.layers.tokens.ctx
+    const ctx = canvas.layers.overlay.ctx // shared; renderOverlay_ clears it once (no clear here)
     if (!this.tokens_.isAnimating(timestamp)) {
-      ctx.clearRect(0, 0, layout.width, layout.height)
       return
     }
     drawTokens(ctx, layout, this.tokens_, timestamp, this.tokenTarget_())
@@ -2498,17 +2584,55 @@ class GameView {
     }
     const staticNow = saver ? SAVER_STATIC_NOW : timestamp
     const frozenNow = quiet ? this.freezeAt_ : timestamp
-    const drawSparks = !quiet // idle damage is suppressed (fully static); sparks only during activity
-    this.drawCards_(canvas, layout, frozenNow)
-    this.drawChips_(canvas, layout, frozenNow)
-    this.drawHearts_(canvas, layout, frozenNow)
-    this.drawTokens_(canvas, layout, frozenNow)
-    this.drawScoreDeltas_(canvas, layout, frozenNow)
-    this.drawMask_(canvas, layout, staticNow, frozenNow)
-    this.updateClown_(timestamp) // state tracking stays on the live clock; the clown RENDER uses frozenNow
-    this.drawDealerFigure_(canvas, layout, frozenNow, drawSparks)
-    this.drawClownFigure_(canvas, layout, frozenNow)
-    this.drawFx_(canvas, layout, staticNow, timestamp)
+    // The dealer FIGURE runs on its OWN clock, independent of the cards. It's live only while the dealer
+    // is doing something itself — a hit/kill/walk-in (isSequencing/isBlocking) or an emote (a laugh) —
+    // and frozen otherwise, EVEN when the cards are being dealt. Without this, dealing a hand (a busy
+    // frame) woke a wounded dealer's ambient sparks + eye-flicker, then they refroze — the damage FX
+    // looked coupled to the deal. Now the diegetic damage plays only when the dealer is actually
+    // attacked. Outside saver the figure is always live (continuous ambient, as before). The `|| timestamp`
+    // guards the pre-first-choreography frames (title screen) where dealerFreezeAt_ is still 0.
+    const dealerChoreographing =
+      this.dealer_.isSequencing(timestamp) || this.dealer_.isEmoting(timestamp) || this.dealer_.isBlocking(timestamp)
+    if (!saver || dealerChoreographing) {
+      this.dealerFreezeAt_ = timestamp
+    }
+    const figureNow = this.dealerFreezeAt_ || timestamp
+    // Sparks (smoke/spark bursts) fire only while the dealer is under attack (a strike/hit/kill
+    // sequence), never during unrelated activity; outside saver they're the continuous health readout.
+    const drawSparks = !saver || this.dealer_.isSequencing(timestamp)
+    // Dirty-flag gating for the 'cast' + 'nexus' canvases (Stage B): keep them dirty while something
+    // on them is animating, else skip the redraw (their last frame persists). 'cast' = dealer/clown
+    // figures. In saver it's dirty only while the dealer choreographs (+ one clean redraw the frame
+    // AFTER, to settle the resting pose / clear sparks); outside saver its ambient flicker/sparks run
+    // every frame (isAnimating). 'nexus' = the device (hovers every frame outside saver → always dirty
+    // there; in saver dirty only when the laser/heal fires). play + overlay always redraw (field comment).
+    if (
+      dealerChoreographing ||
+      this.lastDealerChoreographing_ ||
+      this.clown_.present(timestamp) ||
+      // Normal mode keeps the ambient damage FX (eye-flicker <33% AND sparks/smoke <75%) running every
+      // frame — ambientDamageActive is the widest band, so it must be OR'd in (isAnimating alone only
+      // covers the <33% flicker + active sequences). Saver deliberately omits this: no idle ambient.
+      (!saver && (this.dealer_.isAnimating(timestamp) || this.dealer_.ambientDamageActive(timestamp))) ||
+      (!quiet && this.rgbActive_())
+    ) {
+      this.castDirty_ = true
+    }
+    this.lastDealerChoreographing_ = dealerChoreographing
+    if (this.nexus_.isAnimating(timestamp) || this.nexus_.isHealing(timestamp) || !saver) {
+      this.nexusDirty_ = true
+    }
+    this.updateClown_(timestamp) // state tracking on the live clock; the clown RENDER (in renderCast_) uses figureNow
+    if (this.castDirty_) {
+      this.renderCast_(canvas, layout, figureNow, drawSparks)
+      this.castDirty_ = false
+    }
+    this.renderPlay_(canvas, layout, frozenNow) // before renderOverlay_ (populates frameProjections_)
+    if (this.nexusDirty_) {
+      this.renderNexus_(canvas, layout, staticNow, timestamp)
+      this.nexusDirty_ = false
+    }
+    this.renderOverlay_(canvas, layout, staticNow, frozenNow, figureNow)
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter_(timestamp)
     // Fly-in score deltas reaching their rows: tick the held counter up by each + ping the tone.
@@ -2577,10 +2701,11 @@ class GameView {
       if (!this.pendingCeremony_ && !this.codaEntering_ && !this.pendingWindowOut_) {
         this.collectRound_ = null
       }
-      this.drawCards_(canvas, layout, timestamp)
-      this.drawChips_(canvas, layout, timestamp)
-      this.drawHearts_(canvas, layout, timestamp)
-      this.drawTokens_(canvas, layout, timestamp)
+      // Settle re-render (the state just changed: counts revealed, collectRound cleared). Repaint the
+      // FULL play + overlay groups (cast/nexus keep this frame's earlier paint). renderPlay_ before
+      // renderOverlay_ (frameProjections_).
+      this.renderPlay_(canvas, layout, timestamp)
+      this.renderOverlay_(canvas, layout, timestamp, timestamp, figureNow) // eye glow matches the (possibly frozen) figure
       this.syncOverlay_(timestamp)
 
       // No Deal button — once the deck is ready, deal the next hand automatically, UNLESS a
@@ -2778,6 +2903,11 @@ class GameView {
       this.sleepTimer_ = 0
     }
     this.lastBusyAt_ = now()
+    // Every action/interaction routes through here (run_/runCoda_ end here too), so a wake is the
+    // safety net that marks the dirty-flagged canvases for a redraw — covers any state change that
+    // isn't otherwise caught by the per-frame "active" checks (which handle ongoing animations).
+    this.castDirty_ = true
+    this.nexusDirty_ = true
     if (!this.raf_) {
       this.raf_ = requestAnimationFrame(this.frame_)
     }

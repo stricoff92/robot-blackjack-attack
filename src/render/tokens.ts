@@ -44,7 +44,7 @@ export function drawTokens(
   now: number,
   target: Point,
 ): void {
-  ctx.clearRect(0, 0, l.width, l.height)
+  // No clear — renderOverlay_ clears the shared 'overlay' canvas once before painting its members.
   const bursts = view.bursts(now)
   if (bursts.length === 0) {
     return

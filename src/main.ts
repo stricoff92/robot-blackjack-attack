@@ -79,7 +79,12 @@ onMuteChange(applyMute)
 // Battery saver renders the canvas at a lower dpr — must be set BEFORE mounting, so the layers size
 // and the offscreen sprite caches bake at the reduced scale (no live rebuild). Read after SDK init
 // so the stored preference (SDK.data) is available; a mid-session toggle applies on next launch.
-setSaverDpr(isBatterySaver())
+// DEV-only ?dpr=<n> overrides the saver dpr cap so the crispness/heat trade can be A/B'd on-device
+// (e.g. ?battery=on&dpr=1.0); compiled out of production, where the SAVER_MAX_DPR constant rules.
+const saverDprOverride = import.meta.env.DEV
+  ? Number(new URLSearchParams(window.location.search).get('dpr')) || undefined
+  : undefined
+setSaverDpr(isBatterySaver(), saverDprOverride)
 
 // Canvas-first UI (hybrid): the scene + cards render on the canvas layer, the
 // action buttons and HUD live in the stage overlay.

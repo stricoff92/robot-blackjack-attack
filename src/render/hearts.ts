@@ -104,7 +104,8 @@ export function heartSlotCenters(l: Layout): Point[] {
 // as a layer-wide globalAlpha that every chip / transient / beam then multiplies into, so they all
 // fade together; default 1 is the steady in-play look.
 export function drawHearts(ctx: CanvasRenderingContext2D, l: Layout, view: HeartsView, now: number, fade = 1): void {
-  ctx.clearRect(0, 0, l.width, l.height)
+  // No clear here — the caller (renderOverlay_) clears the shared 'overlay' canvas once before
+  // painting hearts + tokens + deltas + eye-glow/rays into it.
   if (fade <= 0) {
     return
   }

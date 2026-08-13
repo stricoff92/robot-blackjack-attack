@@ -12,17 +12,25 @@
 const MAX_DPR = 2
 
 // Battery saver renders at a LOWER dpr cap — the single biggest per-frame lever, since it cuts the
-// backing-store pixel count (and thus fill + composite cost) across EVERY layer and every draw. 1.5
-// is ~1.8× cheaper than 2× on a retina phone with minimal crispness loss (drop to 1 for ~4× / more
-// savings). Set once at startup via setSaverDpr() BEFORE the first render, so the offscreen sprite
-// caches (cards, holo-text) bake at this scale — no live rebuild; a mid-session toggle applies next launch.
-const SAVER_MAX_DPR = 1.5
+// backing-store pixel count (and thus raster + composite cost) across EVERY layer and every draw, and
+// on a 60Hz phone active-play heat is compositing-bound (a CPU profile shows the JS is negligible; the
+// cost is GPU pixel bandwidth). 1.25 is 1.44× cheaper than 1.5 (2.25× cheaper than 2×) with minimal
+// crispness loss on a 3× phone; drop toward 1 for ~4× vs full. Set once at startup via setSaverDpr()
+// BEFORE the first render, so the offscreen sprite caches (cards, holo-text) bake at this scale — no
+// live rebuild; a mid-session toggle applies next launch.
+const SAVER_MAX_DPR = 1.25
 let saverDpr = false
-export function setSaverDpr(on: boolean): void {
+let saverDprCap = SAVER_MAX_DPR
+// `capOverride` (DEV only, from main.ts's ?dpr=<n>) lets the crispness/heat trade be A/B'd on-device
+// without a rebuild; ignored (undefined) in production, where the constant above rules.
+export function setSaverDpr(on: boolean, capOverride?: number): void {
   saverDpr = on
+  if (capOverride && capOverride > 0) {
+    saverDprCap = Math.min(capOverride, MAX_DPR)
+  }
 }
 function dprCap(): number {
-  return saverDpr ? SAVER_MAX_DPR : MAX_DPR
+  return saverDpr ? saverDprCap : MAX_DPR
 }
 
 // The device-pixel ratio the layers actually render at (capped). Offscreen sprite

@@ -134,9 +134,9 @@ const MOUTH_TINTS: Record<VoiceEmote['tint'], { lit: string; wave: string }> = {
   hot: { lit: '#a65a4c', wave: '255, 138, 80' },
 }
 
-// Paint the dealer figure for this frame. Clears the layer first (it owns it).
+// Paint the dealer figure for this frame. The caller (renderCast_) clears the shared 'cast' canvas
+// once before painting dealer + clown into it, so this must NOT clear (it would wipe the clown).
 export function drawDealer(ctx: CanvasRenderingContext2D, layout: Layout, view: DealerView, now: number): void {
-  ctx.clearRect(0, 0, layout.width, layout.height)
   if (!view.alive(now)) {
     return // the empty beat between one dealer dying and the next walking in
   }

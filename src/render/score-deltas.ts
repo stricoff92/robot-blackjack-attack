@@ -41,7 +41,7 @@ export function drawScoreDeltas(
   now: number,
   target: Point,
 ): void {
-  ctx.clearRect(0, 0, layout.width, layout.height)
+  // No clear — renderOverlay_ clears the shared 'overlay' canvas once before painting its members.
   const flights = view.flights()
   if (flights.length === 0) {
     return

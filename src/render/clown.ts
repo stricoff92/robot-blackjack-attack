@@ -74,10 +74,10 @@ export function clownBox(l: Layout): ClownBox {
   }
 }
 
-// Paint the clown for this frame. Clears the layer first (it owns it). No-op when the clown
-// isn't present (dealer 6 not on screen, or its trailing walk-in hasn't started yet).
+// Paint the clown for this frame. The caller (renderCast_) clears the shared 'cast' canvas before
+// painting the dealer + clown, so this must NOT clear. No-op when the clown isn't present (dealer 6
+// not on screen, or its trailing walk-in hasn't started yet).
 export function drawClown(ctx: CanvasRenderingContext2D, layout: Layout, view: ClownView, now: number): void {
-  ctx.clearRect(0, 0, layout.width, layout.height)
   if (!view.present(now)) {
     return
   }
