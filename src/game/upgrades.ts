@@ -98,11 +98,14 @@ export function rulesForUpgrades(upgrades: RunUpgrades): RoundRules {
 // Choose-upgrade screen: display metadata, one entry per path. `tiers` holds the
 // effect text unlocked at each tier (index 0 = tier 1); the screen shows the next
 // unlocked tier's text and hides the button once the path is maxed. Colours are
-// three distinct hues, kept clear of the gold action / steel powerup buttons.
+// three distinct NEON hues (each with a matching outer-glow tint) that sit in the
+// game's world, kept clear of the gold action buttons and the teal-glass abilities.
 export interface UpgradePathInfo {
   path: UpgradePath
   name: string
   color: string
+  // Outer-glow tint (rgba) for the choose-upgrade button's neon halo, applied via --upgrade-glow.
+  glow: string
   tiers: [string, string, string]
 }
 
@@ -110,7 +113,8 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
   {
     path: 'antiDealer',
     name: 'Sabotage',
-    color: '#d8484b',
+    color: '#ff4d55',
+    glow: 'rgba(255, 77, 85, 0.5)',
     tiers: [
       '+20 energy on dealer 21',
       'Redeals hand on dealer 21',
@@ -120,7 +124,8 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
   {
     path: 'chipEco',
     name: 'Payout',
-    color: '#4a86d8',
+    color: '#3d9bff',
+    glow: 'rgba(61, 155, 255, 0.5)',
     tiers: [
       'Natural blackjack pays +50%',
       'Natural blackjack pays +100%',
@@ -130,7 +135,8 @@ export const UPGRADE_PATHS: readonly UpgradePathInfo[] = [
   {
     path: 'tokenEco',
     name: 'Energy',
-    color: '#49b26a',
+    color: '#3fd07a',
+    glow: 'rgba(63, 208, 122, 0.5)',
     tiers: [
       '+10% energy, +25% inflation resist',
       '+18% energy, +45% inflation resist',

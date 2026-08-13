@@ -28,7 +28,9 @@ export interface HeartsView {
   // The transient heart glyphs on the changing slots: a 'pop' scales up + fades out (a lost heart), a
   // 'heal' scales down + fades in (a gained heart). A pop is always one; a kill heals several at once.
   transients: { slot: number; kind: 'pop' | 'heal'; progress: number }[]
-  // The beam in flight (nexus lens → the first changing slot). null when no beam is drawing.
+  // The beam in flight (nexus lens → the changing slot). `slot` may be FRACTIONAL: on a multi-heart
+  // heal the head glides between adjacent sockets, so the renderer interpolates its target. null when
+  // no beam is drawing.
   beam: { slot: number; kind: 'pop' | 'heal'; travel: number; alpha: number } | null
   // The hot spark shower thrown off a struck chip on a loss, `progress` 0..1 over its life.
   // null except during the brief window just after the loss laser lands. Only a pop sparks.
@@ -134,10 +136,11 @@ export function drawHearts(ctx: CanvasRenderingContext2D, l: Layout, view: Heart
     }
   }
 
-  // The beam last, so it reads over the chips. It flies from the nexus lens to the changing slot.
+  // The beam last, so it reads over the chips. It flies from the nexus lens to the changing slot
+  // (a fractional slot glides the head between adjacent sockets on a multi-heart heal).
   if (view.beam) {
     const from = nexusUtilityLight(l, now)
-    const to = centers[view.beam.slot]
+    const to = slotPoint(centers, view.beam.slot)
     const scale = Math.min(l.width, l.height)
     // A source-over core FIRST: the beam crosses the player's cards, and the nexus beams composite
     // ADDITIVELY ('lighter') — which vanishes over the bright white card faces, making the beam look
@@ -414,6 +417,19 @@ function drawHeartSparks(ctx: CanvasRenderingContext2D, cx: number, cy: number, 
 function sparkHash(i: number, salt: number): number {
   const x = Math.sin(i * 127.1 + salt * 311.7) * 43758.5453
   return x - Math.floor(x)
+}
+
+// The point for a (possibly fractional) slot index: an integer index is that socket's centre; a
+// fractional one lerps between the two adjacent sockets, so the heal beam's head glides along the
+// row from one chip to the next. Clamped to the row so a stray index can't index out of bounds.
+function slotPoint(centers: Point[], slot: number): Point {
+  const last = centers.length - 1
+  const i0 = Math.max(0, Math.min(Math.floor(slot), last))
+  const i1 = Math.min(i0 + 1, last)
+  const f = clamp(slot - i0, 0, 1)
+  const a = centers[i0]
+  const b = centers[i1]
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f }
 }
 
 function clamp(value: number, min: number, max: number): number {

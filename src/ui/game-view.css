@@ -7,6 +7,38 @@
  *
  * Text layers are click-through; only buttons take input. */
 
+/* Design tokens — the overlay's single source of colour + type, sourced from the CANVAS world so
+ * the HTML chrome reads as one system with the game behind it (not an off-the-shelf palette). The
+ * teal triple is the SAME value as the nexus's ALIEN_ENERGY (src/render/nexus.ts), so overlay and
+ * canvas share one accent. Colours that repeat verbatim across rules live here once; the composite
+ * surfaces (glass/rim/glow) capture the teal-holo "nexus" signature so any element can join it. */
+:root {
+  /* Palette (from the canvas): teal-holo accent, warm chip gold, LED/laser red, count-holo cream. */
+  --teal-rgb: 116, 236, 224;          /* == nexus.ts ALIEN_ENERGY */
+  --teal-bright-rgb: 150, 246, 236;   /* lit / active teal */
+  --cream-rgb: 255, 236, 196;         /* warm count-holo (cards.ts COUNT_HOLO) */
+  --gold-hi: #dab55e;                 /* casino action gradient — top */
+  --gold-lo: #c9a24b;                 /*   … bottom */
+  --gold-lip: #8a6b32;                /* the juicy offset "lip" shadow */
+  --gold-rgb: 255, 226, 150;          /* chip foil glow (card-sprite GOLD_GLOW) */
+  --red-rgb: 255, 59, 59;             /* neon LED red (dealer.ts EYE) */
+  --price-red: #d23a3a;               /* cost / lock pill (original) */
+  --price-red-deep: #b3242b;          /* cost / lock pill — deeper, with an inner neon-red glow */
+  --bg-room: #0b0b12;                 /* page base (mirrors index.html) */
+
+  /* Composite surfaces / effects — the repeated teal-holo "nexus" signature. */
+  --glass: linear-gradient(rgba(14, 30, 34, 0.66), rgba(8, 18, 22, 0.66));
+  --rim-teal: 1.5px solid rgba(var(--teal-rgb), 0.55);
+  --glow-teal: 0 0 26px rgba(var(--teal-rgb), 0.28), inset 0 0 18px rgba(var(--teal-rgb), 0.08);
+  --glow-teal-sm: 0 0 8px rgba(var(--teal-rgb), 0.35), inset 0 0 6px rgba(var(--teal-rgb), 0.2);
+
+  /* Type: system sans for all body/label text; the Sixtyfour CRT display face for TITLES ONLY
+   * (registered on document.fonts by src/render/title-font.ts — falls back to system until it loads). */
+  --font-ui: system-ui, -apple-system, sans-serif;
+  --font-display: 'Sixtyfour', system-ui, sans-serif;
+  --title-glow: 0 0 12px rgba(var(--teal-rgb), 0.55);
+}
+
 /* Token bankroll counter: icon + count on a white pill, pinned to the very
  * top-left corner. */
 .hud-tokens {
@@ -18,10 +50,10 @@
   gap: 9px;
   padding: 5px 16px 2px 11px;
   border-radius: 9px;
-  background: #ffffff;
-  font: 800 32px system-ui, -apple-system, sans-serif;
-  color: #000000;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  background: #fff7e6;
+  font: 800 32px var(--font-ui);
+  color: #1a1206;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(var(--gold-rgb), 0.5);
   pointer-events: none;
 }
 
@@ -63,7 +95,7 @@
 
 .hud-points__count {
   display: inline-block;
-  font: 800 34px system-ui, -apple-system, sans-serif;
+  font: 800 34px var(--font-ui);
   color: #ffffff;
   /* No pill any more — a strong dark shadow keeps the white legible over any felt. */
   text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7), 0 0 3px rgba(0, 0, 0, 0.85);
@@ -86,7 +118,7 @@
  * nudges these. */
 .hud-points__delta {
   margin-top: 5px;
-  font: 800 28px system-ui, -apple-system, sans-serif;
+  font: 800 28px var(--font-ui);
   color: #ffffff;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.75), 0 0 3px rgba(0, 0, 0, 0.8);
   opacity: 0;
@@ -150,13 +182,13 @@
   justify-content: center;
   padding: 0;
   border-radius: 50%;
-  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  border: var(--rim-teal);
   background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
   color: rgba(196, 246, 241, 0.96);
   font: italic 700 21px ui-serif, Georgia, "Times New Roman", serif;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  box-shadow: var(--glow-teal-sm);
   pointer-events: auto;
   transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
   z-index: 4;
@@ -164,7 +196,7 @@
 
 .hud-info:hover {
   background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
-  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
 }
 
 .hud-info:active {
@@ -175,8 +207,47 @@
 .hud-info.is-active {
   color: #06232a;
   border-color: rgba(184, 250, 244, 0.9);
-  background: radial-gradient(circle at 35% 30%, rgba(150, 246, 236, 0.98), rgba(96, 220, 210, 0.98));
-  box-shadow: 0 0 16px rgba(116, 236, 224, 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
+  background: radial-gradient(circle at 35% 30%, rgba(var(--teal-bright-rgb), 0.98), rgba(96, 220, 210, 0.98));
+  box-shadow: 0 0 16px rgba(var(--teal-rgb), 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
+}
+
+/* Battery-saver toggle: a round twin of the info "i", stacked directly above it in the bottom-left
+ * utility corner. Pinned (position:absolute) so it's out of every layout flow; measureControlColumn_
+ * reserves for it so it never crowds the powerup column on short screens. Dim rim at rest; on/off is
+ * shown by the border + glow (an emoji glyph won't take a text colour). */
+.hud-battery {
+  position: absolute;
+  bottom: 60px; /* just above .hud-info (bottom 14 + 38 height + 8) */
+  left: 14px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  filter: saturate(0.6) opacity(0.75); /* muted when OFF */
+  box-shadow: var(--glow-teal-sm);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
+  z-index: 4;
+}
+.hud-battery:hover {
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+.hud-battery:active {
+  transform: scale(0.92);
+}
+/* Saver ON: brighten the glyph and ring it with a green power-glow. */
+.hud-battery.is-active {
+  filter: none;
+  border-color: rgba(120, 240, 170, 0.85);
+  box-shadow: 0 0 14px rgba(120, 240, 170, 0.55), inset 0 0 6px rgba(120, 240, 170, 0.25);
 }
 
 /* The help button: a "?" twin of the info button, but it rides at the BOTTOM of the powerup
@@ -197,13 +268,13 @@
   justify-content: center;
   padding: 0;
   border-radius: 50%;
-  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  border: var(--rim-teal);
   background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
   color: rgba(196, 246, 241, 0.96);
-  font: 800 18px system-ui, -apple-system, sans-serif;
+  font: 800 18px var(--font-ui);
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  box-shadow: var(--glow-teal-sm);
   pointer-events: auto;
   transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
 }
@@ -219,7 +290,7 @@
 
 .hud-powerups .hud-help:hover {
   background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
-  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
 }
 
 .hud-powerups .hud-help:active {
@@ -262,17 +333,19 @@
   gap: 12px;
   padding: 20px 22px;
   border-radius: 14px;
-  border: 1.5px solid rgba(116, 236, 224, 0.4);
-  background: linear-gradient(rgba(14, 30, 34, 0.66), rgba(8, 18, 22, 0.66));
-  box-shadow: 0 0 26px rgba(116, 236, 224, 0.28), inset 0 0 18px rgba(116, 236, 224, 0.08);
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
 }
 
 .help-panel__title {
   text-align: center;
-  font: 800 22px system-ui, -apple-system, sans-serif;
+  font: 800 22px var(--font-ui);
+  font-family: var(--font-display);
+  font-weight: 400; /* Sixtyfour ships one Regular master; faux-bold smears its pixel glyphs */
   letter-spacing: 0.14em;
   color: rgba(196, 246, 241, 0.98);
-  text-shadow: 0 0 12px rgba(116, 236, 224, 0.55);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55);
 }
 
 .help-panel__list {
@@ -291,19 +364,19 @@
 .help-panel__name {
   flex: 0 0 40%;
   max-width: 40%;
-  font: 700 15px system-ui, -apple-system, sans-serif;
-  color: rgba(150, 246, 236, 0.98);
+  font: 700 15px var(--font-ui);
+  color: rgba(var(--teal-bright-rgb), 0.98);
 }
 
 .help-panel__desc {
   flex: 1 1 auto;
-  font: 500 14px system-ui, -apple-system, sans-serif;
+  font: 500 14px var(--font-ui);
   color: rgba(224, 244, 242, 0.9);
 }
 
 .help-panel__hint {
   text-align: center;
-  font: 600 12px system-ui, -apple-system, sans-serif;
+  font: 600 12px var(--font-ui);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: rgba(150, 236, 226, 0.6);
@@ -347,16 +420,16 @@
   padding: 30px 26px;
   text-align: center;
   border-radius: 16px;
-  border: 1.5px solid rgba(116, 236, 224, 0.4);
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
   background: linear-gradient(rgba(16, 34, 39, 0.94), rgba(9, 20, 25, 0.94));
-  box-shadow: 0 0 30px rgba(116, 236, 224, 0.3), inset 0 0 20px rgba(116, 236, 224, 0.08);
+  box-shadow: 0 0 30px rgba(var(--teal-rgb), 0.3), inset 0 0 20px rgba(var(--teal-rgb), 0.08);
 }
 
 .viewport-guard__glyph {
   width: 72px;
   height: 72px;
-  color: rgba(150, 246, 236, 0.95);
-  filter: drop-shadow(0 0 10px rgba(116, 236, 224, 0.5));
+  color: rgba(var(--teal-bright-rgb), 0.95);
+  filter: drop-shadow(0 0 10px rgba(var(--teal-rgb), 0.5));
 }
 
 .viewport-guard__glyph svg {
@@ -365,14 +438,14 @@
 }
 
 .viewport-guard__title {
-  font: 800 22px system-ui, -apple-system, sans-serif;
+  font: 800 22px var(--font-ui);
   letter-spacing: 0.08em;
   color: rgba(200, 248, 243, 0.98);
-  text-shadow: 0 0 12px rgba(116, 236, 224, 0.5);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.5);
 }
 
 .viewport-guard__body {
-  font: 500 15px system-ui, -apple-system, sans-serif;
+  font: 500 15px var(--font-ui);
   line-height: 1.45;
   color: rgba(214, 240, 238, 0.86);
 }
@@ -386,7 +459,7 @@
   background: none;
   border: none;
   color: rgba(150, 236, 226, 0.55);
-  font: 600 12.5px system-ui, -apple-system, sans-serif;
+  font: 600 12.5px var(--font-ui);
   letter-spacing: 0.03em;
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -450,20 +523,20 @@
   justify-content: center;
   padding: 0;
   border-radius: 50%;
-  border: 1.5px solid rgba(116, 236, 224, 0.55);
+  border: var(--rim-teal);
   background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.9), rgba(12, 26, 30, 0.9));
   color: rgba(196, 246, 241, 0.96);
   font: 700 22px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 0 8px rgba(116, 236, 224, 0.35), inset 0 0 6px rgba(116, 236, 224, 0.2);
+  box-shadow: var(--glow-teal-sm);
   pointer-events: auto;
   transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.12s ease;
 }
 
 .hud-score-pager__btn:hover {
   background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
-  box-shadow: 0 0 12px rgba(116, 236, 224, 0.55), inset 0 0 8px rgba(116, 236, 224, 0.3);
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
 }
 
 .hud-score-pager__btn:active {
@@ -486,13 +559,13 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: rgba(116, 236, 224, 0.28);
+  background: rgba(var(--teal-rgb), 0.28);
   transition: background 0.12s ease, box-shadow 0.12s ease;
 }
 
 .hud-score-pager__dot.is-active {
-  background: rgba(150, 246, 236, 0.95);
-  box-shadow: 0 0 8px rgba(116, 236, 224, 0.7);
+  background: rgba(var(--teal-bright-rgb), 0.95);
+  box-shadow: 0 0 8px rgba(var(--teal-rgb), 0.7);
 }
 
 /* Only the game-over banner uses this now (the win/loss/push result is drawn on
@@ -504,7 +577,7 @@
   top: 46%;
   transform: translateY(-50%);
   text-align: center;
-  font: 700 24px system-ui, -apple-system, sans-serif;
+  font: 700 24px var(--font-ui);
   color: #ffffff;
   text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
   pointer-events: none;
@@ -531,9 +604,9 @@
   position: relative; /* anchors the absolutely-placed cost pill */
   pointer-events: auto;
   text-align: left;
-  font: 600 15px system-ui, -apple-system, sans-serif;
-  color: #1c2436;
-  background: linear-gradient(#c2ccdd, #9fadc6);
+  font: 600 15px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.96);
+  background: var(--glass);
   border: none;
   border-radius: 10px; /* the cost pill's bottom-right radius matches this */
   /* Tight top/side padding; the bottom reserves space for the cost pill tucked
@@ -541,12 +614,13 @@
   padding: 7px 11px 23px;
   min-height: 48px;
   cursor: pointer;
-  box-shadow: 0 2px 0 #5f6b82, 0 3px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
   transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
 
 .hud-powerups button:hover {
-  background: linear-gradient(#d2dbe9, #aeb9cf);
+  background: linear-gradient(rgba(22, 44, 50, 0.78), rgba(12, 26, 32, 0.78));
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.55), 0 0 14px rgba(var(--teal-rgb), 0.28), inset 0 0 12px rgba(var(--teal-rgb), 0.09);
 }
 
 /* The Banker coda's ability column — pinned top-LEFT, where the powerups sit in the main game
@@ -567,20 +641,21 @@
   position: relative; /* anchors the absolutely-placed cost pill */
   pointer-events: auto;
   text-align: left;
-  font: 600 15px system-ui, -apple-system, sans-serif;
-  color: #1c2436;
-  background: linear-gradient(#c2ccdd, #9fadc6);
+  font: 600 15px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.96);
+  background: var(--glass);
   border: none;
   border-radius: 10px;
   padding: 7px 11px 23px;
   min-width: 128px;
   min-height: 48px;
   cursor: pointer;
-  box-shadow: 0 2px 0 #5f6b82, 0 3px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
 }
 
 .hud-coda-powers button:hover {
-  background: linear-gradient(#d2dbe9, #aeb9cf);
+  background: linear-gradient(rgba(22, 44, 50, 0.78), rgba(12, 26, 32, 0.78));
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.55), 0 0 14px rgba(var(--teal-rgb), 0.28), inset 0 0 12px rgba(var(--teal-rgb), 0.09);
 }
 
 .hud-coda-powers button.is-hidden {
@@ -588,7 +663,7 @@
 }
 
 .hud-coda-powers button.is-active {
-  box-shadow: 0 0 0 2px #ffd34d, 0 2px 0 #5f6b82, 0 3px 10px rgba(255, 200, 70, 0.5);
+  box-shadow: 0 0 0 2px #ffd34d, 0 2px 0 rgba(0, 0, 0, 0.35), 0 3px 10px rgba(255, 200, 70, 0.5);
 }
 
 .power-label {
@@ -608,9 +683,10 @@
   /* Bottom-right corner matches the button's radius so the pill nests into it;
    * the two edges meeting the button's sides stay square for a flush tuck. */
   border-radius: 10px 0 10px 0;
-  background: #d23a3a;
-  color: #ffffff;
-  font: 700 13px system-ui, -apple-system, sans-serif;
+  background: var(--price-red-deep);
+  color: rgba(var(--cream-rgb), 0.98);
+  box-shadow: inset 0 0 6px rgba(var(--red-rgb), 0.35);
+  font: 700 13px var(--font-ui);
   line-height: 1;
 }
 
@@ -632,9 +708,10 @@
   min-width: 22px;
   padding: 3px 7px;
   border-radius: 10px 0 10px 0; /* match the cost pill's tuck */
-  background: #d23a3a;
-  color: #ffffff;
-  font: 800 15px system-ui, -apple-system, sans-serif;
+  background: var(--price-red-deep);
+  color: rgba(var(--cream-rgb), 0.98);
+  box-shadow: inset 0 0 6px rgba(var(--red-rgb), 0.35);
+  font: 800 15px var(--font-ui);
   line-height: 1;
 }
 
@@ -661,21 +738,22 @@
 
 .hud-actions button {
   position: relative; /* anchors the absolutely-placed "not enough chips" badge */
-  font: 700 16px system-ui, -apple-system, sans-serif;
+  font: 700 16px var(--font-ui);
   color: #2f2013;
-  background: linear-gradient(#dab55e, #c9a24b);
+  background: linear-gradient(var(--gold-hi), var(--gold-lo));
   border: none;
   border-radius: 12px;
   padding: 8px 20px;
   min-width: 72px;
   min-height: 40px;
   cursor: pointer;
-  box-shadow: 0 3px 0 #8a6b32, 0 4px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 14px rgba(var(--teal-rgb), 0.2);
   transition: transform 0.05s ease, box-shadow 0.05s ease;
 }
 
 .hud-actions button:hover {
   background: linear-gradient(#e6c473, #d4ad57);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
 }
 
 /* The Next hand button is shown on its own between hands — make it a wide, easy CTA. */
@@ -714,7 +792,8 @@ button.is-hidden,
  * re-added) by revealOpeningButtons, so only the opening sequence is gated. */
 .hud-powerups.opening-hidden,
 .hud-actions.opening-hidden,
-.hud-info.opening-hidden {
+.hud-info.opening-hidden,
+.hud-battery.opening-hidden {
   opacity: 0;
   pointer-events: none;
 }
@@ -814,9 +893,12 @@ button.is-hidden,
 }
 
 .upgrade-panel__title {
-  font: 800 27px system-ui, -apple-system, sans-serif;
+  font: 800 27px var(--font-ui);
+  font-family: var(--font-display);
+  font-weight: 400;
   color: #ffffff;
   letter-spacing: 0.02em;
+  text-transform: uppercase;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
   transition: opacity 350ms ease;
 }
@@ -832,6 +914,7 @@ button.is-hidden,
 
 .upgrade-btn {
   --upgrade-color: #888888;
+  --upgrade-glow: rgba(255, 255, 255, 0.15); /* per-path neon halo; set from JS (buildUpgradePanel_) */
   position: relative; /* anchors the top-right tier badge */
   display: flex;
   flex-direction: column;
@@ -848,13 +931,13 @@ button.is-hidden,
   /* A light-to-dark sheen layered over the solid path colour gives depth without
    * needing colour math — portable across the CrazyGames device range. */
   background: linear-gradient(158deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.26)), var(--upgrade-color);
-  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.38), 0 9px 22px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.38), 0 9px 22px rgba(0, 0, 0, 0.5), 0 0 20px var(--upgrade-glow);
   transition: transform 0.06s ease, box-shadow 0.06s ease;
 }
 
 .upgrade-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.38), 0 13px 28px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.38), 0 13px 28px rgba(0, 0, 0, 0.55), 0 0 30px var(--upgrade-glow);
 }
 
 .upgrade-btn:active {
@@ -874,7 +957,7 @@ button.is-hidden,
 }
 
 .upgrade-btn__effect {
-  font: 600 15px system-ui, -apple-system, sans-serif;
+  font: 600 15px var(--font-ui);
   line-height: 1.32;
   color: rgba(255, 255, 255, 0.97);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
@@ -894,7 +977,7 @@ button.is-hidden,
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.32);
   border: 1.5px solid rgba(255, 255, 255, 0.55);
-  font: 800 14px system-ui, -apple-system, sans-serif;
+  font: 800 14px var(--font-ui);
   color: #ffffff;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
@@ -944,6 +1027,14 @@ button.is-hidden,
     width: 32px;
     height: 32px;
     font-size: 18px;
+  }
+
+  .hud-battery {
+    bottom: 48px; /* above the compact .hud-info (10 + 32 + 6) */
+    left: 10px;
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
   }
 
   .hud-powerups .hud-help {
@@ -1158,19 +1249,20 @@ button.is-hidden,
   flex-direction: column;
   align-items: center;
   justify-content: center; /* centre the label(s) within the shared height */
-  font: 700 16px system-ui, -apple-system, sans-serif;
+  font: 700 16px var(--font-ui);
   color: #2f2013;
-  background: linear-gradient(#dab55e, #c9a24b);
+  background: linear-gradient(var(--gold-hi), var(--gold-lo));
   border: none;
   border-radius: 12px;
   padding: 8px 22px;
   min-width: 120px;
   cursor: pointer;
-  box-shadow: 0 3px 0 #8a6b32, 0 4px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 14px rgba(var(--teal-rgb), 0.2);
   transition: transform 0.05s ease, background 0.15s ease;
 }
 .title-menu button:hover {
   background: linear-gradient(#e6c473, #d4ad57);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
 }
 .title-menu button:active {
   transform: translateY(2px);
@@ -1178,18 +1270,47 @@ button.is-hidden,
 }
 .title-menu .title-sub {
   display: block;
-  font: 600 11px system-ui, -apple-system, sans-serif;
+  font: 600 11px var(--font-ui);
   opacity: 0.75;
   margin-top: 2px;
 }
 /* New game is the quieter, secondary choice. */
 .title-menu .title-btn-new {
-  color: #d7d2ea;
-  background: linear-gradient(#3a3550, #2c2942);
-  box-shadow: 0 3px 0 #1c1930, 0 4px 8px rgba(0, 0, 0, 0.4);
+  color: rgba(var(--cream-rgb), 0.92);
+  background: var(--glass);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.4), 0 0 12px rgba(var(--teal-rgb), 0.18);
 }
 .title-menu .title-btn-new:hover {
-  background: linear-gradient(#464060, #35314e);
+  background: linear-gradient(rgba(22, 44, 50, 0.72), rgba(12, 26, 32, 0.72));
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.6), 0 0 16px rgba(var(--teal-rgb), 0.3);
+}
+
+/* Battery-saver toggle on the title / tap-to-start screen — a quiet pill pinned top-centre (its own
+ * container sibling, so it dodges the .title-menu button chrome and the full-screen tap catcher).
+ * The in-game HUD has its own round button; this only shows before the run starts. */
+.title-saver {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21; /* above the tap catcher / title menu (both z-index 20) */
+  font: 700 12px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.82);
+  background: var(--glass);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  border-radius: 999px;
+  padding: 7px 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: inset 0 0 0 1px rgba(var(--teal-rgb), 0.15);
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+.title-saver.is-on {
+  color: #06232a;
+  background: linear-gradient(rgba(var(--teal-bright-rgb), 0.95), rgba(96, 220, 210, 0.95));
+  border-color: rgba(184, 250, 244, 0.85);
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.5);
 }
 
 /* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action

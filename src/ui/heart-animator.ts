@@ -1,10 +1,11 @@
 // Timing for the player hit-point (heart-chip) VFX. Owns the pop-on-loss and heal-on-win transition
 // so render/hearts.ts stays pure geometry. A pop is always one chip; a heal is one or more (beating a
-// dealer heals several at once), each socket filling in a staggered cascade. Everything is a pure
-// function of `now` (absolute performance.now() stamps) so a frame just samples view(now); no
-// per-frame mutation, no accumulated drift.
+// dealer restores up to two), the beam reviving the sockets ONE AT A TIME — fill a chip, glide to the
+// next, fill that. Everything is a pure function of `now` (absolute performance.now() stamps) so a
+// frame just samples view(now); no per-frame mutation, no accumulated drift.
 
 import type { HeartsView } from '../render/hearts'
+import { smoothEnd2 } from '../render/easing'
 import { MAX_HEARTS } from '../game/run'
 
 // A loss: the red laser reaches the chip fast, then the heart is blown off.
@@ -14,12 +15,16 @@ const POP_GLYPH_MS = 320
 // The hot spark shower off the struck chip, timed from the laser's contact (= glyphStart). Outlasts
 // the glyph so the flecks are still raining down as the heart finishes popping off.
 const POP_SPARK_MS = 430
-// A heal: the restorative band drifts across slower, then a heart drops into the socket.
+// A heal: the restorative band drifts across slower, then a heart drops into the socket. The beam
+// holds on the socket through the fill and only eases off (HEAL_BEAM_FADE) once the chip has
+// committed to full colour, so the beam is still landing as the socket lights up.
 const HEAL_BEAM_TRAVEL = 300
-const HEAL_BEAM_FADE = 260
+const HEAL_BEAM_FADE = 300
 const HEAL_GLYPH_MS = 380
-// Delay between successive hearts filling in on a multi-heart heal (a kill), so they cascade.
-const HEAL_STAGGER = 110
+// A multi-heart heal (a kill restores up to two) revives the sockets ONE AT A TIME: the beam fills
+// one chip, then its head glides along the row to the next and fills that one. HEAL_SWEEP_MS is that
+// glide between adjacent sockets; a heart's full cycle (fill → glide to the next) is GLYPH + SWEEP.
+const HEAL_SWEEP_MS = 240
 
 interface Transition {
   kind: 'pop' | 'heal'
@@ -28,10 +33,10 @@ interface Transition {
   slots: number[] // the row indices that change (the popped slot, or each newly filled slot)
   beamStart: number
   beamEnd: number
-  glyphStart: number // = beam contact; the first glyph begins here
-  glyphStagger: number // per-slot delay for a multi-heart heal (0 for a pop)
+  glyphStart: number // = the first beam contact; the first glyph begins here
+  glyphStep: number // heal: a heart's full cycle (fill + glide to the next socket); 0 for a pop
   glyphMs: number
-  commitAt: number // when `filled` flips from `from` to `to`
+  commitAt: number // pop: when the chip empties; heal: when the LAST socket has filled
   end: number // when the whole effect (glyphs + beam) is done
 }
 
@@ -67,7 +72,7 @@ export class HeartAnimation {
       beamStart: startAt,
       beamEnd: startAt + POP_BEAM_TRAVEL + POP_BEAM_FADE,
       glyphStart,
-      glyphStagger: 0,
+      glyphStep: 0,
       glyphMs: POP_GLYPH_MS,
       commitAt: glyphStart, // the chip empties the instant the heart is blown off
       end: Math.max(glyphStart + POP_GLYPH_MS, glyphStart + POP_SPARK_MS, startAt + POP_BEAM_TRAVEL + POP_BEAM_FADE),
@@ -75,7 +80,8 @@ export class HeartAnimation {
   }
 
   // Schedule the `count` hearts gained on a qualifying win: a green beam lands on the first empty
-  // socket at `startAt`, then hearts fade in one-by-one. Clamped to MAX_HEARTS; no-op at full.
+  // socket at `startAt` and fills it, then glides along the row to the next and fills that, one after
+  // another. Clamped to MAX_HEARTS; no-op at full.
   heal(count: number, startAt: number): void {
     this.settle_()
     const from = this.committed_
@@ -87,20 +93,26 @@ export class HeartAnimation {
     for (let i = from; i < to; i += 1) {
       slots.push(i)
     }
+    // Sockets revive one at a time: contact_j = travel + j·step; the beam holds on socket j for the
+    // fill (GLYPH), then glides (SWEEP) to socket j+1. Each socket commits when ITS OWN fill ends, so
+    // the first chip is already lit before the second one starts. After the last fill the beam eases
+    // off over HEAL_BEAM_FADE — its exit is the last thing to finish, not the first.
     const glyphStart = startAt + HEAL_BEAM_TRAVEL
-    const lastGlyphEnd = glyphStart + (slots.length - 1) * HEAL_STAGGER + HEAL_GLYPH_MS
+    const glyphStep = HEAL_GLYPH_MS + HEAL_SWEEP_MS
+    const lastCommit = glyphStart + (slots.length - 1) * glyphStep + HEAL_GLYPH_MS
+    const beamEnd = lastCommit + HEAL_BEAM_FADE
     this.t_ = {
       kind: 'heal',
       from,
       to,
       slots,
       beamStart: startAt,
-      beamEnd: startAt + HEAL_BEAM_TRAVEL + HEAL_BEAM_FADE,
+      beamEnd,
       glyphStart,
-      glyphStagger: HEAL_STAGGER,
+      glyphStep,
       glyphMs: HEAL_GLYPH_MS,
-      commitAt: lastGlyphEnd, // the sockets stay empty until the incoming hearts have all faded in
-      end: Math.max(lastGlyphEnd, startAt + HEAL_BEAM_TRAVEL + HEAL_BEAM_FADE),
+      commitAt: lastCommit,
+      end: beamEnd, // the beam's ease-off outlasts the fill
     }
   }
 
@@ -122,32 +134,37 @@ export class HeartAnimation {
       return { filled, max: MAX_HEARTS, transients: [], beam: null, spark: null }
     }
 
-    const filled = now < t.commitAt ? t.from : t.to
-
     const transients: HeartsView['transients'] = []
+    let filled: number
+    let beam: HeartsView['beam'] = null
+
     if (t.kind === 'pop') {
+      filled = now < t.commitAt ? t.from : t.to
       // The departing heart overlays its (already-empty) slot for its fade-out window.
       if (now >= t.glyphStart && now < t.glyphStart + t.glyphMs) {
         transients.push({ slot: t.slots[0], kind: 'pop', progress: (now - t.glyphStart) / t.glyphMs })
       }
-    } else if (now < t.commitAt) {
-      // Each incoming heart fades in on its still-empty socket and holds full until the count commits.
+      if (now >= t.beamStart && now < t.beamEnd) {
+        const dt = now - t.beamStart
+        const travel = clamp01(dt / POP_BEAM_TRAVEL)
+        // The loss laser retracts right after it strikes: full through the travel, then a quick fade.
+        const alpha = dt < POP_BEAM_TRAVEL ? 1 : 1 - clamp01((dt - POP_BEAM_TRAVEL) / POP_BEAM_FADE)
+        beam = { slot: t.slots[0], kind: 'pop', travel, alpha }
+      }
+    } else {
+      // Heal: each socket commits when its OWN fill finishes, so `filled` climbs one chip at a time —
+      // the first is already solid before the beam glides on to fill the second.
+      filled = t.from
       for (let i = 0; i < t.slots.length; i += 1) {
-        const gs = t.glyphStart + i * t.glyphStagger
-        if (now >= gs) {
-          transients.push({ slot: t.slots[i], kind: 'heal', progress: clamp01((now - gs) / t.glyphMs) })
+        const contact = t.glyphStart + i * t.glyphStep
+        if (now >= contact + t.glyphMs) {
+          filled += 1 // this socket has fully filled and committed
+        } else if (now >= contact) {
+          // Mid-fill: the incoming heart rides as a fading-in glyph on its still-empty socket.
+          transients.push({ slot: t.slots[i], kind: 'heal', progress: clamp01((now - contact) / t.glyphMs) })
         }
       }
-    }
-
-    let beam: HeartsView['beam'] = null
-    if (now >= t.beamStart && now < t.beamEnd) {
-      const travelMs = t.kind === 'pop' ? POP_BEAM_TRAVEL : HEAL_BEAM_TRAVEL
-      const fadeMs = t.kind === 'pop' ? POP_BEAM_FADE : HEAL_BEAM_FADE
-      const dt = now - t.beamStart
-      const travel = clamp01(dt / travelMs)
-      const alpha = dt < travelMs ? 1 : 1 - clamp01((dt - travelMs) / fadeMs)
-      beam = { slot: t.slots[0], kind: t.kind, travel, alpha }
+      beam = this.healBeam_(t, now)
     }
 
     // The spark shower off the struck chip: only on a loss, from the laser's contact for POP_SPARK_MS.
@@ -157,6 +174,36 @@ export class HeartAnimation {
     }
 
     return { filled, max: MAX_HEARTS, transients, beam, spark }
+  }
+
+  // The heal beam's head as it revives sockets one at a time: it launches from the nexus to the
+  // first socket, holds while that chip fills, glides to the next, and once the last chip commits
+  // eases off in place. `slot` is a possibly-fractional row position the renderer interpolates so the
+  // head glides smoothly between adjacent sockets.
+  private healBeam_(t: Transition, now: number): HeartsView['beam'] {
+    if (now < t.beamStart || now >= t.beamEnd) {
+      return null
+    }
+    // Launch: nexus → the first socket.
+    if (now < t.glyphStart) {
+      const travel = clamp01((now - t.beamStart) / HEAL_BEAM_TRAVEL)
+      return { slot: t.slots[0], kind: 'heal', travel, alpha: 1 }
+    }
+    const last = t.slots.length - 1
+    const lastCommit = t.glyphStart + last * t.glyphStep + t.glyphMs
+    // Ease off in place once the final chip has regained its colour (smoothEnd, so it settles out
+    // instead of snapping) — the beam is still present as that last socket lights up.
+    if (now >= lastCommit) {
+      const alpha = 1 - smoothEnd2(clamp01((now - lastCommit) / HEAL_BEAM_FADE))
+      return { slot: t.slots[last], kind: 'heal', travel: 1, alpha }
+    }
+    // Otherwise the head is fully extended (travel 1), either holding on socket j while it fills or
+    // gliding from socket j toward j+1. Slots are consecutive, so slots[j] + fraction lands on j+1.
+    const rel = now - t.glyphStart
+    const j = Math.floor(rel / t.glyphStep)
+    const within = rel - j * t.glyphStep
+    const slot = within < t.glyphMs ? t.slots[j] : t.slots[j] + clamp01((within - t.glyphMs) / HEAL_SWEEP_MS)
+    return { slot, kind: 'heal', travel: 1, alpha: 1 }
   }
 
   // Commit an in-flight transition's end state so the next pop/heal builds off the right count.

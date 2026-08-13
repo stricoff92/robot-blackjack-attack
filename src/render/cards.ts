@@ -677,11 +677,22 @@ export function drawAnalysis(ctx: CanvasRenderingContext2D, l: Layout, a: Analys
   ]
 }
 
+// Battery saver freezes the flicker (setHoloFlickerStatic) so the holo readouts don't pulse every
+// frame while the loop happens to be running for another reason (a damage pulse, active play). The
+// text just reads as a steady, crisp projection instead — no per-frame alpha change.
+let holoFlickerStatic = false
+export function setHoloFlickerStatic(on: boolean): void {
+  holoFlickerStatic = on
+}
+
 // A GENTLE opacity flicker shared by ALL the holo-projected readouts — the analysis
 // rows AND the hand counts AND the chip counts — so they pulse together like one
 // (slightly unstable) projection. Kept subtle, ~0.72..1.0, so it reads as a live
 // projection without hurting legibility. Deterministic in `now` (no Math.random).
 export function holoFlicker(now: number): number {
+  if (holoFlickerStatic) {
+    return 1 // steady projection in battery saver — the readouts never flicker
+  }
   const waver = 0.6 * Math.sin(now / 70) + 0.4 * Math.sin(now / 26 + 1.3) // [-1, 1]
   return 0.86 + 0.14 * waver // ~0.72 .. 1.0
 }

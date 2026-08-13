@@ -299,6 +299,27 @@ export class DealerAnimation implements DealerView, StrikeView {
     return this.damageIntensity_(now) > 0
   }
 
+  // The TRANSIENT choreography only (hit/kill/spawn/leave) — no low-health ambient. Battery
+  // saver treats this as real work that must keep the loop at full speed, while the ambient
+  // damage FX below is instead pulsed on a duty cycle. (isAnimating() conflates the two.)
+  isSequencing(now: number): boolean {
+    return this.mode_ !== 'none' && now < this.seqEnd_
+  }
+
+  // True while the mouth is mid-emote (an evil laugh / growl). This animation is driven purely
+  // by the voice envelope and is NOT reported by isAnimating() (see emoteStart_ note) — battery
+  // saver queries it so it never parks the loop and freezes the mouth mid-laugh.
+  isEmoting(now: number): boolean {
+    return this.voice(now) !== null
+  }
+
+  // True while the diegetic damage FX (sparks/smoke/tremor/eye-flicker) are firing — health
+  // below FX_THRESHOLD (75%), the widest of the damage bands. A persistent per-frame ambient:
+  // battery saver keeps it visibly alive by pulsing the loop rather than parking or running 60fps.
+  ambientDamageActive(now: number): boolean {
+    return this.damageFxIntensity_(now) > 0
+  }
+
   // True across the whole kill, so buttons stay disabled for the entire death →
   // walk-in → recharge pause (a plain hit never blocks). A death-only kill blocks
   // just through the death — the deferred walk-in re-blocks later on its own.

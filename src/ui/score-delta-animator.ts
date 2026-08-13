@@ -41,6 +41,19 @@ export class ScoreDeltaFly {
     return this.clearAt_ === 0 || now < this.clearAt_ + DELTA_FADE_MS
   }
 
+  // Whether any delta is actually MOVING (arcing in, or fading out on clear) — as opposed to landed
+  // and merely HELD on screen. Battery saver keys off this: a held list is static, so it must NOT
+  // keep the loop awake (isAnimating stays true through the whole hold, which would prevent parking).
+  isMoving(now: number): boolean {
+    if (this.flights_.length === 0) {
+      return false
+    }
+    if (now < this.lastLandAt()) {
+      return true // at least one "+N" still arcing to the counter
+    }
+    return this.clearAt_ > 0 && now < this.clearAt_ + DELTA_FADE_MS // fading out after Next hand
+  }
+
   // Every flight that hasn't landed yet (before its landAt) — the consent gate waits these out so the
   // last "+N" reaches the counter before the next hand can clear the list.
   lastLandAt(): number {

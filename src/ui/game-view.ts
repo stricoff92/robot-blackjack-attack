@@ -10,12 +10,13 @@ import { handReward } from '../game/rewards'
 import { dealerHardHitCeiling, DESTROY_TOKEN, getShift, maxHitsFor, powerupCost, SABOTAGE_DEALER21_ENERGY, tokenMultiplier, TOTAL_DEALERS, winPointDeltas } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
+import { isBatterySaver, setBatterySaver } from '../game/power-mode'
 import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
 import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../platform/crazygames'
 import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import type { LayeredCanvas } from '../render/canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, setHoloFlickerStatic, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { drawDamageFx } from '../render/damage-fx'
 import { abbreviateCount } from '../render/format'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
@@ -233,6 +234,22 @@ const END_SHRED_GAP = 200
 // scales up) before the pick commits. Kept in sync with .upgrade-panel.is-dismissing.
 const UPGRADE_DISMISS_MS = 350
 
+// --- Battery saver (ui/game-view drives the loop; pref lives in game/power-mode) --------------
+// When battery saver is on the render loop FULLY PARKS once the scene has been visually quiet
+// (nothing moving) for SETTLE_GRACE_MS — instead of running the perpetual ambient (nexus hover,
+// holo, damage sparks) at 60fps forever. Even a damaged dealer parks: its idle sparks are
+// suppressed (a static figure) and sparks only fly during hits/strikes (those are busy → full
+// speed). The grace period is deliberately generous so every short cosmetic fade
+// (summary/spec/coda-stake/hearts/tap, the dealer laugh) finishes before we park, WITHOUT the loop
+// needing to enumerate each one. While parked we still re-check at WATCHDOG_MS (~1fps — negligible
+// battery) so anything the "busy" check missed self-heals within a second rather than freezing.
+const SETTLE_GRACE_MS = 1200
+const WATCHDOG_MS = 1000
+// The fixed clock the ambient world (nexus device, holo rays, holo glow) renders at while battery
+// saver is on — so it's a STATIC object that never hovers or skips. Any constant works; this phase
+// sits the nexus at a neutral mid-hover.
+const SAVER_STATIC_NOW = 0
+
 interface ButtonDef {
   key: string
   label: string
@@ -336,6 +353,16 @@ class GameView {
   private pointsRolling_ = false
   private readonly stage_: Stage
   private raf_ = 0
+  // Battery saver: whether the mode is active (read once from the pref, refreshed on toggle),
+  // a shared setTimeout handle for the pulse/watchdog sleep (0 = none), and the timestamp of the
+  // last frame that had real motion — the grace clock the park decision keys off. See frame_.
+  private batterySaver_ = isBatterySaver()
+  private sleepTimer_ = 0
+  private lastBusyAt_ = 0
+  // A recent, valid timestamp captured the instant the scene goes quiet — battery saver freezes the
+  // start-stamped draws (cards, dealer figure) at THIS while idle, so they hold their real resting
+  // pose (drawing them at an absolute constant would place them before their walk-in). See frame_.
+  private freezeAt_ = 0
   private lastAnimating_ = false
   // Edge tracker for the dealer-death pause: when it clears, buttons re-enable.
   private lastDealerBlocking_ = false
@@ -603,6 +630,10 @@ class GameView {
   private lastPagerPos_ = ''
   // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
   private infoBtnEl_!: HTMLButtonElement
+  // The battery-saver toggle: a round HUD button stacked above the info button, plus (when the
+  // title / tap-to-start screen is up) a matching pill. Both flip the render loop's park mode.
+  private batteryBtnEl_!: HTMLButtonElement
+  private saverToggleEl_: HTMLButtonElement | null = null
   // The help button (an "H", styled like the info button) + the full-screen ability-guide
   // modal it opens. A tap anywhere on the modal closes it.
   private helpBtnEl_!: HTMLButtonElement
@@ -666,6 +697,25 @@ class GameView {
       // modal shows above everything — including the title menu — regardless of the overlay's opacity.
       this.viewportGuard_ = new ViewportGuard(this.stage_.container, () => this.measureControlColumn_())
     }
+    setHoloFlickerStatic(this.batterySaver_) // no holo-readout flicker while saver is on
+    // Stop repainting while the tab is hidden (backgrounded / screen off) — pure wasted battery
+    // otherwise, since the loop doesn't park on its own. Mirrors the audio context's visibility
+    // suspend (audio/context.ts); unconditional, not gated by battery saver. On return, ensureLoop_
+    // restarts from a fresh frame.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        if (this.raf_) {
+          cancelAnimationFrame(this.raf_)
+          this.raf_ = 0
+        }
+        if (this.sleepTimer_) {
+          clearTimeout(this.sleepTimer_)
+          this.sleepTimer_ = 0
+        }
+      } else {
+        this.ensureLoop_()
+      }
+    })
     this.ensureLoop_() // drive the opening ceremony, then auto-deal the first hand
   }
 
@@ -704,6 +754,7 @@ class GameView {
     this.powersEl_.classList.add('opening-hidden')
     this.actionsEl_.classList.add('opening-hidden')
     this.infoBtnEl_.classList.add('opening-hidden')
+    this.batteryBtnEl_.classList.add('opening-hidden')
     if (this.resumableRun_) {
       this.buildTitleMenu_(this.resumableRun_)
     } else {
@@ -723,10 +774,14 @@ class GameView {
       // Record the tap; the frame loop fades "TAP TO START" out over TAP_FADE_MS, then flips
       // `started` (releasing the walk-in + deal + HUD). Audio unlocks now via the window listeners.
       this.tapAt_ = now()
+      this.ensureLoop_() // battery saver may have parked the idle title screen — wake it to start
       window.removeEventListener('keydown', tap)
     }
     catcher.addEventListener('pointerdown', tap)
     window.addEventListener('keydown', tap)
+    // The battery-saver toggle sits above the catcher (a sibling, its own taps stopPropagation so
+    // they don't also fire tap-to-start). Removed when the intro catcher is (frame_ start block).
+    this.stage_.container.appendChild(this.buildSaverToggle_())
   }
 
   // A saved run exists: offer CONTINUE (resume it) or NEW GAME (wipe it, start fresh). The wordmark
@@ -746,6 +801,9 @@ class GameView {
     fresh.addEventListener('click', () => this.beginFromTitle_('new'))
     menu.append(cont, fresh)
     this.stage_.container.appendChild(menu)
+    // The battery-saver toggle rides the top-centre of the title screen (a sibling of the menu, not
+    // inside it — so it keeps its own pill styling and is removed alongside the menu on start).
+    this.stage_.container.appendChild(this.buildSaverToggle_())
   }
 
   // Leave the title screen: CONTINUE adopts the saved session (re-seeding the visuals for its
@@ -777,6 +835,8 @@ class GameView {
     this.resumableRun_ = null
     this.titleMenu_?.remove()
     this.titleMenu_ = null
+    this.saverToggleEl_?.remove()
+    this.saverToggleEl_ = null
     // Resume entry states (after the resolved→next advance above):
     //  • 'playing' / 'coda' — a hand/coda is mid-action and can't be re-dealt, so snap to a settled,
     //    ceremony-free scene (resumeSettled_).
@@ -785,10 +845,11 @@ class GameView {
     //    for choosing-upgrade). This reuses the real deal trigger — resumeSettled_ never sets
     //    dealAfter_, so a pick there would leave the next hand un-dealt.
     if (resumed && (this.state_.phase === 'playing' || this.state_.phase === 'coda')) {
-      this.resumeSettled_()
+      this.resumeSettled_() // already calls ensureLoop_
       return
     }
     this.tapAt_ = now()
+    this.ensureLoop_() // battery saver may have parked the idle title menu — wake it to start
   }
 
   // Resume a saved run at a MID-ACTION phase — 'playing' (a hand in progress) or the coda — where
@@ -857,8 +918,8 @@ class GameView {
     this.drawChips_(canvas, layout, t)
     this.drawHearts_(canvas, layout, t)
     this.drawTokens_(canvas, layout, t)
-    this.drawMask_(canvas, layout, t)
-    this.drawFx_(canvas, layout, t)
+    this.drawMask_(canvas, layout, t, t)
+    this.drawFx_(canvas, layout, t, t)
     this.lastAnimating_ = false
     this.syncOverlay_(t)
     this.ensureLoop_()
@@ -904,6 +965,7 @@ class GameView {
     this.powersEl_.classList.remove('opening-hidden')
     this.actionsEl_.classList.remove('opening-hidden')
     this.infoBtnEl_.classList.remove('opening-hidden')
+    this.batteryBtnEl_.classList.remove('opening-hidden')
     // The full column (now including the help button, hidden during the intro) is live — re-measure
     // so the guard trips on a too-short screen even if the player never resizes after the deal.
     this.viewportGuard_?.evaluate()
@@ -956,8 +1018,8 @@ class GameView {
     this.drawChips_(canvas, layout, t)
     this.drawHearts_(canvas, layout, t)
     this.drawTokens_(canvas, layout, t)
-    this.drawMask_(canvas, layout, t)
-    this.drawFx_(canvas, layout, t)
+    this.drawMask_(canvas, layout, t, t)
+    this.drawFx_(canvas, layout, t, t)
     // Re-anchor the score pager to the new layout (it reads band coords from the current size).
     this.syncScorePager_()
     // A resize / orientation change reaches here via the stage ResizeObserver — re-check whether the
@@ -992,11 +1054,21 @@ class GameView {
     // inset. (Roomy 38px buttons / compact 32px, per game-view.css .hud-help + .hud-info.)
     const HELP_BLOCK = compact ? 40 : 48
     const INFO_BLOCK = compact ? 42 : 52
+    const BATTERY_BLOCK = compact ? 40 : 46 // battery toggle height + its gap above the info button
     const GAP = 12 // clear air we insist on between the column's bottom and the info button
     const help = this.helpBtnEl_.getBoundingClientRect()
     const helpReserve = help.height > 0 ? 0 : HELP_BLOCK // 0 when it's already in rect.bottom
+    // The battery toggle stacks directly above the info button, so the column must clear whichever
+    // sits higher — reserve from the top of that stack down to the screen bottom.
     const info = this.infoBtnEl_.getBoundingClientRect()
-    const infoReserve = info.height > 0 ? Math.max(0, window.innerHeight - info.top) : INFO_BLOCK
+    const battery = this.batteryBtnEl_.getBoundingClientRect()
+    const stackTop = Math.min(
+      info.height > 0 ? info.top : Infinity,
+      battery.height > 0 ? battery.top : Infinity,
+    )
+    const infoReserve = Number.isFinite(stackTop)
+      ? Math.max(0, window.innerHeight - stackTop)
+      : INFO_BLOCK + BATTERY_BLOCK
     return rect.bottom + helpReserve + GAP + infoReserve
   }
 
@@ -1038,12 +1110,13 @@ class GameView {
   // and death debris tuck behind the table. A wounded dealer (< 75% health) also sparks
   // and smokes here — the diegetic replacement for the old health bar — over the figure
   // but still behind the rail, so downward sparks tuck away like the lower body does.
-  private drawDealerFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+  private drawDealerFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number, sparks = true): void {
     const ctx = canvas.layers.dealer.ctx
     drawDealer(ctx, layout, this.dealer_, timestamp)
     // Only while the figure is STANDING at its home spot — the burst origins are the
-    // resting figure, so sparks must not show while it's dying, walking in, or off.
-    if (this.dealerStanding_(timestamp)) {
+    // resting figure, so sparks must not show while it's dying, walking in, or off. `sparks` lets
+    // battery saver CLEAR them on a pulse OFF beat (a clean figure) rather than freeze them mid-flight.
+    if (sparks && this.dealerStanding_(timestamp)) {
       drawDamageFx(ctx, layout, this.dealer_.damageBursts(timestamp))
     }
   }
@@ -1107,16 +1180,19 @@ class GameView {
   // The fx layer: the floating nexus device body (hovering with the frame clock),
   // its emitter-light charge glow, and the laser strike (beam + muzzle flash +
   // impact sparks) — all drawn together since they share the device's bobbing muzzle.
-  private drawFx_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+  // `bodyNow` drives the static nexus device (frozen in battery saver so it never hovers/skips);
+  // `laserNow` drives the attack laser/charge/heal (always live so a strike still animates). They're
+  // the same live timestamp outside battery saver.
+  private drawFx_(canvas: LayeredCanvas, layout: Layout, bodyNow: number, laserNow: number): void {
     const charge = {
-      red: this.nexus_.redLight(timestamp),
-      heal: this.nexus_.healLight(timestamp),
-      yellow: this.nexus_.yellowLight(timestamp),
+      red: this.nexus_.redLight(laserNow),
+      heal: this.nexus_.healLight(laserNow),
+      yellow: this.nexus_.yellowLight(laserNow),
       holo: 1, // the holo projector is always on
-      chargeUp: this.nexus_.chargeUp(timestamp),
-      healBeam: this.nexus_.healBeam(timestamp),
+      chargeUp: this.nexus_.chargeUp(laserNow),
+      healBeam: this.nexus_.healBeam(laserNow),
     }
-    drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer_, charge, timestamp)
+    drawStrikeFx(canvas.layers.fx.ctx, layout, this.dealer_, charge, laserNow, bodyNow)
   }
 
   // The only per-frame work: clear + repaint the cards layer.
@@ -1281,11 +1357,15 @@ class GameView {
   // The top overlay layer (additive light, no scene dimming): the dealer's emissive
   // eye glow, plus the 5-ray fans the always-on holo projector casts onto every readout.
   // (The holo lens's own glow lives on the fx layer, drawn by drawStrikeFx.)
-  private drawMask_(canvas: LayeredCanvas, layout: Layout, timestamp: number): void {
+  // Two clocks so battery saver can freeze the ambient while the dealer's damage FX still pulses:
+  // the holo rays/projection are ambient (drawn at `ambientTs` — frozen in saver so they read as
+  // static), while the eye glow/flicker is part of the damage FX (drawn at `fxTs` — live during a
+  // pulse ON window). Outside battery saver the two are identical (both live), so nothing changes.
+  private drawMask_(canvas: LayeredCanvas, layout: Layout, ambientTs: number, fxTs: number): void {
     const ctx = canvas.layers.mask.ctx
     ctx.clearRect(0, 0, layout.width, layout.height)
-    drawDealerEyeGlow(ctx, layout, this.dealer_.eyeGlow(timestamp))
-    this.drawHoloProjection_(ctx, layout, timestamp)
+    drawDealerEyeGlow(ctx, layout, this.dealer_.eyeGlow(fxTs))
+    this.drawHoloProjection_(ctx, layout, ambientTs)
   }
 
   // The holo projector casts a fan of HOLO_RAYS_PER white rays onto every projected
@@ -2186,6 +2266,17 @@ class GameView {
 
   private readonly frame_ = (timestamp: number): void => {
     this.anim_.setNow(timestamp)
+    // Battery saver bookkeeping: a live frame means we're awake, so drop any pending pulse/watchdog
+    // sleep (it can't double-schedule), then note whether THIS frame has real motion — the grace
+    // clock the tail's park decision reads. Short cosmetic fades aren't in busy_; the grace covers
+    // them. Cheap no-ops when saver is off.
+    if (this.sleepTimer_) {
+      clearTimeout(this.sleepTimer_)
+      this.sleepTimer_ = 0
+    }
+    if (this.busy_(timestamp)) {
+      this.lastBusyAt_ = timestamp
+    }
     this.syncGameplaySignal_()
     this.syncProgressSignal_()
     // Tap-to-start: once the post-tap fade-out beat (TAP_FADE_MS) has elapsed, start the scene —
@@ -2196,6 +2287,8 @@ class GameView {
       this.stage_.overlay.classList.remove('hud-hidden')
       this.introCatcher_?.remove()
       this.introCatcher_ = null
+      this.saverToggleEl_?.remove() // the title pill goes with the catcher (HUD button takes over)
+      this.saverToggleEl_ = null
     }
     // Game over: the ending cards have just finished being sucked up. Latch the reveal
     // (before drawCards, so the shredded cards stay gone this frame), start projecting
@@ -2385,16 +2478,37 @@ class GameView {
         this.beginCoda_(e.prevScore, e.prevIntegrity, e.prevShift, e.integrity, now())
       }
     }
-    this.drawCards_(canvas, layout, timestamp)
-    this.drawChips_(canvas, layout, timestamp)
-    this.drawHearts_(canvas, layout, timestamp)
-    this.drawTokens_(canvas, layout, timestamp)
-    this.drawScoreDeltas_(canvas, layout, timestamp)
-    this.drawMask_(canvas, layout, timestamp)
-    this.updateClown_(timestamp)
-    this.drawDealerFigure_(canvas, layout, timestamp)
-    this.drawClownFigure_(canvas, layout, timestamp)
-    this.drawFx_(canvas, layout, timestamp)
+    // --- Battery-saver render clocks ------------------------------------------------------------
+    // Two render clocks so saver mode looks clean instead of half-frozen:
+    //  • staticNow — the nexus body + holo rays. A fixed constant whenever saver is on (busy OR idle),
+    //    so the nexus is a genuinely STATIC object: it never hovers and never skips on resume. Safe as
+    //    a constant because it has no start-stamped state.
+    //  • frozenNow — cards, chips, and the dealer FIGURE/eyes. These DO have start-stamped animation
+    //    (deals, walk-ins), so they can't use the constant (that would draw them "before" their
+    //    walk-in — the dealer would vanish). While idle they hold a RECENT frozen time (static); while
+    //    busy they're live.
+    // A damaged dealer FULLY PARKS when idle (no idle spark animation — `drawSparks` off while quiet):
+    // it sits static, and sparks only fly during hits/strikes, which are busy → full speed. The holo
+    // readouts also don't flicker in saver (holoFlicker frozen, see render/cards). Outside saver every
+    // clock is the live timestamp and every layer repaints, exactly as before.
+    const saver = this.batterySaver_
+    const quiet = saver && timestamp - this.lastBusyAt_ > SETTLE_GRACE_MS
+    if (!quiet) {
+      this.freezeAt_ = timestamp // hold a recent, valid time to freeze stateful draws at while idle
+    }
+    const staticNow = saver ? SAVER_STATIC_NOW : timestamp
+    const frozenNow = quiet ? this.freezeAt_ : timestamp
+    const drawSparks = !quiet // idle damage is suppressed (fully static); sparks only during activity
+    this.drawCards_(canvas, layout, frozenNow)
+    this.drawChips_(canvas, layout, frozenNow)
+    this.drawHearts_(canvas, layout, frozenNow)
+    this.drawTokens_(canvas, layout, frozenNow)
+    this.drawScoreDeltas_(canvas, layout, frozenNow)
+    this.drawMask_(canvas, layout, staticNow, frozenNow)
+    this.updateClown_(timestamp) // state tracking stays on the live clock; the clown RENDER uses frozenNow
+    this.drawDealerFigure_(canvas, layout, frozenNow, drawSparks)
+    this.drawClownFigure_(canvas, layout, frozenNow)
+    this.drawFx_(canvas, layout, staticNow, timestamp)
     // Roll the counter up toward any tokens that just landed (ticks per burst).
     this.updateTokenCounter_(timestamp)
     // Fly-in score deltas reaching their rows: tick the held counter up by each + ping the tone.
@@ -2577,16 +2691,93 @@ class GameView {
     }
     this.lastCodaChoiceLocked_ = codaChoiceLocked
 
-    // The table nexus floats in a perpetual hover (render/nexus.ts), so its bob +
-    // contact shadow always need repainting: the loop never fully parks. Every
-    // other system (sequence, health, tokens, counters, dealer, Analyze, the RGB
-    // dealer's shimmer…) still animates as before — it just no longer has to gate
-    // liveness here, since the hover keeps us running regardless. The one-shot
-    // settle/edge handling above has already consumed what it needs this frame.
-    this.raf_ = requestAnimationFrame(this.frame_)
+    // Reschedule (reusing `quiet` from the render clocks above). Without battery saver the loop never
+    // fully parks — the nexus hover always needs repainting — so it runs at full speed exactly as
+    // before. With saver ON, once the scene is quiet we PARK fully (even a damaged dealer — its idle
+    // sparks are suppressed), leaving only a ~1fps watchdog that re-runs frame_ to self-heal any
+    // missed timer; because everything repaints at the frozen/constant clocks, that re-render is
+    // byte-identical (no visible jitter). Any real action wakes us via ensureLoop_.
+    if (!quiet) {
+      this.raf_ = requestAnimationFrame(this.frame_)
+    } else {
+      this.raf_ = 0
+      this.sleepTimer_ = window.setTimeout(this.wake_, WATCHDOG_MS)
+    }
+  }
+
+  // The pulse / watchdog timer firing: re-render ONE frame to re-evaluate, but do NOT count as
+  // activity (unlike ensureLoop_) — otherwise every timer wake would reset the grace clock and drag
+  // the loop back to full speed. frame_ recomputes quiet/pulse from the unchanged lastBusyAt_.
+  private readonly wake_ = (): void => {
+    this.sleepTimer_ = 0
+    if (!this.raf_) {
+      this.raf_ = requestAnimationFrame(this.frame_)
+    }
+  }
+
+  // Whether anything is actively MOVING this frame — the signal the battery-saver grace clock keys
+  // off. Built only from reliable, enumerable signals (each animator's own isAnimating, the dealer's
+  // transient/emote states, armed STATE-CHANGING timers). It deliberately does NOT enumerate every
+  // short cosmetic fade — SETTLE_GRACE_MS holds the loop open well past those. The dealer's
+  // low-health AMBIENT (idle sparks/shimmer) is excluded so an idle damaged dealer counts as quiet
+  // and the loop fully parks (its idle sparks are suppressed while parked — see drawSparks).
+  private busy_(t: number): boolean {
+    return (
+      this.anim_.isAnimating(t) ||
+      this.chips_.isAnimating(t) ||
+      this.spawn_.isAnimating(t) ||
+      this.bustBlock_.isAnimating(t) ||
+      this.tokens_.isAnimating(t) ||
+      this.nexus_.isAnimating(t) ||
+      this.hearts_.isAnimating(t) ||
+      this.mulligan_.isAnimating(t) ||
+      this.returnAnim_.isAnimating(t) ||
+      this.scoreDeltas_.isMoving(t) || // isMoving, NOT isAnimating: a landed "+N" list HOLDS on screen (drawn) until the next hand, but it's static — it must not pin the loop awake
+      this.codaCounters_.isAnimating(t) ||
+      this.tokenTicker_.isAnimating(t) ||
+      this.scoreTicker_.isAnimating(t) ||
+      this.dealer_.isSequencing(t) ||
+      this.dealer_.isBlocking(t) ||
+      this.dealer_.isEmoting(t) ||
+      this.clown_.present(t) ||
+      this.dealRevealPending_() ||
+      this.deltaEmitted_ < this.deltaPending_.length ||
+      this.state_.phase === 'choosing-upgrade' ||
+      this.heldScore_ !== null ||
+      this.proceedPending_ ||
+      this.introHold_ ||
+      // A scheduled auto-deal only matters (and only ever fires) while we're in 'betting' waiting for
+      // it. dealAfter_ is NOT cleared when the opening deal fires via the settle path, so it holds a
+      // stale PAST timestamp through 'playing'/'resolved' — gating on the phase avoids pinning the
+      // loop awake forever on that stale value.
+      (this.dealAfter_ > 0 && this.state_.phase === 'betting') ||
+      this.windowArrivalAt_ > 0 ||
+      this.codaArrivalAt_ > 0 ||
+      this.codaAdvanceAt_ > 0 ||
+      this.heartDeathPending_
+    )
+  }
+
+  // Flip battery saver at runtime (HUD / title toggle): persist the explicit choice, refresh the
+  // toggle chrome, and wake the loop so it takes effect immediately (resumes full-speed ambient
+  // when turning off; repaints once when turning on).
+  private setBatterySaver_(on: boolean): void {
+    this.batterySaver_ = on
+    setBatterySaver(on)
+    setHoloFlickerStatic(on) // freeze the holo readout flicker while saver is on
+    this.syncBatteryToggle_()
+    this.ensureLoop_()
   }
 
   private ensureLoop_(): void {
+    // Any wake — an action (run_/runCoda_), resize, tab-focus, or a pulse/watchdog timer firing —
+    // counts as fresh activity, so restart the grace clock (keeps a click-triggered fade inside the
+    // window) and drop any pending sleep before rescheduling.
+    if (this.sleepTimer_) {
+      clearTimeout(this.sleepTimer_)
+      this.sleepTimer_ = 0
+    }
+    this.lastBusyAt_ = now()
     if (!this.raf_) {
       this.raf_ = requestAnimationFrame(this.frame_)
     }
@@ -2824,6 +3015,10 @@ class GameView {
     // the nexus's spec-sheet projection.
     this.infoBtnEl_ = this.buildInfoButton_()
 
+    // The battery-saver toggle stacks just above the info button (same bottom-left corner).
+    this.batteryBtnEl_ = this.buildBatteryButton_()
+    this.syncBatteryToggle_() // reflect the initial (per-device default or stored) state
+
     // The help button ("H") rides at the BOTTOM of the powerup column (appended last, so
     // flexbox keeps it right under whichever ability button is currently the lowest visible
     // one — the stack's height changes as powerups show/hide). Opens the ability-guide modal.
@@ -2833,7 +3028,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -2856,6 +3051,57 @@ class GameView {
     btn.setAttribute('aria-label', 'Show the dealer ruleset and energy inflation')
     btn.addEventListener('click', () => this.toggleSpec_())
     return btn
+  }
+
+  // The battery-saver toggle: a round twin of the info "i", stacked just above it in the bottom-left
+  // utility corner. position:absolute keeps it out of every layout flow; measureControlColumn_
+  // reserves for it explicitly so it never collides with the powerup column on short screens.
+  private buildBatteryButton_(): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.className = 'hud-battery'
+    btn.type = 'button'
+    btn.textContent = '🔋'
+    btn.addEventListener('click', () => this.setBatterySaver_(!this.batterySaver_))
+    return btn
+  }
+
+  // The battery-saver toggle shown on the title / tap-to-start screen (the in-game HUD uses the round
+  // button above). A pill appended INTO the title menu or tap catcher, so it's removed with them; on
+  // the catcher it stops its own taps from also firing tap-to-start.
+  private buildSaverToggle_(): HTMLButtonElement {
+    const btn = element('button', 'title-saver') as HTMLButtonElement
+    btn.type = 'button'
+    btn.setAttribute('role', 'switch')
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation())
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.setBatterySaver_(!this.batterySaver_)
+    })
+    this.saverToggleEl_ = btn
+    this.syncBatteryToggle_()
+    return btn
+  }
+
+  // Reflect the current battery-saver state on both surfaces: the round HUD button and (when shown)
+  // the title-screen pill. Called at build time and on every toggle.
+  private syncBatteryToggle_(): void {
+    const on = this.batterySaver_
+    if (this.batteryBtnEl_) {
+      this.batteryBtnEl_.classList.toggle('is-active', on)
+      this.batteryBtnEl_.setAttribute('aria-pressed', String(on))
+      const label = on ? 'Battery saver: on' : 'Battery saver: off'
+      this.batteryBtnEl_.setAttribute('aria-label', label)
+      this.batteryBtnEl_.title = label
+    }
+    // NOT gated on isConnected: buildSaverToggle_ calls this BEFORE the pill is appended, so the
+    // initial label/state must still be set (else it renders as a tiny empty pill until first click).
+    // saverToggleEl_ is nulled when the pill is removed, so a non-null ref is always the live pill.
+    const pill = this.saverToggleEl_
+    if (pill) {
+      pill.classList.toggle('is-on', on)
+      pill.setAttribute('aria-checked', String(on))
+      pill.textContent = `Battery saver: ${on ? 'ON' : 'OFF'}`
+    }
   }
 
   // The help button: a small circular "?" at the bottom of the powerup column. A click opens
@@ -2963,6 +3209,7 @@ class GameView {
     }
     this.scorePage_ = page
     this.syncScorePager_()
+    this.ensureLoop_() // the score board redraws from scorePage_ next frame — wake if parked
   }
 
   // Show/position the page pager and reflect the current page. Called on every overlay sync, on
@@ -3023,6 +3270,7 @@ class GameView {
       this.specShownAt_ = null
       this.infoBtnEl_.classList.remove('is-active')
       this.applyHudColumns_(this.state_) // bring the button columns back
+      this.ensureLoop_() // wake so the flicker-out repaints even if the loop had parked
     }
   }
 
@@ -3073,6 +3321,7 @@ class GameView {
       const btn = document.createElement('button')
       btn.className = `upgrade-btn upgrade-btn--${info.path}`
       btn.style.setProperty('--upgrade-color', info.color)
+      btn.style.setProperty('--upgrade-glow', info.glow)
       const icon = document.createElement('img')
       icon.className = 'upgrade-btn__icon'
       icon.src = UPGRADE_ICONS[info.path]

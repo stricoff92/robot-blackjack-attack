@@ -20,6 +20,9 @@
 //   ?tokenUpgrades=1   — start with the Tokens path unlocked through this tier (0-3)
 //   ?dealerBlackjack   — the dealer draws a natural 21 every hand (test refund/void/hijack/push)
 //   ?playerBlackjack   — the player is dealt a natural 21 every hand (test the blackjack payout)
+//   ?battery=on|off    — force battery-saver mode on/off (overrides the per-device default + stored
+//                        pref). Read in game/power-mode.ts, not here — it drives the render loop's
+//                        park-when-idle, not the run — but listed with the other dev switches.
 //
 // See docs/dev-params.md for the full reference (values, effects, examples). Handy
 // for exercising split without waiting for a pair, buying a pricey powerup off the

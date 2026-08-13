@@ -87,19 +87,47 @@ describe('HeartAnimation', () => {
     expect(h.view(start + 5000).filled).toBe(4)
   })
 
-  it('a kill heals several hearts, cascading them into the empty sockets', () => {
+  it('a kill heals two hearts one after another — the first socket fills before the second starts', () => {
     const h = new HeartAnimation()
     h.sync(3)
     const start = 1000
-    h.heal(2, start) // beating a dealer
+    h.heal(2, start) // beating a dealer restores up to two
 
-    // Both incoming hearts eventually ride as glyphs on the next two empty sockets; count holds at 3.
-    const mid = h.view(start + 500)
-    expect(mid.filled).toBe(3)
-    expect(mid.transients.map((t) => t.slot).sort()).toEqual([3, 4])
+    // Early: only the first socket (index 3) is filling; the second (index 4) hasn't started.
+    const first = h.view(start + 450) // partway into the first heart's fade-in
+    expect(first.filled).toBe(3)
+    expect(first.transients.map((t) => t.slot)).toEqual([3])
+
+    // The first socket commits (count → 4) while the beam glides to the second — no heart filling yet.
+    const between = h.view(start + 800)
+    expect(between.filled).toBe(4)
+    expect(between.transients).toHaveLength(0)
+
+    // Later the second socket is the one filling, and the count is still 4 until it commits.
+    const second = h.view(start + 1100)
+    expect(second.filled).toBe(4)
+    expect(second.transients.map((t) => t.slot)).toEqual([4])
 
     // Settles to 5.
     expect(h.view(start + 5000).filled).toBe(5)
+  })
+
+  it('the heal beam revives the first socket, then glides to and revives the second', () => {
+    const h = new HeartAnimation()
+    h.sync(3)
+    const start = 0
+    h.heal(2, start)
+
+    // While the first chip fills, the beam head sits on socket 3.
+    expect(h.view(start + 500).beam?.slot).toBe(3)
+
+    // Between the two fills the head is gliding — a fractional position between the sockets.
+    const gliding = h.view(start + 800).beam
+    expect(gliding?.slot).toBeGreaterThan(3)
+    expect(gliding?.slot).toBeLessThan(4)
+
+    // While the second chip fills, the head has arrived on socket 4.
+    expect(h.view(start + 1100).beam?.slot).toBe(4)
   })
 
   it('pop is a no-op at zero hearts and heal a no-op at full', () => {

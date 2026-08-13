@@ -3,6 +3,8 @@ import { music } from './audio/music'
 import { voice } from './audio/voice'
 import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange } from './platform/crazygames'
 import { bootAllowed, renderLock } from './platform/sitelock'
+import { isBatterySaver } from './game/power-mode'
+import { setSaverDpr } from './render/canvas'
 import { mountGameView } from './ui/game-view'
 
 const root = document.querySelector<HTMLDivElement>('#app')
@@ -73,6 +75,11 @@ const applyMute = (muted: boolean): void => {
 }
 applyMute(getMuteSetting())
 onMuteChange(applyMute)
+
+// Battery saver renders the canvas at a lower dpr — must be set BEFORE mounting, so the layers size
+// and the offscreen sprite caches bake at the reduced scale (no live rebuild). Read after SDK init
+// so the stored preference (SDK.data) is available; a mid-session toggle applies on next launch.
+setSaverDpr(isBatterySaver())
 
 // Canvas-first UI (hybrid): the scene + cards render on the canvas layer, the
 // action buttons and HUD live in the stage overlay.

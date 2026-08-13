@@ -11,11 +11,25 @@
 // fill per frame on 3× displays, and far less canvas memory across all the layers.
 const MAX_DPR = 2
 
+// Battery saver renders at a LOWER dpr cap — the single biggest per-frame lever, since it cuts the
+// backing-store pixel count (and thus fill + composite cost) across EVERY layer and every draw. 1.5
+// is ~1.8× cheaper than 2× on a retina phone with minimal crispness loss (drop to 1 for ~4× / more
+// savings). Set once at startup via setSaverDpr() BEFORE the first render, so the offscreen sprite
+// caches (cards, holo-text) bake at this scale — no live rebuild; a mid-session toggle applies next launch.
+const SAVER_MAX_DPR = 1.5
+let saverDpr = false
+export function setSaverDpr(on: boolean): void {
+  saverDpr = on
+}
+function dprCap(): number {
+  return saverDpr ? SAVER_MAX_DPR : MAX_DPR
+}
+
 // The device-pixel ratio the layers actually render at (capped). Offscreen sprite
 // caches (cards, holo-text) build at this scale so their blits stay pixel-crisp
 // against the on-screen backing stores without over-rendering on 3×+ screens.
 export function deviceDpr(): number {
-  return Math.min(window.devicePixelRatio || 1, MAX_DPR)
+  return Math.min(window.devicePixelRatio || 1, dprCap())
 }
 
 export interface CanvasLayer {
@@ -59,7 +73,7 @@ export function createLayeredCanvas(
   }
 
   function resize(): void {
-    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR)
+    const dpr = Math.min(window.devicePixelRatio || 1, dprCap())
     const width = root.clientWidth
     const height = root.clientHeight
 

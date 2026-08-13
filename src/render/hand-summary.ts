@@ -127,8 +127,15 @@ export function drawHandSummary(
   // The grid's bounding box, so the holo lens fans its rays onto it (like the other readouts). The
   // fan dims with the board's `fade` so the projection winds down WITH the pips on Next hand, instead
   // of the rays staying lit and snapping off a beat after the marks have gone.
+  //
+  // `clampToNexus`: this is a CENTRED board that always sits LEFT of the lens (game-view bounds it to
+  // `lensX − margin`), exactly like the scoreboards — so it opts into the fan restriction. Without it,
+  // a single wide row (e.g. dealer 1's full 11-pip window on a narrow-HUD portrait screen) has pips
+  // that end well left of the lens, but the ray base's soft 25%-of-width pad overshoots PAST the lens
+  // → light spills out the RIGHT of the nexus (the recurring "rays fire sideways" bug). The clamp
+  // drops that pad so the fan lands on the pips, never right of the device. See render/nexus.ts.
   const rays: HoloRayTarget[] = [
-    { left: minX - r * 1.5, right: maxX + r * 1.5, top: rowCenterY(0) - r * 1.6, bottom: rowCenterY(rows - 1) + r * 1.6, fade: view.fade },
+    { left: minX - r * 1.5, right: maxX + r * 1.5, top: rowCenterY(0) - r * 1.6, bottom: rowCenterY(rows - 1) + r * 1.6, fade: view.fade, clampToNexus: true },
   ]
   return { rays, slotCenters }
 }

@@ -479,12 +479,16 @@ export function drawStrikeFx(
     healBeam: { travel: number; alpha: number } | null
   },
   now: number,
+  // The clock for the device BODY (hover, thrust, emitter, holo glow) — separate from `now` so
+  // battery saver can freeze the body to a static pose (bodyNow = a fixed constant) while the LASER
+  // and charge below still animate on the live `now`. Defaults to `now`, so normal play is unchanged.
+  bodyNow = now,
 ): void {
   ctx.clearRect(0, 0, l.width, l.height)
   // The floating device body itself — it hovers, so it rides this per-frame layer
   // rather than the static table, drawn under its charge glow + laser below.
-  drawNexus(ctx, l, now)
-  const from = nexusUtilityLight(l, now)
+  drawNexus(ctx, l, bodyNow)
+  const from = nexusUtilityLight(l, bodyNow)
   const to = impactPoint(l)
   const scale = Math.min(l.width, l.height)
 
@@ -514,8 +518,8 @@ export function drawStrikeFx(
     // The holo projector (bottom lens): a cycling pastel glow filling most of its dark
     // lens (a bright disc with a thin black lens ring), its hue drifting with `now`.
     if (charge.holo > 0.001) {
-      const holo = nexusHoloLight(l, now)
-      drawLightCharge(ctx, holo.x, holo.y, g.lensR * 0.7, charge.holo, holoGlowStyle(now))
+      const holo = nexusHoloLight(l, bodyNow)
+      drawLightCharge(ctx, holo.x, holo.y, g.lensR * 0.7, charge.holo, holoGlowStyle(bodyNow))
     }
   }
 
