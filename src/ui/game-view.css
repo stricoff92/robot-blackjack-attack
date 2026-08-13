@@ -211,14 +211,14 @@
   box-shadow: 0 0 16px rgba(var(--teal-rgb), 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
 }
 
-/* Battery-saver toggle: a round twin of the info "i", stacked directly above it in the bottom-left
- * utility corner. Pinned (position:absolute) so it's out of every layout flow; measureControlColumn_
- * reserves for it so it never crowds the powerup column on short screens. Dim rim at rest; on/off is
- * shown by the border + glow (an emoji glyph won't take a text colour). */
+/* Battery-saver toggle: a round twin of the info "i", pinned to the bottom-RIGHT corner (mirroring
+ * the info button in the bottom-left). Pinned (position:absolute) so it's out of every layout flow;
+ * on the right it no longer sits above the left-side powerup column, so it needs no column reserve.
+ * Holds a green-leaf <img> (.hud-battery__icon); on/off is shown by the border + glow + desaturate. */
 .hud-battery {
   position: absolute;
-  bottom: 60px; /* just above .hud-info (bottom 14 + 38 height + 8) */
-  left: 14px;
+  bottom: 14px; /* bottom-right corner, mirroring .hud-info at bottom-left */
+  right: 14px;
   width: 38px;
   height: 38px;
   display: flex;
@@ -228,7 +228,6 @@
   border-radius: 50%;
   border: var(--rim-teal);
   background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
-  font-size: 18px;
   line-height: 1;
   cursor: pointer;
   filter: saturate(0.6) opacity(0.75); /* muted when OFF */
@@ -243,11 +242,50 @@
 .hud-battery:active {
   transform: scale(0.92);
 }
-/* Saver ON: brighten the glyph and ring it with a green power-glow. */
+/* Saver ON: brighten the leaf and ring it with a green power-glow. */
 .hud-battery.is-active {
   filter: none;
   border-color: rgba(120, 240, 170, 0.85);
   box-shadow: 0 0 14px rgba(120, 240, 170, 0.55), inset 0 0 6px rgba(120, 240, 170, 0.25);
+}
+
+/* The green-leaf glyph inside the toggle. Sized to sit centred inside the 38px disc with a little
+ * air; the button's own filter (desaturate when OFF, none when ON) does the on/off dimming. */
+.hud-battery__icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+  pointer-events: none; /* clicks belong to the button, not the image */
+}
+
+/* The "Battery Saver ON/OFF" toast: flashes just above the toggle when it's pressed, then fades
+ * (showBatteryToast_ times it — held 800ms, then the .is-fading transition fades it over 200ms).
+ * Right edge pinned to the toggle's right edge (same `right` inset); it grows leftward. Dark teal-
+ * tinted pill so the text stays legible over any felt/canvas behind it. Click-through + z-index
+ * above the HUD buttons so it always reads on top of the canvases. */
+.hud-battery-toast {
+  position: absolute;
+  right: 14px; /* right-aligned with the toggle's right edge (.hud-battery right: 14px) */
+  bottom: 60px; /* clears the toggle above it (bottom 14 + 38 height + 8 gap) */
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(6, 20, 24, 0.9);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  color: rgba(196, 246, 241, 0.98);
+  font: 700 13px var(--font-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none; /* purely informational — never blocks taps on the toggle or canvas */
+  z-index: 7; /* above the HUD buttons (z-index 4), so it sits on top of the canvases */
+}
+.hud-battery-toast.is-visible {
+  opacity: 1; /* snap in instantly (no fade-in) */
+}
+.hud-battery-toast.is-fading {
+  opacity: 0;
+  transition: opacity 200ms ease; /* fade out over 200ms after the 800ms hold */
 }
 
 /* The help button: a "?" twin of the info button, but it rides at the BOTTOM of the powerup
@@ -376,6 +414,70 @@
 
 .help-panel__hint {
   text-align: center;
+  font: 600 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
+/* The Credits modal (attribution for third-party assets). Same full-screen tap-to-close scrim as the
+ * ability guide (.help-panel), but its card SCROLLS — credits can exceed one screen — so the card
+ * stops its own clicks and only the scrim closes. Parented to the stage container (not the HUD
+ * overlay, which is opacity:0 during the intro), hence z-index 30 to clear the intro chrome. */
+.credits-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  cursor: pointer;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+.credits-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.credits-panel__card {
+  width: min(520px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  cursor: pointer; /* tap-anywhere-to-close; iOS only fires click on a non-interactive div when it's pointer */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
+}
+.credits-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.credits-panel__heading {
+  font: 700 15px var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(var(--teal-bright-rgb), 0.98);
+}
+.credits-panel__line {
+  font: 500 13px var(--font-ui);
+  line-height: 1.4;
+  color: rgba(224, 244, 242, 0.9);
+  word-break: break-word;
+}
+.credits-panel__hint {
+  text-align: center;
+  margin-top: 4px;
   font: 600 12px var(--font-ui);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1030,11 +1132,22 @@ button.is-hidden,
   }
 
   .hud-battery {
-    bottom: 48px; /* above the compact .hud-info (10 + 32 + 6) */
-    left: 10px;
+    bottom: 10px; /* bottom-right corner, mirroring the compact .hud-info */
+    right: 10px;
     width: 32px;
     height: 32px;
-    font-size: 16px;
+  }
+
+  .hud-battery__icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .hud-battery-toast {
+    right: 10px; /* track the compact toggle's right edge (.hud-battery right: 10px) */
+    bottom: 50px; /* clears the compact toggle (bottom 10 + 32 height + 8 gap) */
+    padding: 4px 8px;
+    font-size: 12px;
   }
 
   .hud-powerups .hud-help {
@@ -1070,6 +1183,17 @@ button.is-hidden,
 
   .help-panel__hint {
     font-size: 11px;
+  }
+
+  .credits-panel__card {
+    gap: 13px;
+    padding: 16px 18px;
+  }
+  .credits-panel__heading {
+    font-size: 13px;
+  }
+  .credits-panel__line {
+    font-size: 12px;
   }
 
   .hud-message {
@@ -1324,6 +1448,33 @@ button.is-hidden,
 .title-menu .title-saver {
   position: static;
   transform: none;
+}
+
+/* The Credits link on the title / tap-to-start screen (attribution for the CC music + Flaticon
+ * icons). A quiet pill pinned top-left, clear of the bottom-anchored Continue / New game menu (which
+ * overlapped it in the bottom-right on narrow screens) and the bottom-centre battery pill. z-index 21
+ * keeps it above the tap catcher / title menu (both z 20) so its own taps win. The safe-area insets
+ * keep it out from under a mobile notch / status bar. Intro only; removed on start. */
+.credits-link {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left, 0px));
+  top: max(14px, env(safe-area-inset-top, 0px));
+  z-index: 21;
+  font: 700 12px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.72);
+  background: var(--glass);
+  border: 1px solid rgba(var(--teal-rgb), 0.32);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: inset 0 0 0 1px rgba(var(--teal-rgb), 0.12);
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.credits-link:hover {
+  color: rgba(var(--cream-rgb), 0.95);
+  border-color: rgba(var(--teal-rgb), 0.55);
 }
 
 /* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action

@@ -1,5 +1,30 @@
+Robot Blackjack Attack: asset attributions
+===========================================
+Master reference for third-party assets. This file is NOT shipped and NOT read by the game.
+The in-game Credits screen is defined in src/ui/game-view.ts (const CREDITS); keep the two in
+sync. The in-game copy shows URLs as plain text (no <a> links) because the game runs inside the
+CrazyGames iframe, which restricts outbound navigation, and CC BY needs no hyperlink.
 
-<a href="https://www.flaticon.com/free-icons/poker-chip" title="poker chip icons">Poker chip icons created by IconsNova - Flaticon</a>
-<a href="https://www.flaticon.com/free-icons/battery" title="battery icons">Battery icons created by Prosymbols Premium - Flaticon</a>
-<a href="https://www.flaticon.com/free-icons/star" title="star icons">Star icons created by Magnific - Flaticon</a>
+MUSIC: Kevin MacLeod (incompetech.com), Creative Commons By Attribution 4.0
+  https://creativecommons.org/licenses/by/4.0/
+  Tracks: Decisions, Enigma, Machinations, Mistake the Getaway, One-eyed Maestro,
+          Serpentine Trek, The Cannery, Trio for Piano, Violin and Viola
+  Note: confirm each track's license version with incompetech's per-track copy-paste
+  generator before final submission. A few older tracks are CC BY 3.0, not 4.0.
 
+ICONS: Flaticon Free License (attribution required)
+  Poker chip icons by IconsNova        https://www.flaticon.com/free-icons/poker-chip
+  Battery icons by Prosymbols Premium  https://www.flaticon.com/free-icons/battery
+  Star icons by Magnific               https://www.flaticon.com/free-icons/star
+  Green icons by Hilmy Abiyyu A.       https://www.flaticon.com/free-icons/green
+  Thief icons by Hight Quality Icons   https://www.flaticon.com/free-icons/thief   (detective.png)
+
+SOUND EFFECTS: Helton Yan (fierydzn@gmail.com), Creative Commons By Attribution 4.0
+  https://creativecommons.org/licenses/by/4.0/
+  Files (the *_HY_PC-* pack): DSGNMisc_SKILL IMPACT-Whimsimpact_HY_PC-005,
+    DSGNSynth_CAST-Mecha Laser Prepare_HY_PC-005, FEETMisc_STEP-Boots on Concrete Dungeon_HY_PC-002,
+    FGHTImpt_HIT-Strong Punch_HY_PC-004
+
+TODO: verify license + attribution for these before submission:
+  - Sound effects: oxidvideos-* and freesound_community-* (likely Pixabay / Freesound).
+  - Font: Sixtyfour (Google Fonts, SIL Open Font License).

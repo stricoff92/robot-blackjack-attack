@@ -65,6 +65,8 @@ import detectiveUrl from '../assets/detective.png'
 import chipUrl from '../assets/poker-chip.png'
 // The yellow POINTS star, shown beside the top-right score counter.
 import starUrl from '../assets/star.png'
+// The green leaf glyph on the battery-saver toggle (bottom-right HUD button).
+import greenUrl from '../assets/green.png'
 
 // Path → icon: Sabotage a detective, Payout a chip, Tokens the token icon.
 const UPGRADE_ICONS: Record<UpgradePath, string> = {
@@ -652,10 +654,18 @@ class GameView {
   private lastPagerPos_ = ''
   // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
   private infoBtnEl_!: HTMLButtonElement
-  // The battery-saver toggle: a round HUD button stacked above the info button, plus (when the
+  // The battery-saver toggle: a round HUD button in the bottom-right corner, plus (when the
   // title / tap-to-start screen is up) a matching pill. Both flip the render loop's park mode.
   private batteryBtnEl_!: HTMLButtonElement
   private saverToggleEl_: HTMLButtonElement | null = null
+  // The title-screen Credits link + its modal, intro chrome torn down when the run starts (there is
+  // no in-game entry point). Built alongside the tap catcher / title menu; see buildCreditsUi_.
+  private creditsLink_: HTMLElement | null = null
+  private creditsPanel_: HTMLElement | null = null
+  // A "Battery Saver ON/OFF" toast that flashes just above the toggle when it's pressed, then fades.
+  // batteryToastTimer_ holds the pending hold-then-fade timer so a rapid re-press can restart it.
+  private batteryToastEl_!: HTMLDivElement
+  private batteryToastTimer_ = 0
   // The help button (an "H", styled like the info button) + the full-screen ability-guide
   // modal it opens. A tap anywhere on the modal closes it.
   private helpBtnEl_!: HTMLButtonElement
@@ -782,6 +792,7 @@ class GameView {
     } else {
       this.buildTapCatcher_()
     }
+    this.buildCreditsUi_() // a Credits link (top-left) + modal, in both intro states
   }
 
   // No saved run: a transparent full-screen catcher records the first tap. Not a menu.
@@ -860,6 +871,7 @@ class GameView {
     this.titleMenu_ = null
     this.saverToggleEl_?.remove()
     this.saverToggleEl_ = null
+    this.dismissCreditsUi_()
     // Resume entry states (after the resolved→next advance above):
     //  • 'playing' / 'coda' — a hand/coda is mid-action and can't be re-dealt, so snap to a settled,
     //    ceremony-free scene (resumeSettled_).
@@ -1074,21 +1086,15 @@ class GameView {
     // inset. (Roomy 38px buttons / compact 32px, per game-view.css .hud-help + .hud-info.)
     const HELP_BLOCK = compact ? 40 : 48
     const INFO_BLOCK = compact ? 42 : 52
-    const BATTERY_BLOCK = compact ? 40 : 46 // battery toggle height + its gap above the info button
     const GAP = 12 // clear air we insist on between the column's bottom and the info button
     const help = this.helpBtnEl_.getBoundingClientRect()
     const helpReserve = help.height > 0 ? 0 : HELP_BLOCK // 0 when it's already in rect.bottom
-    // The battery toggle stacks directly above the info button, so the column must clear whichever
-    // sits higher — reserve from the top of that stack down to the screen bottom.
+    // Only the info button sits under the left-side powerup column now (the battery toggle moved to
+    // the bottom-right corner), so reserve from the top of the info button down to the screen bottom.
     const info = this.infoBtnEl_.getBoundingClientRect()
-    const battery = this.batteryBtnEl_.getBoundingClientRect()
-    const stackTop = Math.min(
-      info.height > 0 ? info.top : Infinity,
-      battery.height > 0 ? battery.top : Infinity,
-    )
-    const infoReserve = Number.isFinite(stackTop)
-      ? Math.max(0, window.innerHeight - stackTop)
-      : INFO_BLOCK + BATTERY_BLOCK
+    const infoReserve = info.height > 0
+      ? Math.max(0, window.innerHeight - info.top)
+      : INFO_BLOCK
     return rect.bottom + helpReserve + GAP + infoReserve
   }
 
@@ -2384,6 +2390,7 @@ class GameView {
       this.introCatcher_ = null
       this.saverToggleEl_?.remove() // the title pill goes with the catcher (HUD button takes over)
       this.saverToggleEl_ = null
+      this.dismissCreditsUi_() // the Credits link + modal go too
     }
     // Game over: the ending cards have just finished being sucked up. Latch the reveal
     // (before drawCards, so the shredded cards stay gone this frame), start projecting
@@ -3164,8 +3171,9 @@ class GameView {
     // the nexus's spec-sheet projection.
     this.infoBtnEl_ = this.buildInfoButton_()
 
-    // The battery-saver toggle stacks just above the info button (same bottom-left corner).
+    // The battery-saver toggle sits in the bottom-right corner (mirroring the bottom-left info button).
     this.batteryBtnEl_ = this.buildBatteryButton_()
+    this.batteryToastEl_ = this.buildBatteryToast_() // the "Battery Saver ON/OFF" flash above it
     this.syncBatteryToggle_() // reflect the initial (per-device default or stored) state
 
     // The help button ("H") rides at the BOTTOM of the powerup column (appended last, so
@@ -3177,7 +3185,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -3202,16 +3210,48 @@ class GameView {
     return btn
   }
 
-  // The battery-saver toggle: a round twin of the info "i", stacked just above it in the bottom-left
-  // utility corner. position:absolute keeps it out of every layout flow; measureControlColumn_
-  // reserves for it explicitly so it never collides with the powerup column on short screens.
+  // The battery-saver toggle: a round twin of the info "i", pinned to the bottom-right corner
+  // (mirroring the bottom-left info button). position:absolute keeps it out of every layout flow;
+  // on the right it clears the left-side powerup column without any explicit reservation.
   private buildBatteryButton_(): HTMLButtonElement {
     const btn = document.createElement('button')
     btn.className = 'hud-battery'
     btn.type = 'button'
-    btn.textContent = '🔋'
-    btn.addEventListener('click', () => this.setBatterySaver_(!this.batterySaver_))
+    const icon = document.createElement('img')
+    icon.src = greenUrl // green leaf glyph (bundled + fingerprinted by Vite)
+    icon.className = 'hud-battery__icon'
+    icon.alt = ''
+    icon.setAttribute('aria-hidden', 'true')
+    btn.appendChild(icon)
+    btn.addEventListener('click', () => {
+      this.setBatterySaver_(!this.batterySaver_)
+      this.showBatteryToast_(this.batterySaver_) // flash the new state above the toggle
+    })
     return btn
+  }
+
+  // The "Battery Saver ON/OFF" toast that flashes above the toggle when it's pressed (showBatteryToast_
+  // drives the timing). Right-aligned to the toggle's right edge via CSS; purely informational, so it's
+  // click-through and hidden from assistive tech (the button's aria-pressed already carries the state).
+  private buildBatteryToast_(): HTMLDivElement {
+    const el = document.createElement('div')
+    el.className = 'hud-battery-toast'
+    el.setAttribute('aria-hidden', 'true')
+    return el
+  }
+
+  // Flash the toast above the toggle: snap in, hold 800ms, then fade over 200ms (the fade is the CSS
+  // transition on .is-fading). A re-press before it clears restarts the hold and snaps back to full.
+  private showBatteryToast_(on: boolean): void {
+    const el = this.batteryToastEl_
+    el.textContent = on ? 'Battery Saver ON' : 'Battery Saver OFF'
+    window.clearTimeout(this.batteryToastTimer_)
+    el.classList.remove('is-fading') // cancel any in-progress fade
+    el.classList.add('is-visible') // instant show (no fade-in)
+    this.batteryToastTimer_ = window.setTimeout(() => {
+      el.classList.remove('is-visible')
+      el.classList.add('is-fading') // opacity -> 0 over 200ms
+    }, 800)
   }
 
   // The battery-saver toggle shown on the title / tap-to-start screen (the in-game HUD uses the round
@@ -3229,6 +3269,76 @@ class GameView {
     this.saverToggleEl_ = btn
     this.syncBatteryToggle_()
     return btn
+  }
+
+  // The Credits link + its modal, shown on the title / tap-to-start screen (intro only — there is no
+  // in-game entry point). The link mirrors the saver pill: an absolute-positioned sibling in the
+  // stage container (a child of the HUD overlay would be invisible — the overlay is opacity:0 during
+  // the intro) whose own taps stopPropagation so a press never leaks to tap-to-start. Attribution
+  // URLs are plain TEXT, never <a> links: the game runs inside the CrazyGames iframe (which restricts
+  // outbound navigation) and CC BY requires no hyperlink. Torn down with the rest of the intro chrome.
+  private buildCreditsUi_(): void {
+    const link = element('button', 'credits-link') as HTMLButtonElement
+    link.type = 'button'
+    link.textContent = 'Credits'
+    link.addEventListener('pointerdown', (e) => e.stopPropagation())
+    link.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.openCredits_()
+    })
+    this.creditsLink_ = link
+    this.stage_.container.appendChild(link)
+
+    const panel = element('div', 'credits-panel is-hidden')
+    const card = element('div', 'credits-panel__card')
+    for (const { heading, lines } of CREDITS) {
+      const section = element('div', 'credits-panel__section')
+      const head = element('div', 'credits-panel__heading')
+      head.textContent = heading
+      section.appendChild(head)
+      for (const line of lines) {
+        const row = element('div', 'credits-panel__line')
+        row.textContent = line
+        section.appendChild(row)
+      }
+      card.appendChild(section)
+    }
+    const hint = element('div', 'credits-panel__hint')
+    hint.textContent = 'tap anywhere to close'
+    card.appendChild(hint)
+    panel.appendChild(card)
+    // Tap ANYWHERE (scrim OR card) closes — the card nearly fills the screen on mobile, so there is no
+    // reliable scrim to aim for. Dismiss on CLICK, never pointerdown: closeCredits_ only toggles
+    // is-hidden (so the panel stays the topmost click target), and stopPropagation keeps the closing
+    // tap off the buttons beneath (tap-to-start / the menu), so it never fires anything else. A drag to
+    // SCROLL the card fires no click, so scrolling still works. (.credits-panel__card inherits
+    // cursor:pointer so iOS reliably dispatches the click on the non-interactive card too.)
+    panel.addEventListener('pointerdown', (e) => e.stopPropagation())
+    panel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.closeCredits_()
+    })
+    this.creditsPanel_ = panel
+    this.stage_.container.appendChild(panel)
+  }
+
+  private openCredits_(): void {
+    this.creditsPanel_?.classList.remove('is-hidden')
+    sfx.play('ability') // the nexus projector cue, shared with the ability guide
+  }
+
+  private closeCredits_(): void {
+    this.creditsPanel_?.classList.add('is-hidden')
+    sfx.play('ability')
+  }
+
+  // Remove the Credits link + modal when the run starts (called from every intro-exit path, beside
+  // the saver-pill teardown). Null-guarded, so a path that already tore them down is a no-op.
+  private dismissCreditsUi_(): void {
+    this.creditsLink_?.remove()
+    this.creditsLink_ = null
+    this.creditsPanel_?.remove()
+    this.creditsPanel_ = null
   }
 
   // Reflect the current battery-saver state on both surfaces: the round HUD button and (when shown)
@@ -4702,6 +4812,42 @@ const ABILITY_HELP: readonly { name: string; desc: string }[] = [
   { name: 'Freeze Dealer', desc: 'Prevent the dealer from drawing.' },
   { name: 'Bust Block', desc: 'Next drawn card is discarded if it causes a bust.' },
   { name: 'Mulligan', desc: 'Discard cards and redraw.' },
+]
+
+// The Credits modal's contents: third-party assets that require attribution, grouped by kind. URLs
+// are plain text on purpose (rendered via textContent, never as <a> links) so nothing navigates out
+// of the CrazyGames iframe. Kevin MacLeod's music is CC BY 4.0 (incompetech.com); the icons are the
+// Flaticon Free License. Keep in sync with src/assets/attributes.txt. No em dashes in these strings.
+const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
+  {
+    heading: 'Music',
+    lines: [
+      'Kevin MacLeod (incompetech.com)',
+      'Licensed under Creative Commons: By Attribution 4.0',
+      'creativecommons.org/licenses/by/4.0/',
+      'Decisions, Enigma, Machinations, Mistake the Getaway,',
+      'One-eyed Maestro, Serpentine Trek, The Cannery,',
+      'Trio for Piano, Violin and Viola',
+    ],
+  },
+  {
+    heading: 'Sound effects',
+    lines: [
+      'Helton Yan',
+      'Licensed under Creative Commons: By Attribution 4.0',
+      'creativecommons.org/licenses/by/4.0/',
+    ],
+  },
+  {
+    heading: 'Icons',
+    lines: [
+      'Poker chip icons by IconsNova (Flaticon)',
+      'Battery icons by Prosymbols Premium (Flaticon)',
+      'Star icons by Magnific (Flaticon)',
+      'Green icons by Hilmy Abiyyu A. (Flaticon)',
+      'Thief icons by Hight Quality Icons (Flaticon)',
+    ],
+  },
 ]
 
 // Render an averaged 1–5 rating as filled/empty stars plus the decimal, e.g. 4.2 → "★★★★☆ 4.2".

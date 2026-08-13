@@ -7,6 +7,20 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Robot Blackjack Attack</title>
+    <!-- Warm the Sixtyfour pixel title face on the FIRST frame so the boot splash's wordmark can
+         swap from the system fallback to the real face while it's still on screen (font-display:
+         swap below). Vite fingerprints this path to the exact same hashed .ttf the runtime loader
+         (src/render/title-font.ts) imports — content-hash dedup means ONE download, and this
+         preload warms both the @font-face fetch here and that later FontFace().load(). `crossorigin`
+         is required even same-origin: fonts fetch in CORS mode, so without it the preload wouldn't
+         match the real request and would double-fetch. -->
+    <link
+      rel="preload"
+      href="/src/assets/Sixtyfour-Regular-VariableFont_BLED,SCAN.ttf"
+      as="font"
+      type="font/ttf"
+      crossorigin
+    />
     <!-- CrazyGames SDK v3 (ads, gameplay events, leaderboard submit, iframe-safe storage). Loaded
          from their CDN — not npm — and exposed as window.CrazyGames.SDK. It is absent off-platform
          (and may fail to load if blocked); the game degrades gracefully, see
@@ -47,10 +61,22 @@
         display: block;
         touch-action: none;
       }
+      /* The Sixtyfour pixel title face for the splash wordmark below. Preloaded in <head> so its
+         bytes are in flight from the first frame; `font-display: swap` means the wordmark paints
+         immediately in the system fallback and swaps to Sixtyfour the moment the face arrives —
+         no invisible-text (FOIT) gap. Same family name the canvas loader registers, same hashed
+         file (Vite dedups), so nothing double-loads. */
+      @font-face {
+        font-family: 'Sixtyfour';
+        src: url('/src/assets/Sixtyfour-Regular-VariableFont_BLED,SCAN.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+        font-display: swap;
+      }
       /* Instant boot splash — pure static HTML/CSS so it paints on the FIRST frame, before the
          JS bundle + CrazyGames SDK init resolve (that gap was a dark screen for 1-2s on mobile).
-         main.ts fades + removes #boot-splash once the game view has mounted. No web fonts (the
-         pixel title face isn't loaded yet) and no assets — just the game's palette. */
+         main.ts fades + removes #boot-splash once the game view has mounted. The only web font is
+         the preloaded pixel title face (swaps in when ready); everything else is the game palette. */
       #boot-splash {
         position: fixed;
         inset: 0;
@@ -75,8 +101,13 @@
         flex-direction: column;
         align-items: center;
         gap: 2px;
-        font-family: "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+        /* Sixtyfour once it swaps in, bold system fallback until then. Sixtyfour ships a single
+           Regular master (no weight axis), so `font-synthesis: none` stops the browser faux-bolding
+           it into a smear at 900 — the pixel glyphs render at their natural weight, matching the
+           canvas title. The 900 still drives the fallback (Helvetica has real heavy weights). */
+        font-family: 'Sixtyfour', "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
         font-weight: 900;
+        font-synthesis: none;
         letter-spacing: 0.14em;
         line-height: 1;
         font-size: clamp(20px, 6vw, 40px);
