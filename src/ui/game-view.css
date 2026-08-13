@@ -1237,14 +1237,20 @@ button.is-hidden,
   bottom: 26px;
   z-index: 20;
   display: flex;
-  flex-direction: row;
-  align-items: stretch; /* both buttons take the taller one's height (Continue has a subtitle) */
-  justify-content: center;
+  flex-direction: column; /* saver pill on top, the buttons row below */
+  align-items: center;
   gap: 12px;
   padding: 0 12px;
   -webkit-tap-highlight-color: transparent;
 }
-.title-menu button {
+.title-menu-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch; /* both buttons take the taller one's height (Continue has a subtitle) */
+  justify-content: center;
+  gap: 12px;
+}
+.title-menu-row button {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1260,37 +1266,38 @@ button.is-hidden,
   box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 14px rgba(var(--teal-rgb), 0.2);
   transition: transform 0.05s ease, background 0.15s ease;
 }
-.title-menu button:hover {
+.title-menu-row button:hover {
   background: linear-gradient(#e6c473, #d4ad57);
   box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
 }
-.title-menu button:active {
+.title-menu-row button:active {
   transform: translateY(2px);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
 }
-.title-menu .title-sub {
+.title-menu-row .title-sub {
   display: block;
   font: 600 11px var(--font-ui);
   opacity: 0.75;
   margin-top: 2px;
 }
 /* New game is the quieter, secondary choice. */
-.title-menu .title-btn-new {
+.title-menu-row .title-btn-new {
   color: rgba(var(--cream-rgb), 0.92);
   background: var(--glass);
   box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.4), 0 0 12px rgba(var(--teal-rgb), 0.18);
 }
-.title-menu .title-btn-new:hover {
+.title-menu-row .title-btn-new:hover {
   background: linear-gradient(rgba(22, 44, 50, 0.72), rgba(12, 26, 32, 0.72));
   box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.6), 0 0 16px rgba(var(--teal-rgb), 0.3);
 }
 
-/* Battery-saver toggle on the title / tap-to-start screen — a quiet pill pinned top-centre (its own
- * container sibling, so it dodges the .title-menu button chrome and the full-screen tap catcher).
+/* Battery-saver toggle on the title / tap-to-start screen — a quiet pill pinned bottom-centre. On the
+ * plain tap-to-start screen it's a standalone overlay child (absolute, bottom-centre); inside the
+ * Continue / New game menu it becomes a flow item ABOVE the buttons (see .title-menu .title-saver).
  * The in-game HUD has its own round button; this only shows before the run starts. */
 .title-saver {
   position: absolute;
-  top: 16px;
+  bottom: 26px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 21; /* above the tap catcher / title menu (both z-index 20) */
@@ -1311,6 +1318,12 @@ button.is-hidden,
   background: linear-gradient(rgba(var(--teal-bright-rgb), 0.95), rgba(96, 220, 210, 0.95));
   border-color: rgba(184, 250, 244, 0.85);
   box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.5);
+}
+/* Inside the Continue / New game menu the pill is a flow item stacked above the buttons (the menu is a
+ * bottom-anchored column), not an absolutely-pinned overlay child. */
+.title-menu .title-saver {
+  position: static;
+  transform: none;
 }
 
 /* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action

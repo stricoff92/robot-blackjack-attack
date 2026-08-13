@@ -10,10 +10,11 @@ function at(healthPct: number): DealerAnimation {
   return d
 }
 
-// These three queries are what battery saver's frame loop reads to decide park vs. pulse vs.
-// full-speed (see game-view busy_ / ambientPulse_). They split what isAnimating() conflates.
+// These three queries are what battery saver's frame loop reads to decide park vs. full-speed
+// (see game-view busy_ / drawSparks). They split what isAnimating() conflates: isSequencing +
+// isEmoting keep the loop at full speed; ambientDamageActive drives NORMAL-mode cast repaint only.
 describe('dealer battery-saver queries', () => {
-  describe('ambientDamageActive (drives the pulse-vs-park choice)', () => {
+  describe('ambientDamageActive (the normal-mode cast-repaint band)', () => {
     it('is false at or above the 75% damage-FX threshold', () => {
       expect(at(100).ambientDamageActive(50_000)).toBe(false)
       expect(at(75).ambientDamageActive(50_000)).toBe(false)
@@ -25,9 +26,11 @@ describe('dealer battery-saver queries', () => {
       expect(at(20).ambientDamageActive(50_000)).toBe(true)
     })
 
-    it('at 50% health isAnimating is false but ambientDamageActive is true (the mid-band trap)', () => {
-      // This is exactly why parking must NOT gate on isAnimating: a mid-damaged idle dealer would
-      // otherwise be parked mid-spark. The pulse path keys off ambientDamageActive instead.
+    it('at 50% health isAnimating is false but ambientDamageActive is true (the mid-band gap)', () => {
+      // Why NORMAL-mode cast repaint must OR in ambientDamageActive, not gate on isAnimating alone:
+      // at 50% the ambient FX is firing but isAnimating is false, so isAnimating alone would freeze
+      // the sparks mid-band. (Battery saver is unaffected — it parks the idle dealer and suppresses
+      // its idle sparks regardless.)
       const d = at(50)
       expect(d.isAnimating(50_000)).toBe(false)
       expect(d.ambientDamageActive(50_000)).toBe(true)

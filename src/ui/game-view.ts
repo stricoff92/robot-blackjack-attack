@@ -821,11 +821,12 @@ class GameView {
     fresh.type = 'button'
     fresh.textContent = 'New game'
     fresh.addEventListener('click', () => this.beginFromTitle_('new'))
-    menu.append(cont, fresh)
+    const row = element('div', 'title-menu-row')
+    row.append(cont, fresh)
+    // The battery-saver toggle sits ABOVE the Continue / New game buttons — the menu is a bottom-anchored
+    // column, saver pill on top, buttons below. It's a child of the menu, so it's removed with it on start.
+    menu.append(this.buildSaverToggle_(), row)
     this.stage_.container.appendChild(menu)
-    // The battery-saver toggle rides the top-centre of the title screen (a sibling of the menu, not
-    // inside it — so it keeps its own pill styling and is removed alongside the menu on start).
-    this.stage_.container.appendChild(this.buildSaverToggle_())
   }
 
   // Leave the title screen: CONTINUE adopts the saved session (re-seeding the visuals for its
@@ -1039,6 +1040,11 @@ class GameView {
     // A resize / orientation change reaches here via the stage ResizeObserver — re-check whether the
     // control layout still fits the (new) viewport height.
     this.viewportGuard_?.evaluate()
+    // The manual repaint above painted the ambient (nexus/holo) at the LIVE clock — but in battery
+    // saver, if the loop is parked, that leaves it frozen at a live-time pose (the parked frame draws
+    // at the static/frozen clocks). Wake the loop so it repaints once at the correct saver clocks and
+    // re-parks after the grace window; a resize is a genuine interaction. Cheap no-op when already awake.
+    this.ensureLoop_()
   }
 
   // Height (viewport px) the whole left-edge control layout needs so nothing clips or overlaps: the
@@ -1421,10 +1427,11 @@ class GameView {
   // lead or lag its number. Each fan gets its own seed so their flicker stays independent.
   private drawHoloProjection_(ctx: CanvasRenderingContext2D, layout: Layout, timestamp: number): void {
     const boxes = this.frameProjections_
-    // Normal mode: the fans flicker every frame (the shimmer is live), so draw them straight — caching
-    // would only add a bake+blit on top of the same fill work. Saver mode: the shimmer clock is frozen
-    // (timestamp is a constant), so the fans are pixel-identical until a readout moves — cache + blit.
-    if (!this.batterySaver_) {
+    // Normal mode — OR the splash screen, which runs the rays live even in saver (see frame_ onSplash):
+    // the fans flicker every frame, so draw them straight; caching would only add a bake+blit on top of
+    // the same fill work. Saver mid-run: the shimmer clock is frozen (a constant), so the fans are
+    // pixel-identical until a readout moves — cache + blit.
+    if (!this.batterySaver_ || !this.started_) {
       boxes.forEach((box, i) => drawHoloRays(ctx, layout, box, HOLO_RAYS_PER, timestamp, i * 1000))
       return
     }
@@ -2352,15 +2359,17 @@ class GameView {
 
   private readonly frame_ = (timestamp: number): void => {
     this.anim_.setNow(timestamp)
-    // Battery saver bookkeeping: a live frame means we're awake, so drop any pending pulse/watchdog
-    // sleep (it can't double-schedule), then note whether THIS frame has real motion — the grace
-    // clock the tail's park decision reads. Short cosmetic fades aren't in busy_; the grace covers
-    // them. Cheap no-ops when saver is off.
+    // Battery-saver bookkeeping: a live frame means we're awake, so drop any pending watchdog sleep
+    // (it can't double-schedule). Then, ONLY in saver, note whether THIS frame has real motion — the
+    // grace clock the tail's park decision reads. Skipped when saver is off: the loop never parks
+    // there, so lastBusyAt_ is unused and busy_'s ~25-signal scan would be pure waste. A toggle ON
+    // re-stamps lastBusyAt_ via setBatterySaver_ → ensureLoop_, so it's never stale on entry. Short
+    // cosmetic fades aren't in busy_; the grace window covers them.
     if (this.sleepTimer_) {
       clearTimeout(this.sleepTimer_)
       this.sleepTimer_ = 0
     }
-    if (this.busy_(timestamp)) {
+    if (this.batterySaver_ && this.busy_(timestamp)) {
       this.lastBusyAt_ = timestamp
     }
     this.syncGameplaySignal_()
@@ -2578,11 +2587,16 @@ class GameView {
     // readouts also don't flicker in saver (holoFlicker frozen, see render/cards). Outside saver every
     // clock is the live timestamp and every layer repaints, exactly as before.
     const saver = this.batterySaver_
-    const quiet = saver && timestamp - this.lastBusyAt_ > SETTLE_GRACE_MS
+    // The SPLASH screen (tap-to-start / Continue / New game, i.e. before `started_`) always runs the
+    // nexus + light rays LIVE, even in saver — the user wants that one screen to showcase the animation.
+    // So on the splash the loop never parks and the ambient clock stays live; saver behaviour resumes
+    // the instant the run starts. Everywhere else saver parks + freezes as before.
+    const onSplash = !this.started_
+    const quiet = saver && !onSplash && timestamp - this.lastBusyAt_ > SETTLE_GRACE_MS
     if (!quiet) {
       this.freezeAt_ = timestamp // hold a recent, valid time to freeze stateful draws at while idle
     }
-    const staticNow = saver ? SAVER_STATIC_NOW : timestamp
+    const staticNow = saver && !onSplash ? SAVER_STATIC_NOW : timestamp
     const frozenNow = quiet ? this.freezeAt_ : timestamp
     // The dealer FIGURE runs on its OWN clock, independent of the cards. It's live only while the dealer
     // is doing something itself — a hit/kill/walk-in (isSequencing/isBlocking) or an emote (a laugh) —
@@ -2619,7 +2633,7 @@ class GameView {
       this.castDirty_ = true
     }
     this.lastDealerChoreographing_ = dealerChoreographing
-    if (this.nexus_.isAnimating(timestamp) || this.nexus_.isHealing(timestamp) || !saver) {
+    if (this.nexus_.isAnimating(timestamp) || this.nexus_.isHealing(timestamp) || !saver || onSplash) {
       this.nexusDirty_ = true
     }
     this.updateClown_(timestamp) // state tracking on the live clock; the clown RENDER (in renderCast_) uses figureNow
@@ -2846,6 +2860,11 @@ class GameView {
   // short cosmetic fade — SETTLE_GRACE_MS holds the loop open well past those. The dealer's
   // low-health AMBIENT (idle sparks/shimmer) is excluded so an idle damaged dealer counts as quiet
   // and the loop fully parks (its idle sparks are suppressed while parked — see drawSparks).
+  //
+  // MAINTENANCE: keep this list in sync with the animation sources. Any NEW canvas animation that can
+  // run LONGER than SETTLE_GRACE_MS (1200ms) must be registered here (or be driven by an armed timer
+  // that is), or in battery saver the loop parks mid-animation and freezes it. Short (<grace) fades
+  // are safe to omit — the grace window covers them.
   private busy_(t: number): boolean {
     return (
       this.anim_.isAnimating(t) ||
@@ -2895,9 +2914,9 @@ class GameView {
   }
 
   private ensureLoop_(): void {
-    // Any wake — an action (run_/runCoda_), resize, tab-focus, or a pulse/watchdog timer firing —
-    // counts as fresh activity, so restart the grace clock (keeps a click-triggered fade inside the
-    // window) and drop any pending sleep before rescheduling.
+    // Any wake — an action (run_/runCoda_), a resize (onResize_), tab-focus, or the watchdog timer
+    // firing — counts as fresh activity, so restart the grace clock (keeps a click-triggered fade
+    // inside the window) and drop any pending sleep before rescheduling.
     if (this.sleepTimer_) {
       clearTimeout(this.sleepTimer_)
       this.sleepTimer_ = 0

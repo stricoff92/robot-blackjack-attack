@@ -678,7 +678,7 @@ export function drawAnalysis(ctx: CanvasRenderingContext2D, l: Layout, a: Analys
 }
 
 // Battery saver freezes the flicker (setHoloFlickerStatic) so the holo readouts don't pulse every
-// frame while the loop happens to be running for another reason (a damage pulse, active play). The
+// frame while the loop happens to be running for another reason (active play, a dealer strike). The
 // text just reads as a steady, crisp projection instead — no per-frame alpha change.
 let holoFlickerStatic = false
 export function setHoloFlickerStatic(on: boolean): void {

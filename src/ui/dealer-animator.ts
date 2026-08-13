@@ -300,8 +300,9 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   // The TRANSIENT choreography only (hit/kill/spawn/leave) — no low-health ambient. Battery
-  // saver treats this as real work that must keep the loop at full speed, while the ambient
-  // damage FX below is instead pulsed on a duty cycle. (isAnimating() conflates the two.)
+  // saver treats this as real work that must keep the loop at full speed, while the low-health
+  // ambient damage FX below is suppressed and the loop fully parks when the dealer is idle.
+  // (isAnimating() conflates the two.)
   isSequencing(now: number): boolean {
     return this.mode_ !== 'none' && now < this.seqEnd_
   }
@@ -314,8 +315,11 @@ export class DealerAnimation implements DealerView, StrikeView {
   }
 
   // True while the diegetic damage FX (sparks/smoke/tremor/eye-flicker) are firing — health
-  // below FX_THRESHOLD (75%), the widest of the damage bands. A persistent per-frame ambient:
-  // battery saver keeps it visibly alive by pulsing the loop rather than parking or running 60fps.
+  // below FX_THRESHOLD (75%), the widest of the damage bands. A persistent per-frame ambient.
+  // This is the NORMAL-mode cast-layer repaint trigger only (game-view keeps the 'cast' canvas
+  // dirty while it's true, since isAnimating() misses the 33–75% band); battery saver ignores it —
+  // an idle damaged dealer's ambient is suppressed and the loop fully parks (sparks fly only during
+  // a strike, see game-view drawSparks).
   ambientDamageActive(now: number): boolean {
     return this.damageFxIntensity_(now) > 0
   }
