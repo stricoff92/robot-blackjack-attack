@@ -67,6 +67,7 @@ interface CrazyGameModule {
   loadingStart(): void
   loadingStop(): void
   reportGameCompletedPercentage(percentage: number): void
+  happytime(): void
   readonly settings: CrazyGameSettings
   addSettingsChangeListener(listener: () => void): void
   removeSettingsChangeListener(listener: () => void): void
@@ -157,6 +158,13 @@ export function loadingStop(): void {
 export function reportGameCompletedPercentage(percentage: number): void {
   const pct = Math.max(0, Math.min(100, Math.round(percentage)))
   callGame((game) => game.reportGameCompletedPercentage(pct), 'reportGameCompletedPercentage')
+}
+
+// A "positive moment" hint — we fire it when the player beats an existing personal best. Lets
+// CrazyGames time an interstitial at a genuinely good moment. No-ops off-platform / when disabled,
+// like the other SDK.game calls.
+export function happytime(): void {
+  callGame((game) => game.happytime(), 'happytime')
 }
 
 function callGame(fn: (game: CrazyGameModule) => void, label: string): void {

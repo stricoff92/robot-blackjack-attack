@@ -43,6 +43,9 @@
         -moz-user-select: none;
         -ms-user-select: none;
         user-select: none;
+        /* Suppress the iOS long-press callout menu (Copy/Share/Look Up) — user-select
+           alone does not stop it. Belt-and-braces with the selection blocks above. */
+        -webkit-touch-callout: none;
         /* Suppress the tap-highlight flash on touch interactions. */
         -webkit-tap-highlight-color: transparent;
       }

@@ -8,7 +8,7 @@
 // once per run at game-over — a chip bust-out, a coda bust (score 0), or a coda cash-out — and it
 // both submits the score to CrazyGames and folds it into the personal best.
 import { nextBest } from './highscore'
-import { loadValue, saveValue, submitToCrazyGames } from '../platform/crazygames'
+import { happytime, loadValue, saveValue, submitToCrazyGames } from '../platform/crazygames'
 
 const BEST_KEY = 'rba.personalBest'
 
@@ -34,6 +34,11 @@ export function recordRun(score: number): { previousBest: number; isNewBest: boo
   if (isNewBest) {
     cachedBest = best
     saveValue(BEST_KEY, String(best))
+    // Beating an EXISTING best is a "positive moment" for CrazyGames. Guard on previousBest > 0 so a
+    // player's first-ever banked score (no prior high score) does not fire it.
+    if (previousBest > 0) {
+      happytime()
+    }
   }
   submitToCrazyGames(score)
   return { previousBest, isNewBest }

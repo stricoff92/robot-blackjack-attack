@@ -43,8 +43,8 @@
  * top-left corner. */
 .hud-tokens {
   position: absolute;
-  top: 12px;
-  left: 14px;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
   display: flex;
   align-items: center;
   gap: 9px;
@@ -67,8 +67,8 @@
  * (updatePointsCounter); the "+N" reward delta flashes just beneath it. */
 .hud-points {
   position: absolute;
-  top: 12px;
-  right: 14px;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  right: max(14px, env(safe-area-inset-right, 0px));
   text-align: right;
   pointer-events: none;
 }
@@ -78,8 +78,8 @@
  * injects an iframe into it. Transparent by default so an unfilled/absent banner shows nothing. */
 .hud-score-banner {
   position: absolute;
-  top: 12px;
-  left: 14px;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
   z-index: 5;
   overflow: hidden;
   pointer-events: auto; /* the ad iframe needs clicks (already auto via .stage__overlay > *) */
@@ -201,8 +201,8 @@
  * Matches the nexus's alien-teal energy. */
 .hud-info {
   position: absolute;
-  bottom: 14px;
-  left: 14px;
+  bottom: max(14px, env(safe-area-inset-bottom, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
   width: 38px;
   height: 38px;
   display: flex;
@@ -237,8 +237,8 @@
  * Holds a green-leaf <img> (.hud-battery__icon); on/off is shown by the border + glow + desaturate. */
 .hud-battery {
   position: absolute;
-  bottom: 14px; /* bottom-right corner, mirroring .hud-info at bottom-left */
-  right: 14px;
+  bottom: max(14px, env(safe-area-inset-bottom, 0px)); /* bottom-right corner, mirroring .hud-info at bottom-left */
+  right: max(14px, env(safe-area-inset-right, 0px));
   width: 38px;
   height: 38px;
   display: flex;
@@ -285,8 +285,8 @@
  * above the HUD buttons so it always reads on top of the canvases. */
 .hud-battery-toast {
   position: absolute;
-  right: 14px; /* right-aligned with the toggle's right edge (.hud-battery right: 14px) */
-  bottom: 60px; /* clears the toggle above it (bottom 14 + 38 height + 8 gap) */
+  right: max(14px, env(safe-area-inset-right, 0px)); /* right-aligned with the toggle's right edge (.hud-battery right: 14px) */
+  bottom: calc(60px + env(safe-area-inset-bottom, 0px)); /* clears the toggle above it (bottom 14 + 38 height + 8 gap) */
   padding: 5px 10px;
   border-radius: 8px;
   background: rgba(6, 20, 24, 0.9);
@@ -830,7 +830,7 @@
  * short on height need the felt back). */
 .hud-powerups {
   position: absolute;
-  left: 14px;
+  left: max(14px, env(safe-area-inset-left, 0px));
   top: 84px;
   display: flex;
   flex-direction: column;
@@ -868,7 +868,7 @@
  * (they're hidden during the coda). Reuses the powerup button look + its cost pill. */
 .hud-coda-powers {
   position: absolute;
-  left: 14px;
+  left: max(14px, env(safe-area-inset-left, 0px));
   top: 84px;
   display: flex;
   flex-direction: column;
@@ -968,7 +968,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 20px;
+  bottom: max(20px, env(safe-area-inset-bottom, 0px));
   display: flex;
   gap: 10px;
   justify-content: center;
@@ -1292,8 +1292,8 @@ button.is-hidden,
  * one row so it stays a thin strip below the raised powerup column. */
 @media (max-width: 560px), (max-height: 620px) {
   .hud-tokens {
-    top: 8px;
-    left: 10px;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    left: max(10px, env(safe-area-inset-left, 0px));
     gap: 5px;
     padding: 4px 12px 2px 9px;
     border-radius: 8px;
@@ -1306,8 +1306,8 @@ button.is-hidden,
   }
 
   .hud-points {
-    top: 8px;
-    right: 10px;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    right: max(10px, env(safe-area-inset-right, 0px));
   }
 
   .hud-points__star {
@@ -1323,16 +1323,16 @@ button.is-hidden,
   }
 
   .hud-info {
-    bottom: 10px;
-    left: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    left: max(10px, env(safe-area-inset-left, 0px));
     width: 32px;
     height: 32px;
     font-size: 18px;
   }
 
   .hud-battery {
-    bottom: 10px; /* bottom-right corner, mirroring the compact .hud-info */
-    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom, 0px)); /* bottom-right corner, mirroring the compact .hud-info */
+    right: max(10px, env(safe-area-inset-right, 0px));
     width: 32px;
     height: 32px;
   }
@@ -1343,8 +1343,8 @@ button.is-hidden,
   }
 
   .hud-battery-toast {
-    right: 10px; /* track the compact toggle's right edge (.hud-battery right: 10px) */
-    bottom: 50px; /* clears the compact toggle (bottom 10 + 32 height + 8 gap) */
+    right: max(10px, env(safe-area-inset-right, 0px)); /* track the compact toggle's right edge (.hud-battery right: 10px) */
+    bottom: calc(50px + env(safe-area-inset-bottom, 0px)); /* clears the compact toggle (bottom 10 + 32 height + 8 gap) */
     padding: 4px 8px;
     font-size: 12px;
   }
@@ -1422,7 +1422,7 @@ button.is-hidden,
   }
 
   .hud-powerups {
-    left: 10px;
+    left: max(10px, env(safe-area-inset-left, 0px));
     top: 50px;
     gap: 6px;
   }
@@ -1439,7 +1439,7 @@ button.is-hidden,
    * desktop size and read way too big on a phone. Mirrors the .hud-powerups shrink above, plus
    * the coda button's own min-width floor. */
   .hud-coda-powers {
-    left: 10px;
+    left: max(10px, env(safe-area-inset-left, 0px));
     top: 50px;
     gap: 6px;
   }
@@ -1466,7 +1466,7 @@ button.is-hidden,
   }
 
   .hud-actions {
-    bottom: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
     gap: 6px;
     padding: 0 8px;
     flex-wrap: nowrap;
