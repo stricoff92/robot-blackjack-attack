@@ -1,214 +1,24 @@
-// The nexus's "RULES" projection: the table nexus's holo projector casts the current
-// dealer's active ruleset — plus the live token inflation — into the clear band BETWEEN
-// the two hands' counts, exactly where the Analyze readout sits. Toggled by the info
-// button beside the dealer's head (see game-view.ts).
+// The dealer's active ruleset as a plain data model — the token inflation plus a list of
+// flags (house rules + the player's roguelite mods). game-view's buildSpec_ builds it from
+// the run/round state, and the full-screen TABLE RULES takeover (buildRulesPanel_) renders it.
 //
-// Pure projected LIGHT, like the counts / Analyze rows: a "RULES" heading over a wrapped
-// run of abbreviated flags (a CPU-style feature listing) — no panel, frame, or scrim. It
-// flickers in on a strike ramp, shares the holoFlicker pulse, shrinks to fit the band,
-// and returns its text box so drawHoloProjection fans the holo lens's rays onto it.
-//
-// Render-only, mirroring cards.ts: the game builds the SpecReadout (import-free of game
-// logic — just strings + a colour kind) and this paints it.
+// Import-free of the game's rules/run types: pure strings + a colour kind, so nothing here
+// depends on game logic. (This module was formerly the nexus's cramped on-felt "RULES" holo
+// projection; that was replaced by the DOM takeover, leaving just the shared data model.)
 
-import { drawHoloText, handBand, type HoloTextStyle } from './cards'
-import { nexusHoloLight, type HoloRayTarget } from './nexus'
-import type { Layout } from './scene'
-
-// How long the projection takes to flicker fully in; also the age it rewinds through on
-// the way out, so the strike-off mirrors the strike-on (see game-view's specRender).
-export const SPEC_STRIKE_MS = 460
-
-// One abbreviated flag. `kind` colours it: a HOUSE rule (the dealer's edge, cyan) or a
-// PLAYER mod (a roguelite buff in the player's favour, green).
+// One rule flag. `kind` colours it in the takeover: a HOUSE rule (the dealer's edge, teal)
+// or a PLAYER mod (a roguelite buff in the player's favour, green).
 export interface SpecFlag {
+  // A terse CPU-style token (e.g. "S17", "SPLIT_TO_2") — the compact form.
   text: string
   kind: 'house' | 'player'
+  // A plain-language expansion of `text`, shown in the TABLE RULES takeover where there's
+  // room for prose (e.g. "Dealer stands on soft 17").
+  label?: string
 }
 
-// The readout's data — pure strings (mirrors AnalysisReadout, so the render layer stays
-// decoupled from the game's rules/run types). `inflation` is the pre-formatted value
-// (e.g. "+12%") shown on its own "ENERGY INFLATION" line above the flags.
+// The ruleset's data. `inflation` is the pre-formatted energy-inflation value (e.g. "+12%").
 export interface SpecReadout {
   inflation: string
   flags: SpecFlag[]
-}
-
-// Holo-text styles (soft glow → translucent core): a bright cyan heading, cyan house
-// flags, green player mods, amber for the inflation value, and a dim cyan for its label.
-const HEAD: HoloTextStyle = { glow: 'rgba(150, 245, 245, 0.95)', bloom: 'rgba(170, 248, 248, 0.55)', core: 'rgba(222, 253, 253, 0.9)' }
-const CYAN: HoloTextStyle = { glow: 'rgba(120, 235, 238, 0.9)', bloom: 'rgba(140, 244, 246, 0.48)', core: 'rgba(205, 250, 251, 0.82)' }
-const GREEN: HoloTextStyle = { glow: 'rgba(120, 240, 150, 0.9)', bloom: 'rgba(140, 246, 165, 0.5)', core: 'rgba(210, 252, 220, 0.82)' }
-const AMBER: HoloTextStyle = { glow: 'rgba(255, 198, 110, 0.92)', bloom: 'rgba(255, 206, 125, 0.5)', core: 'rgba(255, 238, 195, 0.86)' }
-const DIM: HoloTextStyle = { glow: 'rgba(120, 220, 230, 0.7)', bloom: 'rgba(120, 220, 230, 0.34)', core: 'rgba(180, 236, 240, 0.66)' }
-
-function styleFor(kind: SpecFlag['kind']): HoloTextStyle {
-  return kind === 'player' ? GREEN : CYAN
-}
-
-// Monospace so the flag tokens read like a terminal feature listing.
-function monoFont(px: number, weight = 700): string {
-  return `${weight} ${px}px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace`
-}
-
-interface Tok {
-  flag: SpecFlag
-  w: number // measured advance at the trial font
-}
-interface Row {
-  toks: Tok[]
-  w: number // total row width (tokens + inter-token gaps), at the trial font
-}
-
-// Draw the RULES readout and RETURN its text box (one ray-target, so the holo lens fans
-// one clean beam onto it). `age` is ms since it appeared (the strike-in), `fade` winds it
-// out on dismiss, `now` positions the shared flicker.
-export function drawSpecSheet(
-  ctx: CanvasRenderingContext2D,
-  l: Layout,
-  spec: SpecReadout,
-  age: number,
-  fade = 1,
-  now = 0,
-): HoloRayTarget[] {
-  // The clear band between the two counts — the same one the Analyze readout uses.
-  const { top: bandTop, bottom: bandBottom, center: bandMid } = handBand(l)
-  const bandH = Math.max(1, bandBottom - bandTop)
-  const cx = l.width / 2
-
-  const scale = Math.min(l.width, l.height)
-  const headPx = clamp(scale * 0.026, 14, 24)
-  const statPx = clamp(scale * 0.019, 11, 17)
-  const flagPx = clamp(scale * 0.02, 11, 18)
-  // A deliberately NARROW column so the flags stack into several short lines (a tall
-  // ruleset readout) rather than a couple of wide ones.
-  const contentW = Math.min(l.width * 0.72, 340)
-  const gap = flagPx * 1.1 // space between adjacent tokens
-
-  // Measure every token, then greedily pack them into centred rows that fit the width —
-  // the CPU-feature-list wrap.
-  ctx.save()
-  ctx.font = monoFont(flagPx)
-  const toks: Tok[] = spec.flags.map((flag) => ({ flag, w: ctx.measureText(flag.text).width }))
-  ctx.restore()
-
-  const rows: Row[] = []
-  let cur: Tok[] = []
-  let curW = 0
-  for (const t of toks) {
-    const add = cur.length === 0 ? t.w : gap + t.w
-    if (cur.length > 0 && curW + add > contentW) {
-      rows.push({ toks: cur, w: curW })
-      cur = [t]
-      curW = t.w
-    } else {
-      cur.push(t)
-      curW += add
-    }
-  }
-  if (cur.length > 0) {
-    rows.push({ toks: cur, w: curW })
-  }
-
-  // Vertical budget: the heading, the ENERGY INFLATION line, a gap, then the flag rows.
-  // Shrink to fit the band so it never spills into the counts (the flags stay narrower
-  // than contentW when scaled, so the row packing above still holds).
-  const headBlock = headPx * 1.3
-  const statBlock = statPx * 1.5
-  const headGap = flagPx * 0.7
-  const rowH = flagPx * 1.35
-  const contentH = headBlock + statBlock + headGap + rows.length * rowH
-  const f = Math.min(1, bandH / contentH)
-
-  const hPx = headPx * f
-  const sPx = statPx * f
-  const fPx = flagPx * f
-  const hBlock = headBlock * f
-  const sBlock = statBlock * f
-  const hGap = headGap * f
-  const rH = rowH * f
-  const tGap = gap * f
-  const totalH = hBlock + sBlock + hGap + rows.length * rH
-
-  // Measure every element at its final (scaled) font so we know the block's true width,
-  // then LEFT-justify the whole thing at one shared left edge. The stat line is the label
-  // plus its gap (px*0.6) plus the value — see drawStat.
-  ctx.font = monoFont(hPx, 800)
-  const headW = ctx.measureText('RULES').width
-  ctx.font = monoFont(sPx)
-  const statW = ctx.measureText('ENERGY INFLATION').width + sPx * 0.6 + ctx.measureText(spec.inflation).width
-  let maxRowW = Math.max(headW, statW)
-  for (const row of rows) {
-    maxRowW = Math.max(maxRowW, row.w * f)
-  }
-
-  // The holo lens sits on the RIGHT, so a block centred on the felt made its ray fan
-  // overshoot as a bright wedge PAST the text toward the nexus. Nudge the block LEFT of
-  // felt-centre (swings the beam more toward horizontal) and size the ray box to 1/1.5 of
-  // the reach we want, so drawHoloRays' 25%-per-side pad lands the fan just past the text
-  // instead of far to its right. Clamp so the block stays on the felt (left floor) and its
-  // fan still clears the lens (maxCx). Mirrors the tap-to-start title fix.
-  const fanReach = maxRowW / 2 + fPx * 0.6
-  const rayHalfW = fanReach / 1.5
-  const nexusX = nexusHoloLight(l, now).x
-  const maxCx = nexusX - fPx * 2 - fanReach
-  const blockCenterX = Math.max(fanReach + fPx, Math.min(cx - scale * 0.1, maxCx))
-  const blockLeft = blockCenterX - maxRowW / 2
-
-  const presence = clamp01(age / SPEC_STRIKE_MS) * fade
-
-  ctx.save()
-  ctx.globalAlpha = presence
-
-  let y = bandMid - totalH / 2
-  holoLeft(ctx, 'RULES', blockLeft, y + hBlock / 2, hPx, HEAD, now, 800)
-  y += hBlock
-
-  // The token inflation on its own labelled line: "ENERGY INFLATION" (dim) + value (amber).
-  drawStat(ctx, blockLeft, y + sBlock / 2, sPx, spec.inflation, now)
-  y += sBlock + hGap
-
-  for (const row of rows) {
-    let x = blockLeft
-    const rowCY = y + rH / 2
-    for (const t of row.toks) {
-      holoLeft(ctx, t.flag.text, x, rowCY, fPx, styleFor(t.flag.kind), now)
-      x += t.w * f + tGap
-    }
-    y += rH
-  }
-
-  ctx.restore()
-
-  const top = bandMid - totalH / 2
-  return [{ left: blockCenterX - rayHalfW, right: blockCenterX + rayHalfW, top, bottom: top + totalH }]
-}
-
-// The token-inflation line: a dim "ENERGY INFLATION" label with the amber value beside it,
-// the pair left-aligned from `x`.
-function drawStat(ctx: CanvasRenderingContext2D, x: number, y: number, px: number, value: string, now: number): void {
-  const label = 'ENERGY INFLATION'
-  const gap = px * 0.6
-  ctx.font = monoFont(px)
-  ctx.textBaseline = 'middle'
-  const labelW = ctx.measureText(label).width
-  ctx.textAlign = 'left'
-  drawHoloText(ctx, label, x, y, px, DIM, now)
-  drawHoloText(ctx, value, x + labelW + gap, y, px, AMBER, now)
-}
-
-// Draw left-aligned holo text (sets font/alignment, then blits the cached glow sprite).
-function holoLeft(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, px: number, style: HoloTextStyle, now: number, weight = 700): void {
-  ctx.font = monoFont(px, weight)
-  ctx.textAlign = 'left'
-  ctx.textBaseline = 'middle'
-  drawHoloText(ctx, text, x, y, px, style, now)
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value))
-}
-
-function clamp01(t: number): number {
-  return t < 0 ? 0 : t > 1 ? 1 : t
 }

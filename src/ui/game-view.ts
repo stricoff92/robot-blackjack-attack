@@ -26,7 +26,7 @@ import { drawHoloRays, drawStrikeFx, nexusHoloLight, nexusUtilityLight, type Hol
 import { dealerColors, isRgbDealer } from '../render/palette'
 import { Scene, computeLayout, type Layout } from '../render/scene'
 import { smoothEnd2, smoothStart2 } from '../render/easing'
-import { drawSpecSheet, SPEC_STRIKE_MS, type SpecFlag, type SpecReadout } from '../render/spec-sheet'
+import { type SpecFlag, type SpecReadout } from '../render/spec-sheet'
 import { drawScoreSheet, drawScoreTitle, scoreBoardPlacement, SCORE_LEFT_SHIFT, type ScoreReadout } from '../render/score-sheet'
 import { drawCodaStake } from '../render/coda-stake'
 import { drawCodaCounters } from '../render/coda-counters'
@@ -108,9 +108,6 @@ const TOKEN_TONE_STAGGER_MS = 45
 // How long a dismissed Analyze reading takes to flicker out.
 const ANALYSIS_FADE_MS = 300
 
-// How long the info-button spec-sheet projection takes to flicker out when toggled off
-// (mirror of the strike-on; see specRender + render/spec-sheet.ts).
-const SPEC_FADE_MS = 320
 
 
 // How many light rays the holo projector fans onto each number it projects.
@@ -454,8 +451,6 @@ class GameView {
   // active ruleset). `specShownAt` is when it was toggled on (drives the flicker-in);
   // `specHideStart` when it was toggled off (drives the mirror flicker-out). At most one
   // is non-null — both null means nothing is projected. See toggleSpec / specRender.
-  private specShownAt_: number | null = null
-  private specHideStart_: number | null = null
   // Game-over score screen: `scoreRevealAt` is when the nexus starts projecting the run
   // summary (once the ending cards are sucked up) — 0 until scheduled; `scoreRevealed`
   // latches true at that moment (edge → re-sync so the New-run button appears). See
@@ -668,7 +663,7 @@ class GameView {
   private scoreNextBtn_!: HTMLButtonElement
   private scoreDotsEl_!: HTMLElement
   private lastPagerPos_ = ''
-  // The info button beside the dealer's head: toggles the nexus's spec-sheet projection.
+  // The info button beside the dealer's head: opens the full-screen TABLE RULES takeover.
   private infoBtnEl_!: HTMLButtonElement
   // The battery-saver toggle: a round HUD button in the bottom-right corner, plus (when the
   // title / tap-to-start screen is up) a matching pill. Both flip the render loop's park mode.
@@ -686,6 +681,11 @@ class GameView {
   // modal it opens. A tap anywhere on the modal closes it.
   private helpBtnEl_!: HTMLButtonElement
   private helpPanelEl_!: HTMLElement
+  // The full-screen TABLE RULES takeover the info button opens (mirrors the ability guide): a
+  // scrim + card listing the dealer's live ruleset in plain language. rulesListEl_ is the row
+  // container, rebuilt from buildSpec_() each time it's opened. A tap anywhere on it closes it.
+  private rulesPanelEl_!: HTMLElement
+  private rulesListEl_!: HTMLElement
   // The powerup + action button columns, hidden while the choose-upgrade card is up.
   private powersEl_!: HTMLElement
   private actionsEl_!: HTMLElement
@@ -1406,17 +1406,9 @@ class GameView {
       this.emitScoreDeltas_(draw.slotCenters, timestamp)
     }
 
-    // The info-button spec sheet the nexus projects: the ruleset + token inflation,
-    // centred on the felt, flickering in like the Analyze readout. Its panel box goes
-    // into frameProjections so the holo lens fans its rays onto it (drawMask).
-    const sr = this.specRender_(timestamp)
-    if (sr) {
-      this.frameProjections_.push(...drawSpecSheet(ctx, layout, sr.spec, sr.age, sr.fade, timestamp))
-    }
-
     // The FINAL SCOREBOARD the nexus projects once the cards are sucked up: the game title above
     // the summary board, both boxes joining frameProjections so the holo lens fans its rays onto
-    // each, like the spec sheet.
+    // each.
     const scr = this.scoreRender_(timestamp)
     if (scr) {
       // The cash-out / lost-to-Banker boards (run went through the coda) sit slightly left of
@@ -1542,25 +1534,6 @@ class GameView {
     return life > 0 ? { a: this.analysisFadeOut_, fade: life } : null
   }
 
-  // The spec sheet to paint this frame (flickering in, or out on dismiss), with the age
-  // + fade the panel/text share — or null when nothing's projected. The data is rebuilt
-  // each frame (cheap: it's only up when toggled, and the state is static meanwhile).
-  private specRender_(timestamp: number): { spec: SpecReadout; age: number; fade: number } | null {
-    if (this.specShownAt_ !== null) {
-      return { spec: this.buildSpec_(), age: timestamp - this.specShownAt_, fade: 1 }
-    }
-    if (this.specHideStart_ !== null) {
-      const life = 1 - (timestamp - this.specHideStart_) / SPEC_FADE_MS
-      if (life <= 0) {
-        this.specHideStart_ = null
-        return null
-      }
-      // Rewind the strike age (mirror flicker) and fade to nothing on dismiss.
-      return { spec: this.buildSpec_(), age: SPEC_STRIKE_MS * life, fade: life }
-    }
-    return null
-  }
-
   // The FINAL SCOREBOARD (docs/scoreboards.md) to project this frame, or null until the ending
   // cards have been sucked up (scoreRevealAt). It only flickers IN — it stays up until the New run
   // resets the phase, so there's no dismiss/fade-out to mirror.
@@ -1629,20 +1602,23 @@ class GameView {
     }
   }
 
-  // Build the projected ruleset: the token inflation plus the dealer's active house
-  // rules and the player's roguelite mods, as abbreviated feature flags (CPU-style).
-  // Uses the live round's rules when a hand is up, else the rules the next deal will
-  // apply (so it reads correctly at the betting screen too).
+  // Build the active ruleset: the token inflation plus the dealer's house rules and the
+  // player's roguelite mods. Each flag carries a terse CPU-style `text` and a plain-language
+  // `label` — the TABLE RULES takeover shows the label. Uses the live round's rules when a
+  // hand is up, else the rules the next deal will apply (so it reads at the betting screen too).
   private buildSpec_(): SpecReadout {
     const { run, round } = this.state_
     // The Banker coda runs its own fixed rule set — a by-the-book dealer (S17, 3:2, no split),
     // with NONE of the run's shift rules (dealer heals, bet floor, desperation ceiling) or
     // roguelite upgrades carried in. Show that cleanly rather than dealer 6's stale spec.
     if (run.coda) {
+      const soft17Stand = DEFAULT_ROUND_RULES.dealerSoft17 === 'stand'
       const codaFlags: SpecFlag[] = [
-        { text: `${SHOE_DECKS}DECK`, kind: 'house' },
-        { text: 'H16', kind: 'house' },
-        { text: DEFAULT_ROUND_RULES.dealerSoft17 === 'stand' ? 'S17' : 'H17', kind: 'house' },
+        { text: `${SHOE_DECKS}DECK`, kind: 'house', label: `${SHOE_DECKS}-deck shoe` },
+        { text: 'H16', kind: 'house', label: 'Dealer hits 16 or below' },
+        soft17Stand
+          ? { text: 'S17', kind: 'house', label: 'Dealer stands on soft 17' }
+          : { text: 'H17', kind: 'house', label: 'Dealer hits soft 17' },
       ]
       return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags: codaFlags }
     }
@@ -1657,41 +1633,41 @@ class GameView {
       } as RoundRules)
 
     const flags: SpecFlag[] = []
-    const house = (text: string): void => void flags.push({ text, kind: 'house' })
-    const player = (text: string): void => void flags.push({ text, kind: 'player' })
+    const house = (text: string, label: string): void => void flags.push({ text, kind: 'house', label })
+    const player = (text: string, label: string): void => void flags.push({ text, kind: 'player', label })
 
     // Table baseline + the dealer's draw rules.
-    house(`${SHOE_DECKS}DECK`)
-    house('H16') // the dealer always hits a hard 16 or below
+    house(`${SHOE_DECKS}DECK`, `${SHOE_DECKS}-deck shoe`)
+    house('H16', 'Dealer hits 16 or below') // the dealer always hits a hard 16 or below
     if (rules.dealerSoft17 === 'hit') {
-      house('H17')
+      house('H17', 'Dealer hits soft 17')
     } else if (rules.dealerSoft17 === 'smart' && rules.dealerHardHitCeiling <= 17) {
       // Smart 17: hits a hard/soft 17 when behind. Skipped when the desperation
       // ceiling has risen above 17 — the raised-ceiling flag below already reads
       // "hits up to N when behind", which subsumes this, so printing both is redundant.
-      house('H17_when_behind')
+      house('H17_when_behind', 'Dealer hits soft 17 when behind')
     } else if (rules.dealerSoft17 === 'stand') {
-      house('S17')
+      house('S17', 'Dealer stands on soft 17')
     }
     // The final dealer's desperation hard-hit ceiling (17 normally; rises as it's
     // wounded) — the single escalating "when behind" flag: 17 → 18 → 19 → 20.
     if (rules.dealerHardHitCeiling > 17) {
-      house(`H${rules.dealerHardHitCeiling}_when_behind`)
+      house(`H${rules.dealerHardHitCeiling}_when_behind`, `Dealer hits hard hands up to ${rules.dealerHardHitCeiling} when behind`)
     }
     // Payout upgrade: a natural blackjack scores bonus points (T1 +50%, T2/T3 +100%).
     const bjBonus = blackjackPointBonusFor(run.upgrades)
     if (bjBonus > 0) {
-      player(`BJ_+${Math.round(bjBonus * 100)}%`)
+      player(`BJ_+${Math.round(bjBonus * 100)}%`, `Your blackjack scores +${Math.round(bjBonus * 100)}% points`)
     }
     if (rules.allowSplit) {
-      house('SPLIT_TO_2') // may split once, up to 2 hands (round.ts MAX_HANDS)
+      house('SPLIT_TO_2', 'You may split a pair once (up to 2 hands)') // round.ts MAX_HANDS
     }
     // A late dealer claws back a hit whenever it beats the player.
     if (shift.maxHeals > 0) {
-      house('DEALER_HEALS')
+      house('DEALER_HEALS', 'Dealer heals when it beats you')
     }
     if (this.state_.abilitiesLocked) {
-      house('NO_ABILITIES')
+      house('NO_ABILITIES', 'Abilities are disabled this round')
     }
 
     // Player roguelite mods (Sabotage / Payout / Tokens), all working in the player's
@@ -1699,20 +1675,21 @@ class GameView {
     // Sabotage T1 pays flat energy on any dealer 21, and stays active at every tier (T2/T3 add the
     // redeal + hijack on top), so the flag shows the whole time the run owns Sabotage.
     if (rules.dealer21Energy) {
-      player(`+${SABOTAGE_DEALER21_ENERGY}E_ON_D21`)
+      player(`+${SABOTAGE_DEALER21_ENERGY}E_ON_D21`, `+${SABOTAGE_DEALER21_ENERGY} energy whenever the dealer makes 21`)
     }
     if (rules.voidDealer21) {
-      player('REDEAL_D21')
+      player('REDEAL_D21', "The dealer's 21 is voided and redealt")
     }
     if (rules.hijackDealerNatural) {
-      player('HIJACK_BJ')
+      player('HIJACK_BJ', "You steal the dealer's blackjack")
     }
     if (rules.pushWinsToPlayer) {
-      player('PUSH_WINS')
+      player('PUSH_WINS', 'Pushes count as your win')
     }
     if (rules.tokenMultiplier > 1) {
       // ×1.10 → "ENERGY_x1.1", ×1.18 → "ENERGY_x1.18" (drop a trailing zero).
-      player(`ENERGY_x${rules.tokenMultiplier.toFixed(2).replace(/0$/, '')}`)
+      const mult = rules.tokenMultiplier.toFixed(2).replace(/0$/, '')
+      player(`ENERGY_x${mult}`, `Energy gains multiplied ×${mult}`)
     }
 
     return { inflation: `+${Math.round(run.tokenInflation * 100)}%`, flags }
@@ -3245,8 +3222,8 @@ class GameView {
       column.appendChild(button)
     }
 
-    // The info button sits in the bottom-left corner (fixed via CSS); pressing it toggles
-    // the nexus's spec-sheet projection.
+    // The info button sits in the bottom-left corner (fixed via CSS); pressing it opens
+    // the full-screen TABLE RULES takeover.
     this.infoBtnEl_ = this.buildInfoButton_()
 
     // The battery-saver toggle sits in the bottom-right corner (mirroring the bottom-left info button).
@@ -3260,6 +3237,7 @@ class GameView {
     this.helpBtnEl_ = this.buildHelpButton_()
     powers.appendChild(this.helpBtnEl_)
     this.helpPanelEl_ = this.buildHelpPanel_()
+    this.rulesPanelEl_ = this.buildRulesPanel_() // the TABLE RULES takeover the info button opens
 
     // The score-screen display-banner container (top-left). Hidden until the board reveals; sized +
     // requested in showScoreBanner_, cleared in hideScoreBanner_. A direct child of the (transform-
@@ -3269,28 +3247,18 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
-
-    // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
-    // on the info button itself, whose own click handler toggles it. pointerdown fires
-    // before the button's click, and specShownAt is only set on that click, so the tap
-    // that OPENS the sheet never immediately closes it.
-    this.stage_.container.addEventListener('pointerdown', (e) => {
-      if (this.specShownAt_ !== null && e.target instanceof Node && !this.infoBtnEl_.contains(e.target)) {
-        this.dismissSpec_()
-      }
-    })
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_, this.rulesPanelEl_)
   }
 
-  // The info button: a small circular "i" pinned to the left of the dealer's head. A
-  // click toggles the nexus spec-sheet projection (the ruleset + token inflation).
+  // The info button: a small circular "i" pinned bottom-left. A click opens the full-screen
+  // TABLE RULES takeover (the dealer's live ruleset + energy inflation, in plain language).
   private buildInfoButton_(): HTMLButtonElement {
     const btn = document.createElement('button')
     btn.className = 'hud-info'
     btn.textContent = 'i'
-    btn.title = 'Show the dealer ruleset + energy inflation'
-    btn.setAttribute('aria-label', 'Show the dealer ruleset and energy inflation')
-    btn.addEventListener('click', () => this.toggleSpec_())
+    btn.title = 'Show the table rules'
+    btn.setAttribute('aria-label', 'Show the table rules')
+    btn.addEventListener('click', () => this.openRules_())
     return btn
   }
 
@@ -3486,9 +3454,9 @@ class GameView {
     // before iOS dispatches the follow-up click, so that click falls through to whatever
     // button sat beneath the modal and fires it too. Closing on click keeps the panel
     // (topmost, full-screen) as the event's target, so nothing underneath ever sees it.
-    // The pointerdown handler only stops the press leaking to the stage container behind
-    // (spec-sheet dismiss / table); the CSS gives the panel cursor:pointer so iOS reliably
-    // fires the click on this non-interactive div.
+    // The pointerdown handler only stops the press leaking to the stage container behind;
+    // the CSS gives the panel cursor:pointer so iOS reliably fires the click on this
+    // non-interactive div.
     panel.addEventListener('pointerdown', (e) => e.stopPropagation())
     panel.addEventListener('click', (e) => {
       e.stopPropagation()
@@ -3506,7 +3474,69 @@ class GameView {
 
   private closeHelp_(): void {
     this.helpPanelEl_.classList.add('is-hidden')
-    sfx.play('ability') // same projector cue as opening it (and as the info spec sheet's toggle)
+    sfx.play('ability') // same projector cue as opening it (and as the TABLE RULES takeover)
+  }
+
+  // The TABLE RULES takeover: a full-screen modal (same pattern + tap-to-close as the ability
+  // guide) that lists the dealer's live ruleset — house rules, the run's roguelite mods, and the
+  // energy inflation — in plain language. Replaces the old cramped nexus projection so it stays
+  // legible on every screen size. The row list is left empty here and filled by openRules_ from
+  // buildSpec_(), since the ruleset changes per dealer / round / upgrade.
+  private buildRulesPanel_(): HTMLElement {
+    const panel = element('div', 'rules-panel is-hidden')
+    const card = element('div', 'rules-panel__card')
+    const title = element('div', 'rules-panel__title')
+    title.textContent = 'TABLE RULES'
+    const sub = element('div', 'rules-panel__sub')
+    sub.textContent = 'Beat the dealer without going over 21.'
+    this.rulesListEl_ = element('div', 'rules-panel__list')
+    const hint = element('div', 'rules-panel__hint')
+    hint.textContent = 'tap anywhere to close'
+    card.append(title, sub, this.rulesListEl_, hint)
+    panel.appendChild(card)
+    // Same iOS-safe dismissal as the ability guide: close on `click` (not pointerdown) so the
+    // full-screen panel stays the event target and nothing beneath it fires; the pointerdown
+    // handler just stops the press leaking to the stage behind. See buildHelpPanel_.
+    panel.addEventListener('pointerdown', (e) => e.stopPropagation())
+    panel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.closeRules_()
+    })
+    return panel
+  }
+
+  // Fill the takeover's row list from the current ruleset, then reveal it. Rebuilt on every open
+  // so it always reflects the active dealer / round / upgrades. House rules (the dealer's edge)
+  // come first in teal, then the player's roguelite mods in green, then the energy-inflation line
+  // in amber. Opened on the info button's `click`, so the opening tap never self-closes it.
+  private openRules_(): void {
+    const { inflation, flags } = this.buildSpec_()
+    const list = this.rulesListEl_
+    list.replaceChildren()
+    const addRow = (text: string, kind: 'house' | 'player' | 'econ'): void => {
+      const row = element('div', `rules-panel__row rules-panel__row--${kind}`)
+      const dot = element('span', 'rules-panel__dot')
+      dot.setAttribute('aria-hidden', 'true')
+      const label = element('span', 'rules-panel__text')
+      label.textContent = text
+      row.append(dot, label)
+      list.appendChild(row)
+    }
+    // House rules first, then player buffs — the flags array interleaves them, so partition here.
+    for (const f of flags.filter((f) => f.kind === 'house')) {
+      addRow(f.label ?? f.text, 'house')
+    }
+    for (const f of flags.filter((f) => f.kind === 'player')) {
+      addRow(f.label ?? f.text, 'player')
+    }
+    addRow(`Ability energy costs ${inflation}`, 'econ')
+    this.rulesPanelEl_.classList.remove('is-hidden')
+    sfx.play('ability') // the nexus powering up its projector — same cue as the ability guide
+  }
+
+  private closeRules_(): void {
+    this.rulesPanelEl_.classList.add('is-hidden')
+    sfx.play('ability')
   }
 
   // The final scoreboard's page controls: a ‹ back arrow, a two-dot page indicator, and a ›
@@ -3585,51 +3615,21 @@ class GameView {
     }
   }
 
-  // Toggle the nexus spec-sheet projection on or off, arming its flicker-in / -out.
-  private toggleSpec_(): void {
-    const t = now()
-    if (this.specShownAt_ !== null) {
-      this.specHideStart_ = t // flicker out from full
-      this.specShownAt_ = null
-    } else {
-      this.specShownAt_ = t // flicker in
-      this.specHideStart_ = null
-    }
-    this.infoBtnEl_.classList.toggle('is-active', this.specShownAt_ !== null)
-    // Give the readout the whole felt: hide the powerup + action columns while it's up
-    // (they'd otherwise crowd it on narrow/mobile layouts). Restored when it's dismissed.
-    this.applyHudColumns_(this.state_)
-    sfx.play('ability') // the nexus powering up its projector
-    this.ensureLoop_()
-  }
-
-  // Fade the spec sheet out if it's up — any real game action dismisses it, so it never
-  // lingers over a live hand.
-  private dismissSpec_(): void {
-    if (this.specShownAt_ !== null) {
-      this.specHideStart_ = now()
-      this.specShownAt_ = null
-      this.infoBtnEl_.classList.remove('is-active')
-      this.applyHudColumns_(this.state_) // bring the button columns back
-      this.ensureLoop_() // wake so the flicker-out repaints even if the loop had parked
-    }
-  }
-
   // Show/hide the powerup + action button columns and the info button. Both columns hide
-  // while the choose-upgrade card is up (its modal owns the screen) or the spec sheet is
-  // projected (the readout wants the full felt). On the GAME-OVER SCREEN the powerups + info
-  // button hide too (no abilities to use, nothing to inspect) — but NOT until the score
-  // screen actually shows (`scoreRevealed`): the phase flips to 'over' the instant the final
-  // hand resolves, and hiding then would drop the buttons while the dealer is still drawing
-  // out (spoiling the outcome). Until then they stay visible-but-disabled, like any resolving
-  // hand. The actions column always stays so the New-run button can appear.
+  // while the choose-upgrade card is up (its modal owns the screen). On the GAME-OVER SCREEN
+  // the powerups + info button hide too (no abilities to use, nothing to inspect) — but NOT
+  // until the score screen actually shows (`scoreRevealed`): the phase flips to 'over' the
+  // instant the final hand resolves, and hiding then would drop the buttons while the dealer is
+  // still drawing out (spoiling the outcome). Until then they stay visible-but-disabled, like any
+  // resolving hand. The actions column always stays so the New-run button can appear. (The TABLE
+  // RULES takeover is a full-screen scrim that simply covers these, so it needs no gating here.)
   private applyHudColumns_(s: SessionState): void {
     // Gate on the card being SHOWN (`upgradeShown`), not the raw `choosing-upgrade` phase:
     // the phase flips the instant a kill resolves, but the card is deferred until the
     // dealer's death settles — hiding on the phase would yank the columns away mid-death
     // (jarring), so instead they stay visible-but-disabled through the death and vanish as
     // the card slides in.
-    const modal = this.upgradeShown_ || this.specShownAt_ !== null
+    const modal = this.upgradeShown_
     const over = s.phase === 'over' && this.scoreRevealed_
     this.powersEl_.classList.toggle('is-hidden', modal || over)
     this.actionsEl_.classList.toggle('is-hidden', modal)
@@ -3642,11 +3642,12 @@ class GameView {
     // there); it has no other phase gating.
     this.tokensEl_.classList.toggle('is-hidden', over)
     // The info button rides with the Hit/Stand prompt ONLY — visible while the player has a live
-    // hand to act on (main play, or a coda double-or-nothing hand at player-turn), or while its own
-    // spec sheet is still open (so it can be toggled off). Hidden between rounds, at the betting
-    // wait, on the coda offer / scoreboards, and at game over.
+    // hand to act on (main play, or a coda double-or-nothing hand at player-turn). Hidden between
+    // rounds, at the betting wait, on the coda offer / scoreboards, and at game over. (The TABLE
+    // RULES takeover it opens is a full-screen scrim, so the button doesn't need to stay up while
+    // the takeover is open — the scrim covers it.)
     const inPlay = s.phase === 'playing' || (s.phase === 'coda' && !!s.round && s.round.status === 'player-turn')
-    this.infoBtnEl_.classList.toggle('is-hidden', !(inPlay || this.specShownAt_ !== null))
+    this.infoBtnEl_.classList.toggle('is-hidden', !inPlay)
     // The help button lives INSIDE the main powerup column, so it only belongs in normal play:
     // during the coda that column is dormant (its powerups collapse) but stays mounted at the
     // same top-left spot as the coda ability column, which paints over it — so a coda-visible
@@ -3737,8 +3738,6 @@ class GameView {
   }
 
   private run_(mutate: () => void): void {
-    // Any game action closes the spec projection so it never hangs over a live hand.
-    this.dismissSpec_()
     const prevPhase = this.state_.phase
     const prevRound = this.state_.round
     const prevRun = this.state_.run // pre-resolve snapshot (for the per-green-check score deltas)
@@ -4636,7 +4635,6 @@ class GameView {
   // no chips, tokens, laser, or combo). Routes each coda action to its animation and, when the
   // run ends, hands off to beginCodaEnd. codaResolveNext (the frame-loop auto-advance) flows here.
   private runCoda_(mutate: () => void): void {
-    this.dismissSpec_()
     const prevRound = this.state_.round
     const prevScore = this.state_.run.score
     const prevAnalysis = this.state_.analysis

@@ -196,11 +196,9 @@
   }
 }
 
-/* Info button beside the dealer's head: a small teal "glass" disc with an italic-serif
- * "i". Toggles the nexus's spec-sheet projection (ruleset + token inflation). Size,
- * font-size and position are set inline from the dealer's on-screen box (positionInfoButton),
- * so it tracks the figure across screen sizes; this rule owns the look. Matches the
- * nexus's alien-teal energy. */
+/* Info button pinned bottom-left: a small teal "glass" disc with an italic-serif "i". Opens
+ * the full-screen TABLE RULES takeover (.rules-panel — the dealer's ruleset + energy inflation).
+ * Matches the nexus's alien-teal energy. */
 .hud-info {
   position: absolute;
   bottom: 14px;
@@ -231,14 +229,6 @@
 
 .hud-info:active {
   transform: scale(0.92);
-}
-
-/* Pressed / projecting: lit solid teal, so it reads as the nexus actively projecting. */
-.hud-info.is-active {
-  color: #06232a;
-  border-color: rgba(184, 250, 244, 0.9);
-  background: radial-gradient(circle at 35% 30%, rgba(var(--teal-bright-rgb), 0.98), rgba(96, 220, 210, 0.98));
-  box-shadow: 0 0 16px rgba(var(--teal-rgb), 0.7), inset 0 0 6px rgba(255, 255, 255, 0.3);
 }
 
 /* Battery-saver toggle: a round twin of the info "i", pinned to the bottom-RIGHT corner (mirroring
@@ -444,6 +434,125 @@
 
 .help-panel__hint {
   text-align: center;
+  font: 600 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
+/* TABLE RULES takeover: the full-screen ruleset modal the info "i" opens (replacing the old
+ * cramped nexus projection). Same teal-holo scrim + card + tap-anywhere-to-close as the ability
+ * guide (.help-panel); each row is a single plain-language rule with a colour-coded dot — teal for
+ * house rules, green for the player's roguelite mods, amber for the energy-inflation line. The row
+ * list is rebuilt from the live ruleset on every open (openRules_). */
+.rules-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6; /* above the HUD + the choose-upgrade card, matching .help-panel */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  /* Whole panel is a tap-to-close target; cursor:pointer also makes iOS reliably fire the
+     `click` on this non-interactive div (dismissal is on click, not pointerdown — buildRulesPanel_). */
+  cursor: pointer;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+
+.rules-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.rules-panel__card {
+  width: min(520px, 92vw);
+  max-height: 92vh;
+  overflow-y: auto; /* the ruleset can grow with roguelite mods — scroll if it ever exceeds a screen */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
+}
+
+.rules-panel__title {
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 400; /* Sixtyfour ships one Regular master; faux-bold smears its pixel glyphs */
+  font-size: 22px;
+  letter-spacing: 0.14em;
+  color: rgba(196, 246, 241, 0.98);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55);
+}
+
+.rules-panel__sub {
+  text-align: center;
+  margin-top: -4px;
+  font: 500 14px var(--font-ui);
+  color: rgba(224, 244, 242, 0.72);
+}
+
+.rules-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.rules-panel__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.3;
+}
+
+.rules-panel__dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.rules-panel__text {
+  flex: 1 1 auto;
+  font: 500 15px var(--font-ui);
+  color: rgba(224, 244, 242, 0.92);
+}
+
+/* House rule (the dealer's edge) — teal. */
+.rules-panel__row--house .rules-panel__dot {
+  background: rgba(var(--teal-bright-rgb), 0.95);
+  box-shadow: 0 0 7px rgba(var(--teal-rgb), 0.7);
+}
+
+/* Player roguelite mod (in your favour) — green, text brightens to green too. */
+.rules-panel__row--player .rules-panel__dot {
+  background: rgba(140, 246, 165, 0.95);
+  box-shadow: 0 0 7px rgba(120, 240, 150, 0.7);
+}
+.rules-panel__row--player .rules-panel__text {
+  color: rgba(198, 250, 210, 0.94);
+}
+
+/* Energy inflation (the economy tax that raises ability costs) — amber. */
+.rules-panel__row--econ .rules-panel__dot {
+  background: rgba(255, 206, 125, 0.95);
+  box-shadow: 0 0 7px rgba(255, 198, 110, 0.7);
+}
+.rules-panel__row--econ .rules-panel__text {
+  color: rgba(255, 235, 190, 0.92);
+}
+
+.rules-panel__hint {
+  text-align: center;
+  margin-top: 2px;
   font: 600 12px var(--font-ui);
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1272,6 +1381,28 @@ button.is-hidden,
   }
 
   .help-panel__hint {
+    font-size: 11px;
+  }
+
+  /* Compress the TABLE RULES takeover for a short phone screen. */
+  .rules-panel__card {
+    gap: 10px;
+    padding: 16px 18px;
+    border-radius: 12px;
+  }
+  .rules-panel__title {
+    font-size: 18px;
+  }
+  .rules-panel__sub {
+    font-size: 12.5px;
+  }
+  .rules-panel__list {
+    gap: 7px;
+  }
+  .rules-panel__text {
+    font-size: 13.5px;
+  }
+  .rules-panel__hint {
     font-size: 11px;
   }
 
