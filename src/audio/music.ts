@@ -484,7 +484,7 @@ class MusicService {
 
   private context_(): AudioContext {
     if (!this.ctx_) {
-      this.ctx_ = createAudioContext()
+      this.ctx_ = createAudioContext('music')
       this.master_ = this.ctx_.createGain()
       this.master_.gain.value = this.muted_ ? 0 : this.volume_
       this.master_.connect(this.ctx_.destination)

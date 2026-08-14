@@ -466,7 +466,7 @@ class VoiceService {
   // Own AudioContext via the shared factory (iOS/Android unlock plumbing), like sfx.
   private context_(): AudioContext {
     if (!this.ctx_) {
-      this.ctx_ = createAudioContext()
+      this.ctx_ = createAudioContext('voice')
     }
     return this.ctx_
   }

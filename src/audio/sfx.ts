@@ -794,7 +794,7 @@ class SfxService {
   // automatic sound (e.g. the end-of-hand riffle).
   private context_(): AudioContext {
     if (!this.ctx_) {
-      this.ctx_ = createAudioContext()
+      this.ctx_ = createAudioContext('sfx')
       this.master_ = this.ctx_.createGain()
       this.master_.gain.value = this.muted_ ? 0 : 1
       this.master_.connect(this.ctx_.destination)

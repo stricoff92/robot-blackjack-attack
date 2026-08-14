@@ -1,6 +1,7 @@
 import { sfx } from './audio/sfx'
 import { music } from './audio/music'
 import { voice } from './audio/voice'
+import { getAudioDebugSnapshot } from './audio/context'
 import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange, setAudioMuteControl } from './platform/crazygames'
 import { bootAllowed, renderLock } from './platform/sitelock'
 import { isBatterySaver } from './game/power-mode'
@@ -40,6 +41,53 @@ if (import.meta.env.DEV) {
   }
   window.addEventListener('error', (ev) => showError('error', ev.error ?? ev.message))
   window.addEventListener('unhandledrejection', (ev) => showError('unhandledrejection', ev.reason))
+}
+
+// On-device audio diagnostics (?audiodebug). iOS has no visible console, so render the
+// audio lifecycle state on screen. The two independent tick counters are the key datum:
+// raf (requestAnimationFrame) vs int (setInterval) — after backgrounding and returning,
+// whichever one KEEPS ADVANCING is the timer that recovers on this device. `hb` is the
+// audio module's own setInterval heartbeat; if it stalls on return while `raf` climbs,
+// the poll cadence is the bug. The event log shows the resume/suspend outcomes. Works in
+// prod builds too (gated on the URL param, not DEV), for testing the deployed bundle.
+if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('audiodebug')) {
+  const panel = document.createElement('div')
+  panel.id = 'audio-debug-overlay'
+  panel.setAttribute(
+    'style',
+    'position:fixed;left:0;top:0;z-index:2147483646;max-width:100vw;max-height:72vh;overflow:auto;' +
+      'background:rgba(0,0,0,0.82);color:#3f6;font:11px/1.35 ui-monospace,Menlo,monospace;' +
+      'padding:6px 8px;white-space:pre-wrap;word-break:break-word;pointer-events:none;',
+  )
+  const attach = (): void => {
+    if (document.body) {
+      document.body.appendChild(panel)
+    } else {
+      requestAnimationFrame(attach)
+    }
+  }
+  attach()
+  let rafTicks = 0
+  let intTicks = 0
+  const render = (): void => {
+    const s = getAudioDebugSnapshot()
+    panel.textContent =
+      `raf:${rafTicks}  int:${intTicks}  hb:${s.hbTicks}\n` +
+      `hidden:${s.hidden}  active:${s.active}\n` +
+      `ctx: ${s.ctxs.join('   ')}\n` +
+      `--- events ---\n` +
+      s.events.join('\n')
+  }
+  const rafLoop = (): void => {
+    rafTicks++
+    render()
+    requestAnimationFrame(rafLoop)
+  }
+  requestAnimationFrame(rafLoop)
+  window.setInterval(() => {
+    intTicks++
+    render()
+  }, 500)
 }
 
 // Download + decode every sound effect up front so a play() is instant. The
