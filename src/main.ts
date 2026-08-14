@@ -5,6 +5,7 @@ import { getAudioDebugSnapshot } from './audio/context'
 import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange, setAudioMuteControl } from './platform/crazygames'
 import { bootAllowed, renderLock } from './platform/sitelock'
 import { isBatterySaver } from './game/power-mode'
+import { isMusicMuted } from './game/music-mute'
 import { setSaverDpr } from './render/canvas'
 import { mountGameView } from './ui/game-view'
 
@@ -110,6 +111,9 @@ voice.prime()
 // (see the dev hook below) and bake the value you land on in here.
 const MUSIC_LEVEL = 0.4
 music.setVolume(MUSIC_LEVEL)
+// Apply the player's per-device music-mute choice (the HUD music toggle) before playback starts.
+// Independent of the platform mute wired below — both are OR'd inside the music service.
+music.setUserMuted(isMusicMuted())
 
 const startMusic = (): void => {
   music.start()

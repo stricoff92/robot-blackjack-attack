@@ -132,6 +132,11 @@ class MusicService {
   // Platform mute (CrazyGames settings.muteAudio) — silences the master while set, independent of
   // `volume` so unmuting restores the level. Overrides any in-game level.
   private muted_ = false
+  // In-game per-device music mute (the HUD music toggle) — silences the master while set,
+  // independent of the platform `muted_` above. The two are OR'd in effectiveGain_(), so neither
+  // path clobbers the other: unmuting one source never un-silences the music if the other still
+  // wants it quiet. SFX + voice are untouched (separate services).
+  private userMuted_ = false
 
   // --- Banker-coda (double-or-nothing) theme ---
   // True while the run is inside an active coda hand: "Mistake the Getaway" is the theme, and
@@ -161,17 +166,32 @@ class MusicService {
   setVolume(volume: number): void {
     this.volume_ = volume
     if (this.master_) {
-      this.master_.gain.value = this.muted_ ? 0 : volume
+      this.master_.gain.value = this.effectiveGain_()
     }
   }
 
   // Platform mute toggle (CrazyGames settings.muteAudio). Silences the master; restores `volume`
-  // on unmute.
+  // on unmute (unless the in-game music toggle still wants it muted).
   setMuted(muted: boolean): void {
     this.muted_ = muted
     if (this.master_) {
-      this.master_.gain.value = muted ? 0 : this.volume_
+      this.master_.gain.value = this.effectiveGain_()
     }
+  }
+
+  // In-game per-device music mute (the HUD music toggle). Silences the master by gain while set —
+  // the track keeps streaming (which keeps the shared AudioContext alive; see context.ts), it's
+  // just inaudible. Independent of the platform mute above; both are OR'd in effectiveGain_().
+  setUserMuted(muted: boolean): void {
+    this.userMuted_ = muted
+    if (this.master_) {
+      this.master_.gain.value = this.effectiveGain_()
+    }
+  }
+
+  // The master gain to apply right now: silent if EITHER mute source is set, else the music level.
+  private effectiveGain_(): number {
+    return this.muted_ || this.userMuted_ ? 0 : this.volume_
   }
 
   // Set one track's base level (1 = 100%), independent of the master volume.
@@ -486,7 +506,7 @@ class MusicService {
     if (!this.ctx_) {
       this.ctx_ = createAudioContext('music')
       this.master_ = this.ctx_.createGain()
-      this.master_.gain.value = this.muted_ ? 0 : this.volume_
+      this.master_.gain.value = this.effectiveGain_()
       this.master_.connect(this.ctx_.destination)
     }
     return this.ctx_

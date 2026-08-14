@@ -32,10 +32,15 @@ export interface HandSummaryView {
   fade: number
 }
 
-const WIN = '#49b26a'
-const LOSS = '#d8484b'
-const EMPTY = 'rgba(180, 200, 220, 0.32)'
-const MARK = '#0b0f14'
+// rgb triples (not hex): the win/loss discs are drawn WITH a canvas shadow, and iOS/WebKit ignores
+// ctx.globalAlpha on a shadowed fill (the disc paints fully opaque, then snaps to gone when the fade
+// ends). So the fade can't ride on globalAlpha — opacity is baked into each colour's own alpha channel
+// instead, exactly like the (also shadowed) hearts in render/hearts.ts.
+const WIN = '73, 178, 106'
+const LOSS = '216, 72, 75'
+const EMPTY = '180, 200, 220'
+const EMPTY_ALPHA = 0.32 // the empty ring's own translucency, multiplied by the fade below
+const MARK = '11, 15, 20'
 // The kill cash-in cascade: each remaining slot flips green CASH_IN_STAGGER ms after the previous,
 // each popping in over CASH_IN_REVEAL_MS (they overlap into a flowing fill). Exported so game-view
 // can time the Next-hand consent gate to the moment the last bonus slot lands.
@@ -92,7 +97,8 @@ export function drawHandSummary(
   const rowCenterY = (row: number): number => band.center - totalH / 2 + r + row * cell
 
   ctx.save()
-  ctx.globalAlpha = view.fade
+  // NB: the board fade is NOT set via ctx.globalAlpha (WebKit ignores it on the shadowed discs — see the
+  // colour constants). It's passed down into drawSlot and baked into every colour's alpha instead.
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   let minX = Infinity
@@ -109,7 +115,7 @@ export function drawHandSummary(
     maxX = Math.max(maxX, x)
     const slot = view.slots[i]
     if (i < view.revealFrom || slot === 'empty') {
-      drawSlot(ctx, x, y, r, slot, 1)
+      drawSlot(ctx, x, y, r, slot, view.fade)
       continue
     }
     // A newly-filled slot: the gray dot shows FIRST (the old state), then the win/loss symbol
@@ -118,9 +124,9 @@ export function drawHandSummary(
     // fills its two checks one-by-one and a kill flows straight on into its cash-in.
     const k = i - view.revealFrom
     const p = clamp01((view.cashInElapsed - k * CASH_IN_STAGGER) / CASH_IN_REVEAL_MS)
-    drawSlot(ctx, x, y, r, 'empty', 1)
+    drawSlot(ctx, x, y, r, 'empty', view.fade)
     if (p > 0) {
-      drawSlot(ctx, x, y, r * (1 + (1 - p) * MARK_POP), slot, p)
+      drawSlot(ctx, x, y, r * (1 + (1 - p) * MARK_POP), slot, view.fade * p)
     }
   }
   ctx.restore()
@@ -140,11 +146,13 @@ export function drawHandSummary(
   return { rays, slotCenters }
 }
 
+// `alpha` is the slot's full effective opacity (board fade × any pop-in), baked into every colour rather
+// than applied via ctx.globalAlpha — the shadowed disc fill below would ignore globalAlpha on iOS/WebKit.
 function drawSlot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, slot: SummarySlot, alpha: number): void {
+  const a = clamp01(alpha)
   ctx.save()
-  ctx.globalAlpha *= alpha
   if (slot === 'empty') {
-    ctx.strokeStyle = EMPTY
+    ctx.strokeStyle = `rgba(${EMPTY}, ${EMPTY_ALPHA * a})`
     ctx.lineWidth = Math.max(1.5, r * 0.16)
     ctx.beginPath()
     ctx.arc(x, y, r, 0, Math.PI * 2)
@@ -153,14 +161,14 @@ function drawSlot(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
     return
   }
   const color = slot === 'win' ? WIN : LOSS
-  ctx.fillStyle = color
-  ctx.shadowColor = color
+  ctx.fillStyle = `rgba(${color}, ${a})`
+  ctx.shadowColor = `rgba(${color}, ${a})` // the glow fades WITH the disc (its alpha, not globalAlpha)
   ctx.shadowBlur = r * 0.8
   ctx.beginPath()
   ctx.arc(x, y, r, 0, Math.PI * 2)
   ctx.fill()
   ctx.shadowBlur = 0
-  ctx.strokeStyle = MARK
+  ctx.strokeStyle = `rgba(${MARK}, ${a})`
   ctx.lineWidth = Math.max(2, r * 0.24)
   ctx.beginPath()
   if (slot === 'win') {

@@ -18,6 +18,7 @@ ICONS: Flaticon Free License (attribution required)
   Star icons by Magnific               https://www.flaticon.com/free-icons/star
   Green icons by Hilmy Abiyyu A.       https://www.flaticon.com/free-icons/green
   Thief icons by Hight Quality Icons   https://www.flaticon.com/free-icons/thief   (detective.png)
+  Music icons by Magnific              https://www.flaticon.com/free-icons/music   (musical-note.png)
 
 SOUND EFFECTS: Helton Yan (fierydzn@gmail.com), Creative Commons By Attribution 4.0
   https://creativecommons.org/licenses/by/4.0/

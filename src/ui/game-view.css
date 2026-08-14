@@ -278,6 +278,75 @@
   pointer-events: none; /* clicks belong to the button, not the image */
 }
 
+/* The music-mute toggle: a round twin of the battery button, stacked directly above it (same
+ * bottom-right corner, one button-height + gap higher). Base state = MUTED: a flat gray note struck
+ * by a diagonal slash, no glow. The .is-active state (music playing) lights the note white and rings
+ * it with the SAME green power-glow the battery ON state uses. */
+.hud-music {
+  position: absolute;
+  bottom: calc(max(14px, env(safe-area-inset-bottom, 0px)) + 46px); /* clears the 38px battery button below + 8px gap */
+  right: max(14px, env(safe-area-inset-right, 0px));
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none; /* muted = no glow */
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
+  z-index: 4;
+}
+.hud-music:hover {
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+.hud-music:active {
+  transform: scale(0.92);
+}
+/* Music playing: ring the note with the same green power-glow the battery ON state uses. */
+.hud-music.is-active {
+  border-color: rgba(120, 240, 170, 0.85);
+  box-shadow: 0 0 14px rgba(120, 240, 170, 0.55), inset 0 0 6px rgba(120, 240, 170, 0.25);
+}
+
+/* The note glyph: black-on-transparent art. Muted → invert to a flat gray (invisible black on the
+ * dark disc otherwise); playing (.is-active) → invert fully to bright white. */
+.hud-music__icon {
+  width: 18px; /* a touch smaller than the battery leaf so the note has breathing room inside the disc */
+  height: 18px;
+  display: block;
+  pointer-events: none; /* clicks belong to the button, not the image */
+  filter: invert(0.6); /* muted: flat gray note */
+}
+.hud-music.is-active .hud-music__icon {
+  filter: invert(1); /* playing: bright white note */
+}
+
+/* The muted-state diagonal slash struck across the disc (a "no music" mark), shown only when muted;
+ * hidden while playing. Purely decorative, so it never eats a tap. Inset from the rim so its ends
+ * stay inside the circle. */
+.hud-music::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(190, 198, 200, 0.92);
+  transform: translateY(-50%) rotate(45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
+.hud-music.is-active::after {
+  display: none;
+}
+
 /* The "Battery Saver ON/OFF" toast: flashes just above the toggle when it's pressed, then fades
  * (showBatteryToast_ times it — held 800ms, then the .is-fading transition fades it over 200ms).
  * Right edge pinned to the toggle's right edge (same `right` inset); it grows leftward. Dark teal-
@@ -286,7 +355,7 @@
 .hud-battery-toast {
   position: absolute;
   right: max(14px, env(safe-area-inset-right, 0px)); /* right-aligned with the toggle's right edge (.hud-battery right: 14px) */
-  bottom: calc(60px + env(safe-area-inset-bottom, 0px)); /* clears the toggle above it (bottom 14 + 38 height + 8 gap) */
+  bottom: calc(106px + env(safe-area-inset-bottom, 0px)); /* clears both stacked toggles above it (battery 14+38+8, then music 38+8) */
   padding: 5px 10px;
   border-radius: 8px;
   background: rgba(6, 20, 24, 0.9);
@@ -1094,7 +1163,8 @@ button.is-hidden,
 .hud-powerups.opening-hidden,
 .hud-actions.opening-hidden,
 .hud-info.opening-hidden,
-.hud-battery.opening-hidden {
+.hud-battery.opening-hidden,
+.hud-music.opening-hidden {
   opacity: 0;
   pointer-events: none;
 }
@@ -1342,9 +1412,26 @@ button.is-hidden,
     height: 18px;
   }
 
+  .hud-music {
+    bottom: calc(max(10px, env(safe-area-inset-bottom, 0px)) + 40px); /* clears the 32px compact battery button + 8px gap */
+    right: max(10px, env(safe-area-inset-right, 0px));
+    width: 32px;
+    height: 32px;
+  }
+
+  .hud-music__icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  .hud-music::after {
+    left: 6px;
+    right: 6px;
+  }
+
   .hud-battery-toast {
     right: max(10px, env(safe-area-inset-right, 0px)); /* track the compact toggle's right edge (.hud-battery right: 10px) */
-    bottom: calc(50px + env(safe-area-inset-bottom, 0px)); /* clears the compact toggle (bottom 10 + 32 height + 8 gap) */
+    bottom: calc(90px + env(safe-area-inset-bottom, 0px)); /* clears both stacked compact toggles (battery 10+32+8, then music 32+8) */
     padding: 4px 8px;
     font-size: 12px;
   }

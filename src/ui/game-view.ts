@@ -10,6 +10,7 @@ import { dealerHardHitCeiling, DESTROY_TOKEN, getShift, maxHitsFor, powerupCost,
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, REWARDED_AD_ENERGY, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
 import { isBatterySaver, setBatterySaver } from '../game/power-mode'
+import { isMusicMuted, setMusicMuted } from '../game/music-mute'
 import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
 import { clearScoreBanner, gameplayStart, gameplayStop, isCrazyGamesApp, pickBannerSize, reportGameCompletedPercentage, requestMidgameAd, requestRewardedAd, requestScoreBanner, rewardedAdsSupported } from '../platform/crazygames'
 import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
@@ -66,6 +67,8 @@ import chipUrl from '../assets/poker-chip.png'
 import starUrl from '../assets/star.png'
 // The green leaf glyph on the battery-saver toggle (bottom-right HUD button).
 import greenUrl from '../assets/green.png'
+// The musical-note glyph on the music-mute toggle (bottom-right HUD button, above the battery one).
+import musicalNoteUrl from '../assets/musical-note.png'
 
 // Path → icon: Sabotage a detective, Payout a chip, Tokens the token icon.
 const UPGRADE_ICONS: Record<UpgradePath, string> = {
@@ -662,6 +665,10 @@ class GameView {
   // title / tap-to-start screen is up) a matching pill. Both flip the render loop's park mode.
   private batteryBtnEl_!: HTMLButtonElement
   private saverToggleEl_: HTMLButtonElement | null = null
+  // The music-mute toggle: a round HUD button stacked directly above the battery one. Glows (note
+  // lit) while music plays; a gray, slashed note when muted. Mutes ONLY the music (SFX/voice stay).
+  private musicBtnEl_!: HTMLButtonElement
+  private musicMuted_ = isMusicMuted()
   // The title-screen Credits link + its modal, intro chrome torn down when the run starts (there is
   // no in-game entry point). Built alongside the tap catcher / title menu; see buildCreditsUi_.
   private creditsLink_: HTMLElement | null = null
@@ -819,6 +826,7 @@ class GameView {
     this.actionsEl_.classList.add('opening-hidden')
     this.infoBtnEl_.classList.add('opening-hidden')
     this.batteryBtnEl_.classList.add('opening-hidden')
+    this.musicBtnEl_.classList.add('opening-hidden')
     if (this.resumableRun_) {
       this.buildTitleMenu_(this.resumableRun_)
     } else {
@@ -1116,6 +1124,7 @@ class GameView {
     this.actionsEl_.classList.remove('opening-hidden')
     this.infoBtnEl_.classList.remove('opening-hidden')
     this.batteryBtnEl_.classList.remove('opening-hidden')
+    this.musicBtnEl_.classList.remove('opening-hidden')
     // The full column (now including the help button, hidden during the intro) is live — re-measure
     // so the guard trips on a too-short screen even if the player never resizes after the deal.
     this.viewportGuard_?.evaluate()
@@ -2363,7 +2372,8 @@ class GameView {
     // grace clock the tail's park decision reads. Skipped when saver is off: the loop never parks
     // there, so lastBusyAt_ is unused and busy_'s ~25-signal scan would be pure waste. A toggle ON
     // re-stamps lastBusyAt_ via setBatterySaver_ → ensureLoop_, so it's never stale on entry. Short
-    // cosmetic fades aren't in busy_; the grace window covers them.
+    // cosmetic fades ARE in busy_ (via fadingCosmetic_) so a fade that starts on a stale grace clock
+    // still keeps the loop awake instead of snapping.
     if (this.sleepTimer_) {
       clearTimeout(this.sleepTimer_)
       this.sleepTimer_ = 0
@@ -2856,8 +2866,10 @@ class GameView {
   //
   // MAINTENANCE: keep this list in sync with the animation sources. Any NEW canvas animation that can
   // run LONGER than SETTLE_GRACE_MS (1200ms) must be registered here (or be driven by an armed timer
-  // that is), or in battery saver the loop parks mid-animation and freezes it. Short (<grace) fades
-  // are safe to omit — the grace window covers them.
+  // that is), or in battery saver the loop parks mid-animation and freezes it. Short cosmetic opacity
+  // fades used to be omitted on the theory the grace window covers them — but a fade that BEGINS while
+  // lastBusyAt_ is already stale isn't covered and snaps (it renders on the frozen clock). They are now
+  // registered via fadingCosmetic_ below.
   private busy_(t: number): boolean {
     return (
       this.anim_.isAnimating(t) ||
@@ -2891,7 +2903,25 @@ class GameView {
       this.windowArrivalAt_ > 0 ||
       this.codaArrivalAt_ > 0 ||
       this.codaAdvanceAt_ > 0 ||
-      this.heartDeathPending_
+      this.heartDeathPending_ ||
+      this.fadingCosmetic_(t)
+    )
+  }
+
+  // Short opacity fades that render on the FROZEN clock and are NOT animator-backed, so they aren't
+  // otherwise in busy_. Registered so the loop can't park mid-fade and snap them to their end value: a
+  // fade can start when lastBusyAt_ is already stale, so the 1200ms grace window doesn't always cover it.
+  // Each is a bounded window from its start stamp; the steady held state (fade == 1) matches none of them,
+  // so an idle summary/heart display still parks as before. (tap-to-start's fade is on the splash, where
+  // onSplash already forces quiet=false, so it never needs listing here.)
+  private fadingCosmetic_(t: number): boolean {
+    const s = this.summary_
+    return (
+      (this.started_ && t - this.startedAt_ < HEARTS_FADE_MS) || // hearts fade-in
+      (this.summaryFadeAt_ > 0 && t - this.summaryFadeAt_ < SUMMARY_FADE_MS) || // summary fade-out
+      (s !== null && s.appearAt > 0 && this.summaryFadeAt_ === 0 && t - s.appearAt < SUMMARY_FADE_IN_MS) || // summary fade-in
+      (this.codaStakeHideAt_ > 0 && t - this.codaStakeHideAt_ < CODA_STAKE_FADE_MS) || // coda-stake fade-out
+      (this.analysisFadeOut_ !== null && t - this.analysisFadeStart_ < ANALYSIS_FADE_MS) // Analyze flicker-out
     )
   }
 
@@ -2904,6 +2934,16 @@ class GameView {
     setHoloFlickerStatic(on) // freeze the holo readout flicker while saver is on
     this.syncBatteryToggle_()
     this.ensureLoop_()
+  }
+
+  // Flip the music mute at runtime (HUD toggle): persist the explicit choice, silence/restore the
+  // music master gain (SFX + voice untouched), and refresh the toggle chrome. Audio-only — no
+  // ensureLoop_ needed (nothing on the render loop depends on it).
+  private setMusicMuted_(muted: boolean): void {
+    this.musicMuted_ = muted
+    setMusicMuted(muted)
+    music.setUserMuted(muted)
+    this.syncMusicToggle_()
   }
 
   private ensureLoop_(): void {
@@ -3203,6 +3243,10 @@ class GameView {
     this.batteryToastEl_ = this.buildBatteryToast_() // the "Battery Saver ON/OFF" flash above it
     this.syncBatteryToggle_() // reflect the initial (per-device default or stored) state
 
+    // The music-mute toggle stacks directly above the battery button (same corner).
+    this.musicBtnEl_ = this.buildMusicButton_()
+    this.syncMusicToggle_() // reflect the initial (stored) mute state
+
     // The help button ("H") rides at the BOTTOM of the powerup column (appended last, so
     // flexbox keeps it right under whichever ability button is currently the lowest visible
     // one — the stack's height changes as powerups show/hide). Opens the ability-guide modal.
@@ -3219,7 +3263,7 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_, this.rulesPanelEl_)
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.musicBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_, this.rulesPanelEl_)
   }
 
   // The info button: a small circular "i" pinned bottom-left. A click opens the full-screen
@@ -3250,6 +3294,26 @@ class GameView {
     btn.addEventListener('click', () => {
       this.setBatterySaver_(!this.batterySaver_)
       this.showBatteryToast_(this.batterySaver_) // flash the new state above the toggle
+    })
+    return btn
+  }
+
+  // The music-mute toggle: a round twin of the battery button, stacked directly above it (same
+  // bottom-right corner). Represents the MUSIC: lit note + green glow while playing, gray slashed
+  // note when muted. Mutes only the soundtrack (SFX + dealer voice keep playing) — the icon's
+  // black-on-transparent pixels are recoloured white/gray by CSS filters per state.
+  private buildMusicButton_(): HTMLButtonElement {
+    const btn = document.createElement('button')
+    btn.className = 'hud-music'
+    btn.type = 'button'
+    const icon = document.createElement('img')
+    icon.src = musicalNoteUrl // musical-note glyph (bundled + fingerprinted by Vite)
+    icon.className = 'hud-music__icon'
+    icon.alt = ''
+    icon.setAttribute('aria-hidden', 'true')
+    btn.appendChild(icon)
+    btn.addEventListener('click', () => {
+      this.setMusicMuted_(!this.musicMuted_)
     })
     return btn
   }
@@ -3383,6 +3447,20 @@ class GameView {
       pill.setAttribute('aria-checked', String(on))
       pill.textContent = `Battery saver: ${on ? 'ON' : 'OFF'}`
     }
+  }
+
+  // Reflect the current music-mute state on the round HUD button: the `is-active` (lit note + glow)
+  // look means music is PLAYING, so it's the inverse of the muted flag. Called at build + on toggle.
+  private syncMusicToggle_(): void {
+    if (!this.musicBtnEl_) {
+      return
+    }
+    const playing = !this.musicMuted_
+    this.musicBtnEl_.classList.toggle('is-active', playing)
+    this.musicBtnEl_.setAttribute('aria-pressed', String(playing))
+    const label = playing ? 'Music: on' : 'Music: off'
+    this.musicBtnEl_.setAttribute('aria-label', label)
+    this.musicBtnEl_.title = label
   }
 
   // The help button: a small circular "?" at the bottom of the powerup column. A click opens
@@ -4990,6 +5068,7 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
       'Star icons by Magnific (Flaticon)',
       'Green icons by Hilmy Abiyyu A. (Flaticon)',
       'Thief icons by Hight Quality Icons (Flaticon)',
+      'Music icons by Magnific (Flaticon)',
     ],
   },
   {
