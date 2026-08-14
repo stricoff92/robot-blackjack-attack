@@ -770,6 +770,11 @@ class GameView {
           this.sleepTimer_ = 0
         }
       } else {
+        // Reconcile the overlay/buttons on the very first return frame. A death/laser scheduled into
+        // the hidden window couldn't paint (the RAF was cancelled), so make the picker / Next / result
+        // state coherent immediately rather than waiting on the settle edge. The dealer figure already
+        // reads correctly as gone (its state is a pure function of `now`); this only re-syncs the DOM.
+        this.syncOverlay_(now())
         this.ensureLoop_()
       }
     })
@@ -878,6 +883,19 @@ class GameView {
       return // already starting (guard against a double click)
     }
     const resumed = mode === 'continue' ? this.resumableRun_ : null
+    // A resolved + upgradePending save is a KILL taken at settle — before the shatter got to play (or
+    // the player refreshed on the summary / picker). Capture the kill facts from the RAW save now,
+    // BEFORE nextHand() consumes upgradePending, so resumeKillReplay_ can present a coherent defeated
+    // table instead of walking the full-HP replacement in under the picker (the reported bug).
+    const resumeKill =
+      resumed && resumed.phase === 'resolved' && resumed.upgradePending && resumed.round
+        ? {
+            round: resumed.round,
+            outgoingShift: resumed.run.shiftIndex - 1, // the beaten dealer (state already advanced past it)
+            incomingShift: resumed.run.shiftIndex,
+            incomingIntegrity: resumed.run.integrity,
+          }
+        : null
     if (resumed) {
       this.session_.adoptSession(resumed)
       // A 'resolved' checkpoint is a between-hands state — the hand already settled and the deck
@@ -899,6 +917,15 @@ class GameView {
     this.saverToggleEl_?.remove()
     this.saverToggleEl_ = null
     this.dismissCreditsUi_()
+    // A resumed KILL that lands on the upgrade picker takes a dedicated path: snap to a defeated table
+    // (the beaten dealer already gone) and show the picker over the empty felt, rather than walking the
+    // full-HP replacement in beneath it. The pick then walks the replacement in via the normal deferred
+    // arrival (pendingCeremony_ → playArrival_). A MAXED kill lands on 'betting' (no picker), so it
+    // never shows the broken state and keeps the normal start path below.
+    if (resumeKill && this.state_.phase === 'choosing-upgrade') {
+      this.resumeKillReplay_(resumeKill)
+      return
+    }
     // Resume entry states (after the resolved→next advance above):
     //  • 'playing' / 'coda' — a hand/coda is mid-action and can't be re-dealt, so snap to a settled,
     //    ceremony-free scene (resumeSettled_).
@@ -975,6 +1002,71 @@ class GameView {
     this.paintTable_(canvas, layout, this.tableHasDeck_())
     this.updateClown_(t) // a run resumed at dealer 6 snaps the clown to standing beside it
     this.renderCast_(canvas, layout, t, this.dealer_.isSequencing(t)) // sparks only during the damage window
+    this.renderPlay_(canvas, layout, t)
+    this.renderNexus_(canvas, layout, t, t)
+    this.renderOverlay_(canvas, layout, t, t, t)
+    this.lastAnimating_ = false
+    this.syncOverlay_(t)
+    this.ensureLoop_()
+  }
+
+  // Resume a saved run that sits on the post-kill upgrade picker ('resolved' + upgradePending). The
+  // killing hand settled and the state already advanced to the replacement, but the death animation
+  // never played (the save predates it, or the player refreshed before Next). Rather than walk the
+  // fresh replacement in beneath the picker — which reads as "nobody died" — snap to a coherent
+  // defeated table: the beaten dealer is already gone, the picker shows over the empty felt, and the
+  // pick walks the replacement in via the normal deferred arrival (pendingCeremony_ → playArrival_,
+  // fired in run_ on the pick). Modeled on resumeSettled_; the run is already adopted + advanced past
+  // the dead dealer (nextHand), so this is display only.
+  private resumeKillReplay_(k: {
+    round: Round
+    outgoingShift: number
+    incomingShift: number
+    incomingIntegrity: number
+  }): void {
+    const t = now()
+    // Snap the scene up with no opening ceremony (mirror resumeSettled_): stand ready, no intro hold.
+    this.started_ = true
+    this.startedAt_ = t // fade the hearts in as Continue snaps the scene up
+    this.introHold_ = false
+    this.deckHidden_ = false
+    this.openingCountsShown_ = true
+    this.dealer_.standAtMark() // cancel the constructor's parked walk-in
+    // The resting deck + cards belong to the BEATEN dealer — wear its colour until the pick flies a
+    // fresh wrapped deck in.
+    this.deckColorShift_ = k.outgoingShift
+    setCardBack(dealerColors(k.outgoingShift, t).back)
+    // Force the beaten dealer GONE with no visible death: a PAST-dated death-only kill (nextShift >
+    // prevShift → mode 'kill'; now already past KILL_DEATH_MS → alive()/isBlocking() false, so nothing
+    // draws). The shatter isn't re-run — the player either already saw it or refreshed past it; we only
+    // need a defeated table under the picker. Uses dealer_.sync directly (NOT playDeath_), so the +40
+    // bounty and cash-in — already granted before the save — are never re-emitted.
+    this.dealer_.sync(0, k.outgoingShift, k.incomingIntegrity, k.incomingShift, t - KILL_DEATH_MS - 1, false, false)
+    // Rest the killing hand's cards on the felt so the replacement's mouth has something to shred when
+    // it walks in on the pick (the renderer draws nothing for cards the animator has no timing for) —
+    // matching the live kill, which keeps prevRound resting through the picker.
+    this.collectRound_ = k.round
+    this.anim_.setNow(t)
+    this.anim_.settle({ ...this.state_, round: k.round }, t)
+    // Hand the back half (walk-in + shred + fresh deck + deal) to the existing arrival machinery: the
+    // pick fires playArrival_ off pendingCeremony_ (run_, prevPhase 'choosing-upgrade'). The state
+    // already advanced, so shiftIndex/integrity ARE the incoming dealer.
+    this.pendingCeremony_ = {
+      prevRound: k.round,
+      incomingShift: k.incomingShift,
+      incomingIntegrity: k.incomingIntegrity,
+    }
+    this.upgradeRevealAt_ = t // the death is "already done" — let the picker surface at once
+    // Reveal the HUD + buttons and paint every layer once (mirror resumeSettled_), then drive the loop.
+    this.stage_.overlay.classList.remove('hud-hidden')
+    this.introCatcher_?.remove()
+    this.introCatcher_ = null
+    this.revealOpeningButtons_()
+    const canvas = this.stage_.canvas
+    const layout = computeLayout(canvas.width, canvas.height)
+    this.paintTable_(canvas, layout, this.tableHasDeck_())
+    this.updateClown_(t)
+    this.renderCast_(canvas, layout, t, this.dealer_.isSequencing(t))
     this.renderPlay_(canvas, layout, t)
     this.renderNexus_(canvas, layout, t, t)
     this.renderOverlay_(canvas, layout, t, t, t)

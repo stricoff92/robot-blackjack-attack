@@ -6,6 +6,7 @@ import { createRng } from './random'
 import { startRound } from './round'
 import { startRun } from './run'
 import { Session } from './session'
+import { MAX_UPGRADE_TIER } from './upgrades'
 
 // A resolved-hand session snapshot (the between-hands checkpoint), with a pending upgrade or not.
 function resolvedSave(upgradePending: boolean, run = startRun(3)): PersistedSession {
@@ -125,6 +126,24 @@ describe('resume (integration)', () => {
     s.nextHand()
     expect(s.snapshot().phase).toBe('betting')
     expect(s.snapshot().round).toBeNull()
+  })
+
+  // A kill still sets upgradePending at settle even when every path is maxed, but nextHand routes it
+  // to 'betting' (no picker) since hasAvailableUpgrade is false. The UI's resumeKillReplay_ is scoped
+  // to the 'choosing-upgrade' landing, so this maxed sub-case stays on the normal start path — never
+  // showing the "picker over a live dealer" symptom. Pins that scoped-out branch.
+  it('resolved + pending upgrade but every path maxed → resume advances to betting (no picker)', () => {
+    const maxed = {
+      ...startRun(3),
+      shiftIndex: 3,
+      kills: [1, 2],
+      upgrades: { antiDealer: MAX_UPGRADE_TIER, chipEco: MAX_UPGRADE_TIER, tokenEco: MAX_UPGRADE_TIER },
+    }
+    const s = new Session(0)
+    s.adoptSession(resolvedSave(true, maxed))
+    expect(s.snapshot().phase).toBe('resolved')
+    s.nextHand()
+    expect(s.snapshot().phase).toBe('betting')
   })
 
   it('clearRun wipes a saved run so it no longer resumes', () => {

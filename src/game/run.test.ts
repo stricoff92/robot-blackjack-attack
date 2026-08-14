@@ -156,6 +156,31 @@ describe('Dealer 6 desperation', () => {
   })
 })
 
+describe('applyRound kill', () => {
+  // The invariant resumeKillReplay_ (game-view, the post-kill resume path) relies on: on a non-final
+  // kill the shift advances and the beaten dealer is recorded as the last kill, so `shiftIndex - 1` IS
+  // the outgoing dealer to show dying/gone under the upgrade picker.
+  it('a non-final kill advances the shift; the beaten dealer is shiftIndex - 1', () => {
+    const after = applyRound({ ...startRun(1), integrity: 1 }, beatTwentyWin())
+    expect(after.kills.length).toBe(1)
+    expect(after.coda).toBe(false)
+    expect(after.shiftIndex).toBe(2)
+    expect(after.kills.at(-1)).toBe(after.shiftIndex - 1)
+  })
+
+  // The 6th kill enters the coda instead of a normal 'resolved' — so a resolved + upgradePending save
+  // (which the resume path keys on) can NEVER occur at the final-dealer boundary. Companion to the
+  // token-inflation coda test below; here we pin the phase-defining flags directly.
+  it('the final-dealer kill sets coda (never a resolved + upgrade pick)', () => {
+    const after = applyRound(
+      { ...startRun(1), shiftIndex: 6, integrity: 1, kills: [1, 2, 3, 4, 5] },
+      beatTwentyWin(),
+    )
+    expect(after.kills.length).toBe(6)
+    expect(after.coda).toBe(true)
+  })
+})
+
 describe('token inflation', () => {
   // A beat-20 win kills Dealer 1 at its last hit; that killing hand banks 22 win tokens + a
   // 40-token kill bounty toward the shift's inflation tally (Dealer 1 denom = 140).
