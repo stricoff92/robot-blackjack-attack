@@ -4,10 +4,11 @@
 // unlock plumbing in ./context (see createAudioContext).
 //
 // Tracks download + decode lazily — each one the first time it is about to
-// play, and only once (cached thereafter). "The Cannery" always opens the set;
-// when a track finishes a different random track follows (never an immediate
-// repeat). The follow-up is chosen and prefetched while the current track is
-// still playing, so the hand-off is gapless.
+// play, and only once (cached thereafter). The regular-round tracks are shuffled
+// once on page load and then played in that fixed order on endless repeat, so
+// every track is heard before any repeats and no track is hard-coded to open the
+// set. The follow-up is chosen and prefetched while the current track is still
+// playing, so the hand-off is gapless.
 
 import { createAudioContext } from './context'
 
@@ -42,12 +43,11 @@ interface TrackDef {
    */
   baseVolume: number
   /**
-   * DEV-only audition override: set on a track to make the soundtrack OPEN with it instead of "The
-   * Cannery" (like a temporary OPENING_TRACK), so you can hear that track in game immediately rather
-   * than waiting for the random rotation to reach it. First flagged track wins if several are set.
-   * Compiled out of production — a stray `force` left here is inert in the build, so the shipped game
-   * always opens with OPENING_TRACK. For a live jump without an edit, use music.advanceTrack() in the
-   * console (window.music dev hook).
+   * DEV-only audition override: set on a track to make the soundtrack OPEN with it, so you can hear
+   * that track in game immediately rather than waiting for the shuffled rotation to reach it. First
+   * flagged track wins if several are set. Compiled out of production — a stray `force` left here is
+   * inert in the build, so the shipped game opens on a random shuffled rotation track. For a live
+   * jump without an edit, use music.advanceTrack() in the console (window.music dev hook).
    */
   force?: boolean
 }
@@ -96,20 +96,17 @@ const CODA_FADE_IN_MS = 60
 // The "Decisions" (Banker-approach) theme rises from the coda-entry silence, so it fades IN
 // gently rather than hard-starting — nothing's playing under it to duck against.
 const DECISIONS_FADE_IN_MS = 500
-// "The Cannery" always plays first.
-const OPENING_TRACK: TrackName = 'cannery'
 
-// The track the soundtrack actually opens on. Normally OPENING_TRACK; in DEV a track flagged
-// `force: true` in TRACKS wins, so you can audition it in game (see TrackDef.force). The whole
-// override is dead code in production (import.meta.env.DEV is statically false → tree-shaken).
-function openingTrack(): TrackName {
-  if (import.meta.env.DEV) {
-    const forced = ALL_TRACKS.find((name) => TRACKS[name].force)
-    if (forced) {
-      return forced
-    }
+// Fisher–Yates over a COPY. Uses Math.random (not the seeded game Rng): the music rotation is
+// intentionally non-deterministic, like the old random picker. deck.ts has a shuffle too, but it's
+// typed to Card[] and takes a seeded Rng, so it isn't reusable here.
+function shuffled<T>(items: readonly T[]): T[] {
+  const out = items.slice()
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[out[i], out[j]] = [out[j], out[i]]
   }
-  return OPENING_TRACK
+  return out
 }
 
 class MusicService {
@@ -127,6 +124,13 @@ class MusicService {
   private current_: { source: AudioBufferSourceNode; gain: GainNode; name: TrackName } | null = null
   // Decided + prefetched when the current track starts, for a gapless hand-off.
   private queued_: TrackName | null = null
+  // The regular-round playlist: ROTATION_TRACKS shuffled ONCE at construction (= module import =
+  // page load), then walked in this fixed order on endless repeat (rotationCursor_ wraps with %).
+  // Every track is heard before any repeat, and — since the order is fixed and all-distinct — no
+  // track ever repeats immediately, including at the wrap. Cannery is just one entry, no longer the
+  // forced opener.
+  private readonly rotationOrder_: TrackName[] = shuffled(ROTATION_TRACKS)
+  private rotationCursor_ = 0
   private started_ = false
   private volume_ = 1
   // Platform mute (CrazyGames settings.muteAudio) — silences the master while set, independent of
@@ -146,10 +150,10 @@ class MusicService {
   // and then the soundtrack goes SILENT (no auto-advance). resumeAfterEnd() clears it.
   private endSilence_ = false
 
-  // Begin the soundtrack: "The Cannery" first, then random non-repeating tracks
-  // forever. Idempotent — after the first call it just makes sure the context is
-  // resumed. Safe to call before any user gesture; the shared unlock plumbing
-  // resumes the context (and the already-scheduled track) once a gesture arrives.
+  // Begin the soundtrack: the shuffled rotation, played in order on endless repeat
+  // (see rotationOrder_). Idempotent — after the first call it just makes sure the
+  // context is resumed. Safe to call before any user gesture; the shared unlock
+  // plumbing resumes the context (and the already-scheduled track) once a gesture arrives.
   start(): void {
     const ctx = this.context_()
     if (ctx.state === 'suspended') {
@@ -159,7 +163,22 @@ class MusicService {
       return
     }
     this.started_ = true
-    void this.playTrack_(openingTrack())
+    void this.playTrack_(this.openingTrack_())
+  }
+
+  // The track the soundtrack opens on: the first track of the shuffled rotation. In DEV a track
+  // flagged `force: true` in TRACKS wins, so you can audition it in game (see TrackDef.force) —
+  // that override is dead code in production (import.meta.env.DEV is statically false → tree-shaken).
+  // A forced track is returned WITHOUT advancing the rotation cursor (it may not even be a rotation
+  // track), so the shuffled loop still begins cleanly at slot 0 afterwards.
+  private openingTrack_(): TrackName {
+    if (import.meta.env.DEV) {
+      const forced = ALL_TRACKS.find((name) => TRACKS[name].force)
+      if (forced) {
+        return forced
+      }
+    }
+    return this.nextRotation_()
   }
 
   // Master music level (1 = 100%), applied to every track. Persists across tracks.
@@ -223,7 +242,7 @@ class MusicService {
       this.fadeOutAndStop_(outgoing, fadeMs)
     }
     // Prefer the already-prefetched follow-up (decoded, so the fade-in is gapless).
-    const next = this.queued_ ?? this.pickNext_(outgoing?.name ?? OPENING_TRACK)
+    const next = this.queued_ ?? this.nextRotation_()
     this.queued_ = null
     void this.playTrack_(next, fadeMs)
   }
@@ -343,7 +362,7 @@ class MusicService {
     this.advanceTrack()
   }
 
-  // Stop the soundtrack. start() can begin it again from "The Cannery".
+  // Stop the soundtrack. start() can begin it again from the shuffled rotation.
   stop(): void {
     this.started_ = false
     this.queued_ = null
@@ -392,7 +411,7 @@ class MusicService {
 
     // Decide + prefetch the follow-up now (while this one plays) so the next
     // track is already decoded at hand-off time — no silent gap mid-set.
-    this.queued_ = this.pickNext_(name)
+    this.queued_ = this.nextRotation_()
     void this.getBuffer_(this.queued_).catch(() => {})
   }
 
@@ -418,21 +437,24 @@ class MusicService {
     // off to a different rotation track rather than restarting its bang on a hand the player is
     // still sitting on. The next deal restarts the theme via codaHand().
     if (justEnded === CODA_TRACK && this.codaActive_) {
-      const next = this.queued_ ?? this.pickNext_(CODA_TRACK)
+      const next = this.queued_ ?? this.nextRotation_()
       this.queued_ = null
       void this.playTrack_(next)
       return
     }
-    const next = this.queued_ ?? this.pickNext_(justEnded)
+    const next = this.queued_ ?? this.nextRotation_()
     this.queued_ = null
     void this.playTrack_(next)
   }
 
-  // A random rotation track other than the one just played (no immediate repeats). The
-  // coda theme is never in the pool, so this can never surface it outside the coda.
-  private pickNext_(justPlayed: TrackName): TrackName {
-    const options = ROTATION_TRACKS.filter((name) => name !== justPlayed)
-    return options[Math.floor(Math.random() * options.length)]
+  // The next track in the shuffled rotation, advancing (and wrapping) the cursor — so the playlist
+  // walks the whole shuffled order before repeating any track, with no immediate repeats. The coda /
+  // end-sting tracks are never in rotationOrder_, so this can never surface them outside their own
+  // triggers.
+  private nextRotation_(): TrackName {
+    const name = this.rotationOrder_[this.rotationCursor_]
+    this.rotationCursor_ = (this.rotationCursor_ + 1) % this.rotationOrder_.length
+    return name
   }
 
   private stopCurrent_(): void {

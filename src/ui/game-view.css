@@ -254,7 +254,12 @@
   box-shadow: var(--glow-teal-sm);
   pointer-events: auto;
   transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
-  z-index: 4;
+  /* Stays above the panels that appear BETWEEN hands / rounds — the post-kill upgrade picker
+   * (.upgrade-panel z5) and the help / rules modals (z6), both full-screen dims — so this global
+   * control is never covered. It's a device preference, not a gameplay choice, so it must remain
+   * visible + tappable while those are up. Still below the intro title chrome (z20+) and the
+   * viewport guard (z40), under which it's hidden by .opening-hidden / .hud-hidden anyway. */
+  z-index: 8;
 }
 .hud-battery:hover {
   box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
@@ -300,7 +305,9 @@
   box-shadow: none; /* muted = no glow */
   pointer-events: auto;
   transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
-  z-index: 4;
+  /* Twin of the battery toggle: kept above the between-hands / round panels (upgrade picker z5,
+   * help / rules z6) so this global music control is never covered. See .hud-battery. */
+  z-index: 8;
 }
 .hud-music:hover {
   box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
