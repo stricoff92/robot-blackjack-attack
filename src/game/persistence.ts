@@ -105,6 +105,14 @@ export function loadSession(): PersistedSession | null {
   if (!Array.isArray(run.roundWins)) {
     run.roundWins = []
   }
+  // Backfill the rewarded-ad counters (defensive — a pre-v33 save is already rejected on the version
+  // check above, but never let an absent counter read as NaN and defeat the cap comparisons).
+  if (typeof run.rewardedAdsThisRun !== 'number' || !Number.isFinite(run.rewardedAdsThisRun)) {
+    run.rewardedAdsThisRun = 0
+  }
+  if (typeof run.rewardedAdShiftIndex !== 'number' || !Number.isFinite(run.rewardedAdShiftIndex)) {
+    run.rewardedAdShiftIndex = 0
+  }
   return {
     run,
     phase,

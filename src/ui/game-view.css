@@ -73,6 +73,36 @@
   pointer-events: none;
 }
 
+/* CrazyGames display-banner container, pinned top-left on the score screen (that corner is vacant
+ * then — .hud-points/.hud-tokens are both hidden). Sized in CSS px by showScoreBanner_; the SDK
+ * injects an iframe into it. Transparent by default so an unfilled/absent banner shows nothing. */
+.hud-score-banner {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: auto; /* the ad iframe needs clicks (already auto via .stage__overlay > *) */
+}
+
+.hud-score-banner.is-hidden {
+  display: none;
+}
+
+/* Dev-only placeholder (off the real CrazyGames host) so the reserved slot is visible while
+ * developing — a plain white box with its size label. Production paints a real banner instead. */
+.hud-score-banner.is-dev-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  color: #222;
+  font: 700 13px var(--font-ui);
+  letter-spacing: 0.08em;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
 /* The star icon + number, right-aligned on one row. The swell transform rides THIS row
  * (see updatePointsCounter) so the star pumps with the count as a unit — pinned to the
  * right edge so a big swell never pushes off-screen. */
@@ -864,6 +894,65 @@
   max-width: 325px;
 }
 
+/* The optional rewarded-ad energy top-up. Lifted OUT of the Next-hand flex row (absolute, centered
+ * just above it) so it never collides with the bottom-right power-saver toggle and leaves Next hand a
+ * clean solo CTA. Compact + teal so it reads as an optional extra, not the primary button. */
+.hud-actions button.hud-btn-watch-ad {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 12px;
+  font-size: 14px;
+  white-space: nowrap;
+  color: #062018;
+  background: linear-gradient(rgba(var(--teal-rgb), 0.95), rgba(var(--teal-rgb), 0.75));
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.hud-actions button.hud-btn-watch-ad:hover {
+  background: linear-gradient(rgba(var(--teal-rgb), 1), rgba(var(--teal-rgb), 0.85));
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+/* Keep it centered while pressed (override the shared button :active translateY, which drops the -50%). */
+.hud-actions button.hud-btn-watch-ad:active {
+  transform: translate(-50%, 2px);
+}
+
+/* Let the JS `is-hidden` toggle actually hide it: the base rule's display:inline-flex (0,2,1) would
+ * otherwise outrank the generic `button.is-hidden { display:none }` (0,1,1), leaving the button
+ * visible in EVERY phase (it must only show on the between-hands resolved screen). Same fix as
+ * .hud-powerups .hud-help.is-hidden above. */
+.hud-actions button.hud-btn-watch-ad.is-hidden {
+  display: none;
+}
+
+/* "AD" badge — the required clear ad indicator (CrazyGames doesn't mandate the words "Watch ad"). */
+.watch-ad__badge {
+  font: 800 10px var(--font-ui);
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.watch-ad__label {
+  font-weight: 800;
+}
+
+.watch-ad__icon {
+  height: 18px;
+  width: auto;
+  display: block;
+}
+
 .hud-actions button:active,
 .hud-powerups button:active {
   transform: translateY(2px);
@@ -882,7 +971,8 @@
 button.is-hidden,
 .hud-powerups.is-hidden,
 .hud-actions.is-hidden,
-.hud-points.is-hidden {
+.hud-points.is-hidden,
+.hud-tokens.is-hidden {
   display: none;
 }
 

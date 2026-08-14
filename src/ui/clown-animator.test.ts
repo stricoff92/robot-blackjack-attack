@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ClownAnimation } from './clown-animator'
 import { KILL_ARRIVE_MS } from './dealer-animator'
 import { TOTAL_DEALERS } from '../game/run'
+import { evilLaughPattern } from '../audio/voice'
 import type { DealerView } from '../render/dealer'
 
 // A stub dealer whose per-frame answers we set directly, so we can drive the clown's
@@ -78,5 +79,31 @@ describe('ClownAnimation', () => {
     // Follows a beat behind, then leaves the screen.
     expect(clown.leaving(2000)).toBeNull() // still within the follow-delay
     expect(clown.leaving(2600)).toBeGreaterThan(0)
+  })
+
+  // Battery saver freezes the shared cast render clock when the (dead) dealer stops choreographing.
+  // isAnimating is what keeps that clock live across the WHOLE walk-off — including the react delay
+  // BEFORE the slide starts — so the clown never renders stranded mid-exit. Regression guard.
+  it('reports isAnimating across the entire death walk-off, then false once hidden', () => {
+    const clown = new ClownAnimation()
+    clown.observe(stubDealer(), 1000)
+    expect(clown.isAnimating(1000)).toBe(false) // idle standing → saver may freeze it static
+    clown.observe(stubDealer({ dying: () => 0.1 }), 2000)
+    expect(clown.isAnimating(2100)).toBe(true) // react delay (not sliding yet) must stay live
+    expect(clown.isAnimating(2400)).toBe(true) // sliding off
+    clown.observe(stubDealer({ figureShift: () => TOTAL_DEALERS + 1 }), 2400 + KILL_ARRIVE_MS + 50)
+    expect(clown.isAnimating(2400 + KILL_ARRIVE_MS + 50)).toBe(false) // gone
+  })
+
+  it('reports isAnimating while walking in, and during a stand-still laugh', () => {
+    const clown = new ClownAnimation()
+    clown.observe(stubDealer({ arriving: () => 0.01 }), 1000)
+    expect(clown.isAnimating(1000)).toBe(true) // walking in (even during the follow-delay)
+    // Settled to standing: idle → not animating, but an armed laugh re-activates the clock.
+    clown.observe(stubDealer(), 1000 + 600 + KILL_ARRIVE_MS + 50)
+    const t = 1000 + 600 + KILL_ARRIVE_MS + 50
+    expect(clown.isAnimating(t)).toBe(false)
+    clown.emote(t, evilLaughPattern(1, 1))
+    expect(clown.isAnimating(t)).toBe(true) // mid-laugh → keep the mouth clock live
   })
 })

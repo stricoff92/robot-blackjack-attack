@@ -44,6 +44,7 @@ server is `5173`.)
 | `tokenUpgrades=<t>` | `0`–`3` | Start with the **Energy** (`tokenEco`) path unlocked through tier `t`. |
 | `dealerBlackjack` | *(flag)* | The dealer draws a natural 21 (Ace + ten-value) **every** hand. |
 | `playerBlackjack` | *(flag)* | The player is dealt a natural 21 (Ace + ten-value) **every** hand (test the blackjack point bonus / win). |
+| `rewardad` | *(flag)* | Force the "watch ad for +100 energy" button visible on every between-hands (Next-hand) screen, past its low-energy threshold + once-per-dealer / 3-per-run caps. Off-platform the reward is granted immediately (no real ad serves in dev), so the flow is testable on demand. Pair with `tokens=<n>` to also see it under its natural low-energy trigger. |
 
 Invalid or out-of-range values are ignored (the param falls back to off). Numeric
 params are clamped to their stated range; `dealer` also caps at the roster size.

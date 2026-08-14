@@ -1,7 +1,7 @@
 import { sfx } from './audio/sfx'
 import { music } from './audio/music'
 import { voice } from './audio/voice'
-import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange } from './platform/crazygames'
+import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange, setAudioMuteControl } from './platform/crazygames'
 import { bootAllowed, renderLock } from './platform/sitelock'
 import { isBatterySaver } from './game/power-mode'
 import { setSaverDpr } from './render/canvas'
@@ -10,6 +10,36 @@ import { mountGameView } from './ui/game-view'
 const root = document.querySelector<HTMLDivElement>('#app')
 if (!root) {
   throw new Error('missing #app mount element')
+}
+
+// DEV-only on-screen error overlay. iOS Safari has no visible console, and an uncaught error inside
+// the requestAnimationFrame loop silently kills it — the game just freezes mid-cinematic with no
+// clue why. This surfaces any uncaught error / promise rejection ON SCREEN (message + stack) so a
+// device without Web Inspector can still read + screenshot the exact throwing line. Compiled out of
+// production (import.meta.env.DEV). Tap to dismiss.
+if (import.meta.env.DEV) {
+  const showError = (label: string, err: unknown): void => {
+    const e = err as { message?: string; stack?: string } | undefined
+    const text = `${label}: ${(e && (e.stack || e.message)) || String(err)}`
+    let box = document.getElementById('dev-error-overlay')
+    if (!box) {
+      box = document.createElement('div')
+      box.id = 'dev-error-overlay'
+      box.setAttribute(
+        'style',
+        'position:fixed;left:0;right:0;bottom:0;max-height:55vh;overflow:auto;z-index:2147483647;' +
+          'background:rgba(120,0,0,0.95);color:#fff;font:12px/1.4 ui-monospace,Menlo,monospace;' +
+          'padding:10px 12px;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text;',
+      )
+      box.addEventListener('pointerdown', () => box && box.remove())
+      document.body.appendChild(box)
+    }
+    box.textContent = `⚠️ TAP TO DISMISS\n\n${text}\n\n${box.textContent ?? ''}`
+    // Also log, in case Web Inspector IS attached.
+    console.error(label, err)
+  }
+  window.addEventListener('error', (ev) => showError('error', ev.error ?? ev.message))
+  window.addEventListener('unhandledrejection', (ev) => showError('unhandledrejection', ev.reason))
 }
 
 // Download + decode every sound effect up front so a play() is instant. The
@@ -82,6 +112,9 @@ const applyMute = (muted: boolean): void => {
 }
 applyMute(getMuteSetting())
 onMuteChange(applyMute)
+// Let the ad wrappers mute all audio while an ad plays and restore it afterward (to the platform
+// mute, which they read themselves) — required by CrazyGames for every ad.
+setAudioMuteControl(applyMute)
 
 // Battery saver renders the canvas at a lower dpr — must be set BEFORE mounting, so the layers size
 // and the offscreen sprite caches bake at the reduced scale (no live rebuild). Read after SDK init

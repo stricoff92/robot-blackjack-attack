@@ -23,6 +23,10 @@
 //   ?battery=on|off    — force battery-saver mode on/off (overrides the per-device default + stored
 //                        pref). Read in game/power-mode.ts, not here — it drives the render loop's
 //                        park-when-idle, not the run — but listed with the other dev switches.
+//   ?rewardad          — force the "watch ad for +100 energy" button visible on the between-hands
+//                        screen regardless of the low-energy threshold + per-dealer/per-run caps, so
+//                        the rewarded-ad flow can be tested on demand (grants immediately in dev,
+//                        since no real ad serves off-platform)
 //
 // See docs/dev-params.md for the full reference (values, effects, examples). Handy
 // for exercising split without waiting for a pair, buying a pricey powerup off the
@@ -58,6 +62,8 @@ export interface DebugFlags {
   dealerBlackjack: boolean
   /** Force the player's opening two cards to be a natural 21 on every deal. */
   playerBlackjack: boolean
+  /** Force the rewarded-ad button visible regardless of the low-energy threshold + caps. */
+  rewardAd: boolean
 }
 
 const OFF: DebugFlags = {
@@ -73,6 +79,7 @@ const OFF: DebugFlags = {
   tokenUpgrades: null,
   dealerBlackjack: false,
   playerBlackjack: false,
+  rewardAd: false,
 }
 
 export function readDebugFlags(): DebugFlags {
@@ -96,6 +103,7 @@ export function readDebugFlags(): DebugFlags {
     tokenUpgrades: parseUpgradeTier(params.get('tokenUpgrades')),
     dealerBlackjack: params.has('dealerBlackjack'),
     playerBlackjack: params.has('playerBlackjack'),
+    rewardAd: params.has('rewardad'),
   }
 }
 

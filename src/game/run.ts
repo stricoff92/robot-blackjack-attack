@@ -35,7 +35,10 @@ import {
 //      Session.settle_ so it also fires on a T2-voided 21 and stacks on a T3 hijack. The
 //      dealerNaturalConsolation rule flag + lostToDealerNatural hand field + CONSOLATION_FRACTION
 //      scoring are gone (RoundRules/PlayerHand shape changed), so v31 saves are discarded.
-export const RULES_VERSION = 32
+// v33: rewarded-ad usage counters (rewardedAdsThisRun / rewardedAdShiftIndex) added to RunState so
+//      the once-per-dealer + 3-per-run rewarded-ad caps survive a mid-run reload (anti-farm). New
+//      fields change the save shape, so v32 saves are discarded.
+export const RULES_VERSION = 33
 
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
@@ -177,6 +180,12 @@ export interface RunState {
   coda: boolean
   // Set when the player cashes OUT of the coda (vs. busting it) — drives the score-screen title.
   cashedOut: boolean
+  // Rewarded-ad usage this run: how many rewarded ads have paid out (the per-run cap) and the
+  // shiftIndex the most recent one paid for. "Once per dealer" gates on rewardedAdShiftIndex !==
+  // shiftIndex — because shiftIndex only ever climbs, a dealer advance re-enables the offer with NO
+  // per-shift reset. Persisted so a mid-run reload can't reset the caps and farm energy.
+  rewardedAdsThisRun: number
+  rewardedAdShiftIndex: number
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
   upgrades: RunUpgrades
 }
@@ -224,6 +233,8 @@ export function startRun(seed: number): RunState {
     won: false,
     coda: false,
     cashedOut: false,
+    rewardedAdsThisRun: 0,
+    rewardedAdShiftIndex: 0,
     upgrades: emptyUpgrades(),
   }
 }

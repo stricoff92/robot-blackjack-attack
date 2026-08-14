@@ -54,6 +54,8 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   won: 'wn',
   coda: 'cd',
   cashedOut: 'co',
+  rewardedAdsThisRun: 'ra',
+  rewardedAdShiftIndex: 'rx',
   upgrades: 'ug',
   // RunUpgrades
   antiDealer: 'ad',

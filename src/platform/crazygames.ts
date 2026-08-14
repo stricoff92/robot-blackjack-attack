@@ -22,11 +22,38 @@ interface CrazyDataStore {
   removeItem(key: string): void
 }
 
+interface CrazySystemInfo {
+  // Where the game runs: 'apple_store' / 'google_play_store' inside the native CrazyGames app (where
+  // display banners can't render), else a web value. Optional — absent on older SDKs.
+  readonly applicationType?: string
+}
+
 interface CrazyUserModule {
   // Client-side leaderboard submit. The score is AES-GCM encrypted with the game's Encryption
   // Key before it leaves the client; the call resolves regardless (the backend validates
   // silently, keeping anti-cheat opaque), so a returned success is not proof of a recorded score.
   submitScore(payload: { encryptedScore: string }): Promise<unknown>
+  readonly systemInfo?: CrazySystemInfo
+}
+
+interface CrazyAdCallbacks {
+  adStarted(): void
+  adFinished(): void
+  adError(error: unknown): void
+}
+
+interface CrazyAdModule {
+  // Request a video ad. No app-id/key needed (the game is identified by domain). Serving is enabled
+  // server-side at Full Launch; before that requests hit the no-fill (adError) path.
+  requestAd(type: 'midgame' | 'rewarded', callbacks: CrazyAdCallbacks): void
+}
+
+interface CrazyBannerModule {
+  // Request a display banner into an existing DOM container of the given pixel size. Rejects with
+  // 'unfilled' (among others) when no ad is available.
+  requestBanner(options: { id: string; width: number; height: number }): Promise<void>
+  clearBanner(id: string): void
+  clearAllBanners(): void
 }
 
 interface CrazyGameSettings {
@@ -51,6 +78,8 @@ interface CrazySDK {
   data: CrazyDataStore
   user: CrazyUserModule
   game: CrazyGameModule
+  ad: CrazyAdModule
+  banner: CrazyBannerModule
 }
 
 declare global {
@@ -167,6 +196,218 @@ export function onMuteChange(listener: (muted: boolean) => void): void {
     s.game.addSettingsChangeListener(() => listener(getMuteSetting()))
   } catch (e) {
     devLog(`[crazygames] addSettingsChangeListener failed: ${String(e)}`)
+  }
+}
+
+// --- Video ads (midgame + rewarded) + display banners. Ads need no app-id/key — CrazyGames
+// identifies the game by domain and turns serving on server-side once the game reaches Full Launch;
+// until then (Basic Launch / review) requests just hit the no-fill path, so the SAME code monetizes
+// automatically at launch with no change. Every entry point degrades off-platform so dev/tests run
+// identically: midgame continues, rewarded grants in dev (so the flow is testable) but never on a
+// foreign prod host, and banners paint a dev placeholder. ---
+
+// Fallback if the SDK fires neither adFinished nor adError (a broken ad unit must never leave the
+// game paused forever). Longer than any served ad (~30s) so it can't cut a real one short.
+const AD_FALLBACK_MS = 40000
+
+// How long the DEV placeholder ad stays up before auto-continuing (a tap skips it sooner).
+const DEV_AD_PLACEHOLDER_MS = 2500
+
+// Registered by main.ts: mutes/unmutes all three audio services at once. Ads mute on start and
+// restore on end — to the PLATFORM mute (getMuteSetting), NOT force-unmute, so an ad never clobbers
+// the player's own CrazyGames mute.
+let audioMuteControl: ((muted: boolean) => void) | null = null
+
+export function setAudioMuteControl(fn: (muted: boolean) => void): void {
+  audioMuteControl = fn
+}
+
+// Request a midgame (interstitial) ad, then run onDone once it's over — whether it played, errored,
+// or no-filled (the game always continues after a midgame). Exactly-once via runAd_.
+export function requestMidgameAd(onDone: () => void): void {
+  runAd_('midgame', onDone, onDone)
+}
+
+// Request a rewarded ad. onReward runs ONLY on a completed ad (adFinished); onFail on any error/no-
+// fill — never reward there. In dev (no real ad serves) onReward fires so the button is testable;
+// on a genuine foreign/disabled prod host onFail fires (no free reward).
+export function requestRewardedAd(callbacks: { onReward: () => void; onFail: () => void }): void {
+  runAd_('rewarded', callbacks.onReward, callbacks.onFail)
+}
+
+function runAd_(type: 'midgame' | 'rewarded', onFinish: () => void, onError: () => void): void {
+  const s = sdk()
+  const env = getEnvironment()
+  if (!s || env === 'disabled' || env === 'absent') {
+    // No SDK / off-platform (this includes a 'disabled' host — e.g. the dev server opened by LAN IP on
+    // a phone — where the SDK serves NOTHING, so the real ad UI never appears). In DEV paint a visible
+    // placeholder so the full pause→ad→resume flow is testable on ANY device, THEN complete (rewarded
+    // grants on completion, matching the prior dev behaviour). In PROD there's no placeholder: a
+    // rewarded ad on a genuine foreign host must NOT pay out, and a midgame just continues.
+    if (import.meta.env.DEV) {
+      showDevAdPlaceholder_(type, onFinish)
+    } else if (type === 'rewarded') {
+      onError()
+    } else {
+      onFinish()
+    }
+    return
+  }
+  let settled = false
+  const settle = (fn: () => void): void => {
+    if (settled) {
+      return
+    }
+    settled = true
+    window.clearTimeout(timer)
+    audioMuteControl?.(getMuteSetting()) // restore to the platform mute, not a force-unmute
+    fn()
+  }
+  const timer = window.setTimeout(() => settle(onError), AD_FALLBACK_MS)
+  try {
+    s.ad.requestAd(type, {
+      adStarted: () => audioMuteControl?.(true),
+      adFinished: () => settle(onFinish),
+      adError: () => settle(onError),
+    })
+  } catch (e) {
+    devLog(`[crazygames] requestAd(${type}) threw: ${String(e)}`)
+    settle(onError)
+  }
+}
+
+// DEV-only stand-in for the full-screen ad when the SDK serves nothing (an off-platform / 'disabled'
+// host, e.g. the dev server reached by LAN IP on a phone — the real ad UI never appears there). Mutes
+// game audio like a real ad, auto-continues after a beat (tap skips), then runs `done`. With no
+// document (unit tests) `done` fires SYNCHRONOUSLY, so the ad wrappers keep their existing timing.
+// Compiled out of production (callers only reach this under import.meta.env.DEV).
+function showDevAdPlaceholder_(type: 'midgame' | 'rewarded', done: () => void): void {
+  if (typeof document === 'undefined' || !document.body) {
+    done()
+    return
+  }
+  audioMuteControl?.(true) // an ad silences game audio while it plays
+  const overlay = document.createElement('div')
+  overlay.setAttribute(
+    'style',
+    'position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;' +
+      'flex-direction:column;gap:10px;background:rgba(8,8,10,0.94);color:#fff;text-align:center;padding:24px;' +
+      'white-space:pre-line;font:600 20px/1.4 ui-sans-serif,system-ui,sans-serif;-webkit-user-select:none;user-select:none;',
+  )
+  overlay.textContent =
+    `${type === 'rewarded' ? 'Rewarded' : 'Interstitial'} ad\n\nDEV PLACEHOLDER — no real ad off-platform\ntap to continue`
+  let closed = false
+  const close = (): void => {
+    if (closed) {
+      return
+    }
+    closed = true
+    window.clearTimeout(timer)
+    overlay.remove()
+    audioMuteControl?.(getMuteSetting()) // restore to the platform mute, not a force-unmute
+    done()
+  }
+  overlay.addEventListener('pointerdown', close)
+  const timer = window.setTimeout(close, DEV_AD_PLACEHOLDER_MS)
+  document.body.appendChild(overlay)
+}
+
+// Whether to offer the rewarded-ad button: on a genuine CrazyGames environment (real ads) or in dev
+// (testable + grants locally). Never on a foreign/disabled prod host, where it'd be a dead button.
+export function rewardedAdsSupported(): boolean {
+  if (import.meta.env.DEV) {
+    return true
+  }
+  const env = getEnvironment()
+  return env === 'crazygames' || env === 'local'
+}
+
+// The five CrazyGames display-banner sizes, richest first (300×250 fills + earns best, then the wide
+// leaderboard, then the mobile sizes; 468×60 is dropped — weak demand). `pickBannerSize` returns the
+// best that fits the given CSS box, or null if even the smallest won't (skip the banner then).
+export interface BannerSize {
+  width: number
+  height: number
+}
+
+const BANNER_SIZES: readonly { size: BannerSize; minW: number; minH: number }[] = [
+  { size: { width: 300, height: 250 }, minW: 640, minH: 700 },
+  { size: { width: 728, height: 90 }, minW: 1000, minH: 0 },
+  { size: { width: 320, height: 100 }, minW: 380, minH: 480 },
+  { size: { width: 320, height: 50 }, minW: 360, minH: 0 },
+]
+
+export function pickBannerSize(cssWidth: number, cssHeight: number): BannerSize | null {
+  for (const { size, minW, minH } of BANNER_SIZES) {
+    if (cssWidth >= minW && cssHeight >= minH) {
+      return size
+    }
+  }
+  return null
+}
+
+// Whether the game is running inside the native CrazyGames app (iOS/Android), where display banners
+// can't render — callers skip the banner there. (Video ads still work in the app.)
+//
+// The SDK's `user` module getter THROWS when the SDK is disabled (any non-crazygames, non-local host
+// — e.g. the dev server reached over a LAN IP from a phone, which the SDK reports as `disabled`).
+// Optional chaining doesn't protect against a throwing getter, so this must catch: an uncaught throw
+// here reaches showScoreBanner_ on the game-over frame and used to kill the render loop (freezing the
+// Banker walk-off + scoreboard, iOS-only). Off a real host we're never in the native app anyway.
+export function isCrazyGamesApp(): boolean {
+  try {
+    const type = sdk()?.user?.systemInfo?.applicationType
+    return type === 'apple_store' || type === 'google_play_store'
+  } catch {
+    return false
+  }
+}
+
+// Request a display banner into an existing DOM container (already sized to width×height). On a real
+// CrazyGames host this asks the SDK and calls onUnfilled on any no-fill/error so the caller hides the
+// empty box. In dev (off the real host) it paints a plain "AD" placeholder so banner placement/sizing
+// is visible while developing — no real ad, and never in production.
+export function requestScoreBanner(id: string, width: number, height: number, onUnfilled: () => void): void {
+  const s = sdk()
+  if (s && getEnvironment() === 'crazygames') {
+    try {
+      s.banner.requestBanner({ id, width, height }).catch((e) => {
+        devLog(`[crazygames] requestBanner failed: ${String(e)}`)
+        onUnfilled()
+      })
+    } catch (e) {
+      devLog(`[crazygames] requestBanner threw: ${String(e)}`)
+      onUnfilled()
+    }
+    return
+  }
+  if (import.meta.env.DEV) {
+    const el = typeof document !== 'undefined' ? document.getElementById(id) : null
+    if (el) {
+      el.classList.add('is-dev-placeholder')
+      el.textContent = `AD ${width}×${height}`
+    }
+    return
+  }
+  onUnfilled()
+}
+
+// Clear a banner container: drop the SDK banner (real host only) and remove any dev placeholder.
+export function clearScoreBanner(id: string): void {
+  const s = sdk()
+  if (s && getEnvironment() === 'crazygames') {
+    try {
+      s.banner.clearBanner(id)
+    } catch (e) {
+      devLog(`[crazygames] clearBanner failed: ${String(e)}`)
+    }
+  }
+  if (import.meta.env.DEV) {
+    const el = typeof document !== 'undefined' ? document.getElementById(id) : null
+    if (el) {
+      el.classList.remove('is-dev-placeholder')
+      el.textContent = ''
+    }
   }
 }
 

@@ -7,7 +7,7 @@ import { clearRun, saveSession, type PersistedSession } from './persistence'
 import { POWERUPS } from './powerups'
 import { canForcedSplit, canSplit } from './round'
 import { getShift, hitTokens, powerupCost, SABOTAGE_DEALER21_ENERGY, STARTING_TOKENS, startRun } from './run'
-import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session } from './session'
+import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, REWARDED_AD_ENERGY, Session } from './session'
 
 // recordRun submits to CrazyGames + updates the personal best (real storage/SDK); mock it so the
 // coda tests can observe that each game-end funnels the final score through the single seam
@@ -863,6 +863,49 @@ describe('Session Banker coda', () => {
     const after = session.snapshot()
     expect(after.run.tokens).toBe(before - CODA_MULLIGAN_COST)
     expect(after.round!.mulliganed).toBe(true)
+  })
+})
+
+describe('Session.grantRewardedEnergy', () => {
+  it('adds a flat, inflation-neutral energy grant and stamps the per-dealer / per-run caps', () => {
+    const session = new Session(12345)
+    const before = session.snapshot().run
+
+    session.grantRewardedEnergy()
+
+    const after = session.snapshot().run
+    expect(after.tokens).toBe(before.tokens + REWARDED_AD_ENERGY)
+    // Inflation-neutral: the grant must NOT feed tokensThisShift (which would inflate later powerups).
+    expect(after.tokensThisShift).toBe(before.tokensThisShift)
+    // "Once per dealer" is gated on rewardedAdShiftIndex === shiftIndex; the per-run count climbs.
+    expect(after.rewardedAdShiftIndex).toBe(after.shiftIndex)
+    expect(after.rewardedAdsThisRun).toBe(before.rewardedAdsThisRun + 1)
+  })
+
+  it('accumulates across grants (the per-run cap is enforced by the button gate, not here)', () => {
+    const session = new Session(777)
+
+    session.grantRewardedEnergy()
+    session.grantRewardedEnergy()
+
+    const run = session.snapshot().run
+    expect(run.rewardedAdsThisRun).toBe(2)
+    expect(run.tokens).toBe(STARTING_TOKENS + 2 * REWARDED_AD_ENERGY)
+  })
+
+  it('PERSISTS the caps on grant (checkpoint) so a refresh cannot reset them', () => {
+    const session = new Session(4242)
+    const save = vi.mocked(saveSession)
+    save.mockClear() // ignore any construction-time save; watch the grant's checkpoint
+
+    session.grantRewardedEnergy()
+
+    // grantRewardedEnergy checkpoints, so the bumped counters are written into the persisted run —
+    // adoptSession restores the whole RunState on resume, so a refresh reloads them (can't reset).
+    expect(save).toHaveBeenCalled()
+    const persisted = save.mock.calls.at(-1)![0]
+    expect(persisted.run.rewardedAdsThisRun).toBe(1)
+    expect(persisted.run.rewardedAdShiftIndex).toBe(session.snapshot().run.shiftIndex)
   })
 })
 

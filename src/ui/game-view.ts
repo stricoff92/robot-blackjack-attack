@@ -8,11 +8,11 @@ import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSett
 import { evaluateHand, isBlackjack } from '../game/hand'
 import { handReward } from '../game/rewards'
 import { dealerHardHitCeiling, DESTROY_TOKEN, getShift, maxHitsFor, powerupCost, SABOTAGE_DEALER21_ENERGY, tokenMultiplier, TOTAL_DEALERS, winPointDeltas } from '../game/run'
-import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, Session, SHOE_DECKS, type SessionState } from '../game/session'
+import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, REWARDED_AD_ENERGY, Session, SHOE_DECKS, type SessionState } from '../game/session'
 import { getPersonalBest } from '../game/leaderboard'
 import { isBatterySaver, setBatterySaver } from '../game/power-mode'
 import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
-import { gameplayStart, gameplayStop, reportGameCompletedPercentage } from '../platform/crazygames'
+import { clearScoreBanner, gameplayStart, gameplayStop, isCrazyGamesApp, pickBannerSize, reportGameCompletedPercentage, requestMidgameAd, requestRewardedAd, requestScoreBanner, rewardedAdsSupported } from '../platform/crazygames'
 import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import { deviceDpr, type LayeredCanvas } from '../render/canvas'
@@ -251,6 +251,22 @@ const WATCHDOG_MS = 1000
 // saver is on — so it's a STATIC object that never hovers or skips. Any constant works; this phase
 // sits the nexus at a neutral mid-hover.
 const SAVER_STATIC_NOW = 0
+
+// The rewarded-ad energy top-up (between hands): offered only when the player's spendable energy is
+// below this, and at most once per dealer + REWARDED_ADS_PER_RUN times per run. Tunable — below the
+// cheaper powerup costs (30–60) so it surfaces when a top-up is genuinely useful.
+const REWARDED_LOW_ENERGY_THRESHOLD = 50
+const REWARDED_ADS_PER_RUN = 3
+// After the player is OFFERED the rewarded top-up and proceeds (Next hand) without taking it, treat
+// the ignore as a "no" and keep the offer down for this many hands — don't nag every hand.
+const AD_OFFER_COOLDOWN_HANDS = 3
+// The incoming dealer shift that triggers the mid-run interstitial — advancing INTO dealer 4 means
+// the player just finished dealer 3 (by kill or window-out). One ad per run at this single break.
+const AD_BREAK_INCOMING_SHIFT = 4
+// The score-screen display-banner container id + the SDK's per-container re-request cooldown (30s):
+// we skip re-requesting within it so a fast game-over→New-run→game-over loop can't trip an error.
+const SCORE_BANNER_ID = 'rba-score-banner'
+const BANNER_MIN_REQUEST_GAP_MS = 30000
 
 interface ButtonDef {
   key: string
@@ -679,6 +695,21 @@ class GameView {
   // The choose-upgrade card (shown after a non-final kill) and its three path buttons.
   private upgradeEl_!: HTMLElement
   private upgradeButtons_!: { info: UpgradePathInfo; btn: HTMLButtonElement; effectEl: HTMLElement; tierEl: HTMLElement }[]
+  // CrazyGames ads. `adPausing_` is true while the dealer-3 interstitial plays — it suppresses the
+  // auto-deal + collectRound clear so no hand deals over the empty table behind the ad (the required
+  // "pause"). `scoreBannerEl_` is the score-screen display-banner container; `scoreBannerAt_` stamps
+  // the last request so the SDK's 30s per-container cooldown isn't tripped by a fast New-run loop.
+  // `forceRewardAd_` (?rewardad) forces the rewarded-ad button visible past its gates, for testing.
+  private adPausing_ = false
+  private scoreBannerEl_!: HTMLElement
+  private scoreBannerAt_ = 0
+  private forceRewardAd_ = false
+  // Rewarded-ad "ignore = no" cadence: `adWasOffered_` latches true while the top-up button is being
+  // shown on a resolved screen; if the player advances without taking it, run_ stamps
+  // `adDeclinedAtHand_` (a handsPlayed value) so the offer stays down for AD_OFFER_COOLDOWN_HANDS
+  // hands. Not persisted (a pure cadence nicety); reset on New run. The hard caps are separate.
+  private adWasOffered_ = false
+  private adDeclinedAtHand_ = Number.NEGATIVE_INFINITY
 
   constructor(root: HTMLElement) {
     const debug = readDebugFlags()
@@ -708,6 +739,7 @@ class GameView {
       debug.startTokens !== null ||
       debug.dealerHealth !== null ||
       debug.hearts !== null
+    this.forceRewardAd_ = debug.rewardAd
     this.resumableRun_ = hasRunOverride ? null : loadSession()
     // Seed the opening balances + dealer/deck identity from the run so the first paint is correct.
     this.seedVisualsFromState_()
@@ -2402,6 +2434,7 @@ class GameView {
       this.scorePage_ = 0
       this.lastPagerPos_ = ''
       this.syncOverlay_(timestamp) // syncScorePager_ runs at the end → the pager appears + positions
+      this.showScoreBanner_(timestamp) // request the top-right display banner (dev: a placeholder)
     }
     // A card just launched from the shoe (one entry per fresh flight this frame) —
     // fire the draw sfx for each. Glides (split originals) are excluded upstream.
@@ -2614,7 +2647,11 @@ class GameView {
     // guards the pre-first-choreography frames (title screen) where dealerFreezeAt_ is still 0.
     const dealerChoreographing =
       this.dealer_.isSequencing(timestamp) || this.dealer_.isEmoting(timestamp) || this.dealer_.isBlocking(timestamp)
-    if (!saver || dealerChoreographing) {
+    // The clown shares this cast render clock (figureNow). Keep it LIVE while the clown is walking
+    // in/off or laughing — otherwise saver freezes figureNow (the dead dealer 6 stops choreographing)
+    // and the clown, whose state machine runs on the live clock, renders stuck mid-walk-off and then
+    // pops to hidden. A steady standing clown reports false, so saver still freezes the idle scene.
+    if (!saver || dealerChoreographing || this.clown_.isAnimating(timestamp)) {
       this.dealerFreezeAt_ = timestamp
     }
     const figureNow = this.dealerFreezeAt_ || timestamp
@@ -2719,7 +2756,7 @@ class GameView {
       // shred instead of being chewed up. And a WINDOW-OUT walk-off (pendingWindowOut): the survivor
       // strides off and its replacement's shred is deferred to playWindowArrival — the settle fires
       // during the walk-off (spawn hasn't begun yet), and clearing them here left nothing to shred.
-      if (!this.pendingCeremony_ && !this.codaEntering_ && !this.pendingWindowOut_) {
+      if (!this.pendingCeremony_ && !this.codaEntering_ && !this.pendingWindowOut_ && !this.adPausing_) {
         this.collectRound_ = null
       }
       // Settle re-render (the state just changed: counts revealed, collectRound cleared). Repaint the
@@ -2734,7 +2771,7 @@ class GameView {
       // tap-to-start (`started`), or a WINDOW-OUT walk-off is mid-flight (pendingWindowOut) — its
       // replacement hasn't walked in + shredded yet, and dealAfter is still 0, so without this guard
       // the deal would fire the instant the chips settle, mid-walk-off, over an empty table.
-      if (this.state_.phase === 'betting' && this.dealAfter_ <= timestamp && this.started_ && !this.pendingWindowOut_) {
+      if (this.state_.phase === 'betting' && this.dealAfter_ <= timestamp && this.started_ && !this.pendingWindowOut_ && !this.adPausing_) {
         this.run_(() => this.session_.deal())
         return
       }
@@ -2757,7 +2794,7 @@ class GameView {
     // is scheduled (startIntroNow sets dealAfter), so `started` holds it until the tap-to-start.
     // (pendingWindowOut can't be set here — playWindowArrival clears it as it sets dealAfter — but
     // the guard keeps the two deal paths symmetric.)
-    if (this.dealAfter_ > 0 && timestamp >= this.dealAfter_ && this.state_.phase === 'betting' && !sequenceAnimating && this.started_ && !this.pendingWindowOut_) {
+    if (this.dealAfter_ > 0 && timestamp >= this.dealAfter_ && this.state_.phase === 'betting' && !sequenceAnimating && this.started_ && !this.pendingWindowOut_ && !this.adPausing_) {
       this.dealAfter_ = 0
       // Zero the raf first (like the settle block) so run() → ensureLoop reschedules
       // the loop — the `return` below skips this frame's own reschedule.
@@ -2983,6 +3020,31 @@ class GameView {
       // Shown only once the game-over sequence has projected the score screen (the cards
       // are sucked up, the dealer destroyed / gone) — not the instant the run ends.
       { key: 'restart', label: 'New run', group: 'action', act: () => this.session_.restart(), visible: () => this.state_.phase === 'over' && this.scoreRevealed_, enabled: yes },
+      // Optional rewarded-ad energy top-up on the between-hands (resolved) break — the real pause in
+      // the loop (betting auto-deals, so it has no dwell). Shown only when energy is low, capped once
+      // per dealer (rewardedAdShiftIndex) + REWARDED_ADS_PER_RUN per run, and only where ads can serve
+      // (or in dev). ?rewardad forces it past the low-energy + cap gates for testing. Routed straight
+      // to watchRewardedAd_ (NOT run_) since the reward lands asynchronously — see buildOverlay_.
+      {
+        key: 'watch-ad',
+        label: `+${REWARDED_AD_ENERGY}`,
+        group: 'action',
+        act: () => this.watchRewardedAd_(),
+        visible: (s) =>
+          s.phase === 'resolved' &&
+          this.started_ &&
+          !this.dealRevealPending_() &&
+          rewardedAdsSupported() &&
+          // The caps are ALWAYS enforced (once per dealer + REWARDED_ADS_PER_RUN per run); ?rewardad
+          // only bypasses the low-energy threshold so the button can be seen/tested without grinding
+          // energy down — it must NOT let a tester farm past the real caps.
+          s.run.rewardedAdShiftIndex !== s.run.shiftIndex &&
+          s.run.rewardedAdsThisRun < REWARDED_ADS_PER_RUN &&
+          (this.forceRewardAd_ ||
+            (s.run.tokens < REWARDED_LOW_ENERGY_THRESHOLD &&
+              s.run.handsPlayed - this.adDeclinedAtHand_ >= AD_OFFER_COOLDOWN_HANDS)),
+        enabled: yes,
+      },
       {
         key: 'analyze',
         label: 'Analyze',
@@ -3131,7 +3193,17 @@ class GameView {
     for (const def of this.defs_) {
       const button = document.createElement('button')
       button.classList.add(`hud-btn-${def.key}`) // per-button hook for CSS (e.g. a wide Next hand)
-      if (def.cost === undefined) {
+      if (def.key === 'watch-ad') {
+        // An "AD" badge + "+100" + the energy icon. CrazyGames requires a clear ad indicator, NOT the
+        // literal words "Watch ad" (a badge/video icon suffices); the aria-label carries the full
+        // description for screen readers, and the reward is made clear post-ad by the counter roll-up.
+        const badge = element('span', 'watch-ad__badge')
+        badge.textContent = 'AD'
+        const label = element('span', 'watch-ad__label')
+        label.textContent = def.label
+        button.append(badge, label, powerIcon('watch-ad__icon'))
+        button.setAttribute('aria-label', `Watch ad for ${def.label} energy`)
+      } else if (def.cost === undefined) {
         button.textContent = def.label
       } else {
         // Powerups: the name on the button, the token cost in a pill pinned to
@@ -3155,8 +3227,14 @@ class GameView {
         if (def.group === 'power' || def.group === 'coda-power') {
           sfx.play('ability')
         }
+        // The rewarded-ad top-up runs an ASYNC ad (reward lands in a callback), and New run fires an
+        // interstitial BEFORE restarting — neither goes through the synchronous run_ dispatcher.
         // Coda buttons drive the stripped coda handler; everything else the main one.
-        if (def.coda) {
+        if (def.key === 'watch-ad') {
+          this.watchRewardedAd_()
+        } else if (def.key === 'restart') {
+          this.requestNewRunWithAd_()
+        } else if (def.coda) {
           this.runCoda_(def.act)
         } else {
           this.run_(def.act)
@@ -3183,9 +3261,15 @@ class GameView {
     powers.appendChild(this.helpBtnEl_)
     this.helpPanelEl_ = this.buildHelpPanel_()
 
+    // The score-screen display-banner container (top-left). Hidden until the board reveals; sized +
+    // requested in showScoreBanner_, cleared in hideScoreBanner_. A direct child of the (transform-
+    // free) overlay so CrazyGames' "fully visible, no transformed ancestor" banner rule holds.
+    this.scoreBannerEl_ = element('div', 'hud-score-banner is-hidden')
+    this.scoreBannerEl_.id = SCORE_BANNER_ID
+
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_)
 
     // While the spec sheet is projected, a click or touch ANYWHERE dismisses it — except
     // on the info button itself, whose own click handler toggles it. pointerdown fires
@@ -3551,8 +3635,12 @@ class GameView {
     this.actionsEl_.classList.toggle('is-hidden', modal)
     // The top-right score counter hides for the whole Banker coda: the score is locked in by then
     // (the coda only stakes it double-or-nothing), so the corner readout is redundant there — the
-    // stake panel already shows the number in play. It returns on the game-over score screen.
-    this.pointsEl_.classList.toggle('is-hidden', s.phase === 'coda')
+    // stake panel already shows the number in play. It also hides on the game-over score screen,
+    // where the score sheet already shows POINTS/BEST — the two corner counters would be redundant.
+    this.pointsEl_.classList.toggle('is-hidden', s.phase === 'coda' || over)
+    // The top-left energy counter likewise drops out on the score screen (its total is summarised
+    // there); it has no other phase gating.
+    this.tokensEl_.classList.toggle('is-hidden', over)
     // The info button rides with the Hit/Stand prompt ONLY — visible while the player has a live
     // hand to act on (main play, or a coda double-or-nothing hand at player-turn), or while its own
     // spec sheet is still open (so it can be toggled off). Hidden between rounds, at the betting
@@ -3663,6 +3751,12 @@ class GameView {
     const prevAnalysis = this.state_.analysis
     mutate()
     this.state_ = this.session_.snapshot()
+    // An ad offer the player LEFT without taking (advanced past a resolved screen where it was
+    // showing) is as good as "no" — stamp the hand so it stays down for AD_OFFER_COOLDOWN_HANDS hands.
+    if (prevPhase === 'resolved' && this.state_.phase !== 'resolved' && this.adWasOffered_) {
+      this.adDeclinedAtHand_ = this.state_.run.handsPlayed
+      this.adWasOffered_ = false
+    }
     // Latch a deal-time natural: a hand that went straight from 'betting' to 'resolved' with no
     // player turn (a natural blackjack — the player's OR the dealer's). Its reveal is still to
     // animate, and dealRevealPending() uses this to keep the disabled play buttons up over the
@@ -3727,7 +3821,7 @@ class GameView {
     // dead and gone; now the deferred arrival ceremony — walk-in + shred + fresh deck —
     // plays, then the next hand deals. Handled on its own since there's no round change.
     if (prevPhase === 'choosing-upgrade' && this.pendingCeremony_) {
-      this.playArrival_(t)
+      this.playArrival_()
       this.syncOverlay_(t)
       this.lastAnimating_ = this.anim_.isAnimating(t) || this.chips_.isAnimating(t) || this.spawn_.isAnimating(t)
       this.ensureLoop_()
@@ -3853,7 +3947,7 @@ class GameView {
             // No upgrade (every path maxed): the replacement walks in, its mouth shreds the old
             // cards + a fresh wrapped deck flies in (playArrival, the same path a pick takes). Its
             // CEREMONY_LEAD (800ms) outlasts the summary's fade, so the board clears first.
-            this.playArrival_(t)
+            this.playArrival_()
           }
         } else {
           // Same dealer, just damaged: once the summary clears, gather the cards back + riffle.
@@ -3870,6 +3964,9 @@ class GameView {
         this.endShredDone_ = false
         this.scoreRevealAt_ = 0
         this.scoreRevealed_ = false
+        this.hideScoreBanner_() // the score screen is gone — drop its display banner
+        this.adDeclinedAtHand_ = Number.NEGATIVE_INFINITY // fresh run — clear the ad-offer cooldown
+        this.adWasOffered_ = false
         this.dealer_.setLevel(integrity, shiftIndex)
         this.dealer_.setShift(shiftIndex)
         this.dealer_.spawn(t) // a standalone walk-in (no preceding death)
@@ -4206,15 +4303,19 @@ class GameView {
   // The back half of an upgrade-granting kill, run when the player picks: after a beat
   // the replacement dealer walks in, its mouth shreds the old cards + resting deck, and a
   // fresh wrapped deck flies in. The next deal waits for it all.
-  private playArrival_(t: number): void {
+  private playArrival_(): void {
     const c = this.pendingCeremony_!
     this.pendingCeremony_ = null
     this.collectRound_ = c.prevRound // re-anchor the cards to shred (kept resting till now)
-    const walkInStart = t + CEREMONY_LEAD
-    this.dealer_.setLevel(c.incomingIntegrity, c.incomingShift)
-    this.dealer_.setShift(c.incomingShift)
-    this.dealer_.spawn(walkInStart)
-    this.dealAfter_ = this.beginSpawn_(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+    // Leaving dealer 3 fires the mid-run interstitial FIRST (adPausing_ holds the deal off the empty
+    // table); the walk-in below runs once the ad is done (or immediately elsewhere / off-platform).
+    this.arriveMaybeWithAd_(c.incomingShift, () => {
+      const walkInStart = now() + CEREMONY_LEAD
+      this.dealer_.setLevel(c.incomingIntegrity, c.incomingShift)
+      this.dealer_.setShift(c.incomingShift)
+      this.dealer_.spawn(walkInStart)
+      this.dealAfter_ = this.beginSpawn_(c.incomingShift, walkInStart + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+    })
   }
 
   // A survived dealer's replacement walks in (deferred from the window-out walk-off): the new dealer
@@ -4226,12 +4327,98 @@ class GameView {
       return
     }
     this.pendingWindowOut_ = null
-    const t = now()
-    this.dealer_.setLevel(w.incomingIntegrity, w.incomingShift)
-    this.dealer_.setShift(w.incomingShift)
-    this.dealer_.spawn(t)
-    this.playWalkInGrowl_(t)
-    this.dealAfter_ = this.beginSpawn_(w.incomingShift, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+    // Leaving dealer 3 by window-out fires the mid-run interstitial FIRST, same as a kill advance.
+    this.arriveMaybeWithAd_(w.incomingShift, () => {
+      const t = now()
+      this.dealer_.setLevel(w.incomingIntegrity, w.incomingShift)
+      this.dealer_.setShift(w.incomingShift)
+      this.dealer_.spawn(t)
+      this.playWalkInGrowl_(t)
+      this.dealAfter_ = this.beginSpawn_(w.incomingShift, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
+    })
+  }
+
+  // Fire the between-dealers interstitial (once per run) when the incoming dealer is the ad break —
+  // leaving dealer 3 (advancing INTO dealer 4), by kill or window-out — then run the walk-in from the
+  // ad's callback; otherwise run it straight away. While the ad plays, adPausing_ suppresses the
+  // auto-deal + collectRound clear so no hand deals behind it. Off-platform the ad is a no-op and the
+  // callback fires synchronously, so the walk-in is unaffected in dev/tests.
+  private arriveMaybeWithAd_(incomingShift: number, run: () => void): void {
+    if (incomingShift !== AD_BREAK_INCOMING_SHIFT) {
+      run()
+      return
+    }
+    this.adPausing_ = true
+    requestMidgameAd(() => {
+      this.adPausing_ = false
+      run()
+      this.ensureLoop_() // the ad may have finished async — make sure the loop plays the walk-in
+    })
+  }
+
+  // Request the score-screen display banner (top-left) as the board reveals. Skipped inside the
+  // native CrazyGames app (banners can't render there), while the viewport-guard modal is up, when no
+  // banner size fits the current viewport, or within the SDK's 30s per-container cooldown. In dev a
+  // placeholder paints instead of a real ad (requestScoreBanner); on a no-fill the box is hidden.
+  private showScoreBanner_(timestamp: number): void {
+    if (isCrazyGamesApp() || this.viewportGuard_?.isBlocking()) {
+      return
+    }
+    const size = pickBannerSize(this.stage_.canvas.width, this.stage_.canvas.height)
+    if (!size) {
+      return
+    }
+    if (this.scoreBannerAt_ > 0 && timestamp - this.scoreBannerAt_ < BANNER_MIN_REQUEST_GAP_MS) {
+      return
+    }
+    this.scoreBannerAt_ = timestamp
+    this.scoreBannerEl_.style.width = `${size.width}px`
+    this.scoreBannerEl_.style.height = `${size.height}px`
+    this.scoreBannerEl_.classList.remove('is-hidden')
+    requestScoreBanner(SCORE_BANNER_ID, size.width, size.height, () => this.hideScoreBanner_())
+  }
+
+  // Clear the score banner (SDK banner or dev placeholder) and hide its container — on a no-fill and
+  // when leaving the score screen for a New run.
+  private hideScoreBanner_(): void {
+    clearScoreBanner(SCORE_BANNER_ID)
+    this.scoreBannerEl_.classList.add('is-hidden')
+  }
+
+  // Optional rewarded-ad energy top-up (between hands). Requests a CrazyGames rewarded video; on a
+  // COMPLETED ad it grants REWARDED_AD_ENERGY (energy buys help/info, not damage — never pay-to-win)
+  // and rolls the counter up. A failed/unfilled ad grants nothing and leaves the button up to retry.
+  // The once-per-dealer / per-run caps live in the button's visibility gate; grantRewardedEnergy just
+  // records usage so a mid-run reload can't farm.
+  private watchRewardedAd_(): void {
+    // Belt-and-suspenders cap check at click time: the visibility gate already enforces the caps, but
+    // re-checking here stops a stale-visible button or a fast double-click from granting beyond
+    // once-per-dealer / REWARDED_ADS_PER_RUN — and it holds even under the ?rewardad force-show.
+    const run = this.state_.run
+    if (run.rewardedAdShiftIndex === run.shiftIndex || run.rewardedAdsThisRun >= REWARDED_ADS_PER_RUN) {
+      return
+    }
+    requestRewardedAd({
+      onReward: () => {
+        this.session_.grantRewardedEnergy()
+        this.adWasOffered_ = false // TAKEN, not declined — don't let the later advance stamp a cooldown
+        this.state_ = this.session_.snapshot()
+        // Re-sync the overlay NOW (this bypasses run_, which is what normally drives it): the grant
+        // stamped this dealer's cap, so the button's visibility predicate now fails and it hides.
+        this.syncOverlay_(now())
+        this.ensureLoop_() // roll the token counter up to the new balance
+      },
+      onFail: () => {
+        // No ad available (no-fill / error) — nothing granted; the button stays up for a retry.
+      },
+    })
+  }
+
+  // New run pressed on the score screen: play a midgame interstitial, THEN restart (off-platform the
+  // ad is a no-op and restart runs immediately). The static 'over' screen has no auto-deal to guard,
+  // and restart's music.resumeAfterEnd fires inside run_ so audio returns after the ad, not before.
+  private requestNewRunWithAd_(): void {
+    requestMidgameAd(() => this.run_(() => this.session_.restart()))
   }
 
   // Blast the nexus's red muzzle for the laser beam at `attackStart` (from `t`, the
@@ -4670,6 +4857,11 @@ class GameView {
       // bust), where phase is 'over' but run.coda is still true — so they don't flash back on.
       const visible = def.visible(s) && !(def.group === 'power' && s.run.coda)
       button.classList.toggle('is-hidden', !visible)
+      // Latch that the rewarded top-up was OFFERED on this resolved screen; run_ reads it to treat a
+      // proceed-without-taking as a "no" and cool the offer down (see AD_OFFER_COOLDOWN_HANDS).
+      if (def.key === 'watch-ad' && visible) {
+        this.adWasOffered_ = true
+      }
       // Armed powerups glow; using the shield clears the armed flag, which drops
       // the class here on the next sync and returns the button to normal.
       button.classList.toggle('is-active', visible && !!def.active?.(s))

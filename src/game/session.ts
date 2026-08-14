@@ -123,6 +123,11 @@ const CODA_RULES: RoundRules = { ...DEFAULT_ROUND_RULES, allowSplit: false }
 export const CODA_ANALYZE_COST = 5
 export const CODA_MULLIGAN_COST = 200
 
+// The rewarded-ad payout: a flat energy grant for opting into a CrazyGames rewarded video. Small
+// enough to stay off the "pay-to-win" line (energy buys help/info powerups, never damage) and
+// capped (once per dealer, 3 per run) so it can't snowball; see [[powerup-design]].
+export const REWARDED_AD_ENERGY = 100
+
 export class Session {
   // The deal RNG — its `.state` is checkpointed into run.deckState so a resume reproduces the
   // upcoming shoe exactly (see deal/adoptSession). The analysis + heal RNGs need no snapshot: they're
@@ -633,6 +638,22 @@ export class Session {
     this.run_ = applyUpgrade(this.run_, path)
     this.phase_ = 'betting'
     // The upgrade mutated the run (new roguelite tier) — re-checkpoint so a resume keeps it.
+    this.checkpoint_()
+  }
+
+  // Grant the rewarded-ad payout (+REWARDED_AD_ENERGY). Inflation-neutral: credited straight to the
+  // spendable balance, NOT via addTokens (which would also pad tokensThisShift and make later
+  // powerups pricier). Stamps the shiftIndex it paid for + bumps the per-run count so the once-per-
+  // dealer / 3-per-run caps hold, then checkpoints so a mid-run reload can't reset them and re-farm.
+  // Called only from the rewarded ad's onReward callback — never on adError (no reward on a
+  // failed/unfilled ad). The caps themselves are enforced by the button's visibility gate.
+  grantRewardedEnergy(): void {
+    this.run_ = {
+      ...this.run_,
+      tokens: this.run_.tokens + REWARDED_AD_ENERGY,
+      rewardedAdShiftIndex: this.run_.shiftIndex,
+      rewardedAdsThisRun: this.run_.rewardedAdsThisRun + 1,
+    }
     this.checkpoint_()
   }
 

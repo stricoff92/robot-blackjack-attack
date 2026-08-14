@@ -99,6 +99,16 @@ export class ClownAnimation implements ClownView {
     return 'death'
   }
 
+  // True while the clown is actively animating — walking IN or OFF (both modes span their whole
+  // follow/react delay + slide), or mid-laugh. The view keeps the shared cast RENDER clock live
+  // while this holds: the clown's state machine advances on the live clock, but it's drawn on the
+  // dealer-figure clock, which battery saver FREEZES once the (dead) dealer stops choreographing.
+  // Without this the clown renders stranded mid-walk-off, then pops straight to hidden. A steady
+  // standing clown (mode 'stand', no laugh) reports false so saver can still freeze it static.
+  isAnimating(now: number): boolean {
+    return this.mode_ === 'walkin' || this.mode_ === 'walkoff' || this.voice(now) !== null
+  }
+
   // Arm a laugh emote at `start` (absolute), shaped by `pattern` — the mouth reads the shared
   // voiceEnvelope so its grin opens in step with the audio. Overwriting simply restarts.
   emote(start: number, pattern: VoicePattern): void {
