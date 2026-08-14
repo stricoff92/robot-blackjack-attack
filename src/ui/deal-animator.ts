@@ -8,12 +8,12 @@
 // Every card flies from the shoe FACE-DOWN, lands, pauses briefly, then flips
 // to reveal its face — except the dealer hole card, whose flip is deferred
 // until the round reveals it. Dealer draws play out one fully at a time. When a
-// hand ends the cards are gathered back into the deck, then a short riffle.
+// hand ends the spent cards fly up into the dealer and vanish (fast, so the next
+// hand deals sooner); a game-over gather instead returns them to the deck.
 
 import type { Round } from '../game/round'
 import type { SessionState } from '../game/session'
 import { dealerKey, playerKey, type CardAnim, type CardState } from '../render/cards'
-import { smoothStep } from '../render/easing'
 
 const FLIGHT_MS = 200 // shoe → slot
 const LAND_DELAY = 30 // face-down pause after landing, before the flip
@@ -22,14 +22,15 @@ const FLIP_MS = 170 // reveal flip
 // starting to move — so card actions never overlap.
 const ACTION_GAP = 120
 
-const COLLECT_MS = 380 // per card: flip face-down in place, then fly to the deck top
-const COLLECT_STAGGER = 55 // between cards being gathered
-const SHUFFLE_GAP = 130 // pause between the last card landing and the riffle
-const SLIDE_MS = 220 // deck slides out to centre (and back) for the shuffle
-// Riffle shuffle (one pass). Sized so its MERGE phase — the 0.7 of the pass after
-// the 0.3 split (SHUFFLE_SPLIT_FRACTION) — lasts the 0.43s of the shuffle clip, which
-// fires when the merge begins: 430 / 0.7 ≈ 614. The split before it is silent.
-const SHUFFLE_MS = 614
+// Between hands: the spent cards fly UP INTO THE DEALER and vanish — snappy, so
+// the table clears and the next hand deals sooner. No per-hand riffle: the deck's
+// only visible "shuffle" is the fresh wrapped deck unsealed on a dealer change.
+const DESPAWN_MS = 260 // per card: fly from its slot into the dealer, shrinking + fading out
+const DESPAWN_STAGGER = 42 // between cards leaving
+// Game-over gather (no next hand): the cards return to the deck instead — flip
+// face-down in place, then fly to the deck top and merge in.
+const COLLECT_MS = 380
+const COLLECT_STAGGER = 55
 
 type Phase = SessionState['phase']
 
@@ -45,11 +46,9 @@ export class DealAnimation implements CardAnim {
   // or it's a glide that shouldn't make one). Lets drawnCards() report each
   // fresh flight exactly once. Cleared on reset; a re-placed key re-fires.
   private readonly firedFlights_ = new Set<string>()
-  // End-of-hand deck sequence: slide out to centre → shuffle → slide back.
-  private slideOutStart_: number | null = null
-  private shuffleStart_: number | null = null
-  private shuffleStop_: number | null = null
-  private slideBackStart_: number | null = null
+  // End-of-hand collect style: true = spent cards fly into the dealer + vanish
+  // (between hands); false = they gather back into the deck (game over, no next hand).
+  private collectToDealer_ = true
   private end_ = 0 // timestamp when all scheduled motion finishes
   private now_ = 0
 
@@ -104,30 +103,20 @@ export class DealAnimation implements CardAnim {
     }
   }
 
-  // Gather the ending hand's cards back into the deck, then (unless `shuffle` is false) slide
-  // the deck out in front of the dealer, riffle it, and slide it back to rest. A game-over
-  // gather passes shuffle=false — the cards return to the deck with no riffle (no next hand).
-  collect(round: Round, now: number, shuffle = true): void {
+  // Clear the ending hand's cards. Between hands (`toDealer` true, the default) they fly UP
+  // INTO THE DEALER and vanish — fast, so the next hand deals sooner. A game-over gather passes
+  // toDealer=false: the cards return to the deck instead (there's no next hand to shuffle for).
+  collect(round: Round, now: number, toDealer = true): void {
     this.collectStart_.clear()
+    this.collectToDealer_ = toDealer
+    const dur = toDealer ? DESPAWN_MS : COLLECT_MS
+    const stagger = toDealer ? DESPAWN_STAGGER : COLLECT_STAGGER
     let cursor = now
     for (const key of this.allKeys_(round)) {
       this.collectStart_.set(key, cursor)
-      this.end_ = Math.max(this.end_, cursor + COLLECT_MS)
-      cursor += COLLECT_STAGGER
+      this.end_ = Math.max(this.end_, cursor + dur)
+      cursor += stagger
     }
-    if (!shuffle) {
-      // No riffle: the deck stays at its rest spot (no slide-out / shuffle / slide-back).
-      this.slideOutStart_ = null
-      this.shuffleStart_ = null
-      this.shuffleStop_ = null
-      this.slideBackStart_ = null
-      return
-    }
-    this.slideOutStart_ = this.end_ + SHUFFLE_GAP
-    this.shuffleStart_ = this.slideOutStart_ + SLIDE_MS
-    this.shuffleStop_ = this.shuffleStart_ + SHUFFLE_MS
-    this.slideBackStart_ = this.shuffleStop_
-    this.end_ = this.slideBackStart_ + SLIDE_MS
   }
 
   // Split: the two originally-dealt cards glide (staying face-up) from the
@@ -191,26 +180,6 @@ export class DealAnimation implements CardAnim {
     this.end_ = now // settled — not animating
   }
 
-  // 0..1 position of the deck: 0 = resting spot, 1 = shuffle spot (centre).
-  deckShift(): number {
-    if (this.slideOutStart_ === null || this.shuffleStart_ === null || this.slideBackStart_ === null) {
-      return 0
-    }
-    if (this.now_ < this.slideOutStart_) {
-      return 0
-    }
-    if (this.now_ < this.shuffleStart_) {
-      return smoothStep((this.now_ - this.slideOutStart_) / SLIDE_MS)
-    }
-    if (this.now_ < this.slideBackStart_) {
-      return 1
-    }
-    if (this.now_ < this.slideBackStart_ + SLIDE_MS) {
-      return 1 - smoothStep((this.now_ - this.slideBackStart_) / SLIDE_MS)
-    }
-    return 0
-  }
-
   // --- CardAnim ---
 
   state(key: string): CardState | null {
@@ -226,9 +195,10 @@ export class DealAnimation implements CardAnim {
     let collect = 0
     const started = this.collectStart_.get(key)
     if (started !== undefined && this.now_ >= started) {
-      collect = clamp01((this.now_ - started) / COLLECT_MS)
+      const dur = this.collectToDealer_ ? DESPAWN_MS : COLLECT_MS
+      collect = clamp01((this.now_ - started) / dur)
     }
-    return { flight, flip, collect }
+    return { flight, flip, collect, collectToDealer: this.collectToDealer_ }
   }
 
   // Card keys whose flight has just begun since the last call — one entry per
@@ -245,27 +215,12 @@ export class DealAnimation implements CardAnim {
     return started
   }
 
-  // 0..1 progress of the deck riffle, or null when not shuffling.
-  shuffle(): number | null {
-    if (this.shuffleStart_ === null || this.shuffleStop_ === null) {
-      return null
-    }
-    if (this.now_ < this.shuffleStart_ || this.now_ >= this.shuffleStop_) {
-      return null
-    }
-    return (this.now_ - this.shuffleStart_) / (this.shuffleStop_ - this.shuffleStart_)
-  }
-
   // --- internals ---
 
   private reset_(now: number): void {
     this.cards_.clear()
     this.collectStart_.clear()
     this.firedFlights_.clear()
-    this.slideOutStart_ = null
-    this.shuffleStart_ = null
-    this.shuffleStop_ = null
-    this.slideBackStart_ = null
     this.end_ = now
   }
 

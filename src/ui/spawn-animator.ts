@@ -8,6 +8,8 @@
 // (render/spawn.ts) reads these per-frame queries. One entry point, begin(), returns
 // the timestamp the whole ceremony finishes so GameView can hold the next deal.
 
+import { smoothStep } from '../render/easing'
+
 // One card: fly from its felt slot into the mouth (SUCK), while paper chunks spray
 // out. Cards start their suck staggered so they're drawn in one after another.
 const SHRED_STAGGER_MS = 70 // between successive cards starting their suck
@@ -44,9 +46,28 @@ const UNWRAP_MS = 860 // plastic opens in beats: edge strip peels + tosses → s
 const UNWRAP_HOLD_AT = 0.5
 const UNWRAP_HOLD_MS = 300
 
+// Once the fresh deck is unsealed it gets ONE riffle shuffle — the deck's only visible
+// shuffle (between hands the spent cards just fly into the dealer, no riffle). It slides
+// out in front of the dealer to the centre (where the split has room), riffles once, then
+// slides back to the shoe. This is the sole per-deck shuffle, so it plays on every dealer
+// change, not between hands.
+const SHUFFLE_LEAD_MS = 100 // beat on the bare unsealed deck before it slides out
+const SHUFFLE_SLIDE_MS = 190 // deck slides out to centre (and back) for the riffle
+// One riffle pass, sized so its MERGE phase — the 0.7 after the 0.3 split
+// (SHUFFLE_SPLIT_FRACTION) — lasts the 0.43s shuffle clip that fires as the merge begins:
+// 430 / 0.7 ≈ 614. The split before it is silent.
+const RIFFLE_MS = 614
+
 export interface DeckState {
   fly: number // 0..1 dealer → shoe (0 = at the dealer, 1 = landed)
   unwrap: number // 0..1 plastic tear-off (0 = wrapped, 1 = bare deck)
+}
+
+// The unsealed deck's one-time riffle: how far it's slid from the shoe toward centre
+// (0 = shoe, 1 = centre) and, once there, the 0..1 riffle progress (null outside it).
+export interface DeckShuffle {
+  shift: number
+  riffle: number | null
 }
 
 export class SpawnAnimation {
@@ -62,6 +83,11 @@ export class SpawnAnimation {
   private deckFlyEnd_ = 0
   private unwrapStart_ = 0
   private unwrapEnd_ = 0
+  // The unsealed deck's riffle: slide out to centre → riffle → slide back to the shoe.
+  private shuffleSlideOutStart_ = 0
+  private shuffleStart_ = 0
+  private shuffleStop_ = 0
+  private shuffleSlideBackEnd_ = 0
   private endAt_ = 0
 
   // Start the ceremony at `now`, shredding `cardCount` table cards (0 on page load,
@@ -110,22 +136,33 @@ export class SpawnAnimation {
     this.unwrapStart_ = this.deckFlyEnd_ + settleMs
     this.unwrapEnd_ = this.unwrapStart_ + UNWRAP_MS + UNWRAP_HOLD_MS
 
+    // The unsealed deck's one riffle: a beat, slide out to centre, riffle, slide back.
+    this.shuffleSlideOutStart_ = this.unwrapEnd_ + SHUFFLE_LEAD_MS
+    this.shuffleStart_ = this.shuffleSlideOutStart_ + SHUFFLE_SLIDE_MS
+    this.shuffleStop_ = this.shuffleStart_ + RIFFLE_MS
+    this.shuffleSlideBackEnd_ = this.shuffleStop_ + SHUFFLE_SLIDE_MS
+
     const lastCardChunkEnd =
       this.n_ > 0 ? now + lastCardSuckStart + CHUNK_LEAD_MS + SHRED_CHUNK_MS : 0
     const deckChunkEnd = this.hasOldDeck_
       ? lastDeckCardStart + DECK_CARD_CHUNK_LEAD_MS + DECK_CARD_CHUNK_MS
       : 0
     if (shredOnly) {
-      // No fresh deck: park the deck timeline past the end so deckState() never fires,
-      // and finish once the shred + its chunks have settled.
+      // No fresh deck: park the deck + shuffle timeline past the end so deckState() /
+      // deckShuffle() never fire, and finish once the shred + its chunks have settled.
       this.deckFlyStart_ = Number.POSITIVE_INFINITY
       this.deckFlyEnd_ = Number.POSITIVE_INFINITY
       this.unwrapStart_ = Number.POSITIVE_INFINITY
       this.unwrapEnd_ = Number.POSITIVE_INFINITY
+      this.shuffleSlideOutStart_ = Number.POSITIVE_INFINITY
+      this.shuffleStart_ = Number.POSITIVE_INFINITY
+      this.shuffleStop_ = Number.POSITIVE_INFINITY
+      this.shuffleSlideBackEnd_ = Number.POSITIVE_INFINITY
       this.endAt_ = Math.max(this.shredEndAt_, lastCardChunkEnd, deckChunkEnd)
       return this.endAt_
     }
-    this.endAt_ = Math.max(this.unwrapEnd_, lastCardChunkEnd, deckChunkEnd)
+    // The ceremony runs through the riffle's slide-back — that's when the deck is ready to deal.
+    this.endAt_ = Math.max(this.shuffleSlideBackEnd_, lastCardChunkEnd, deckChunkEnd)
     return this.endAt_
   }
 
@@ -224,7 +261,8 @@ export class SpawnAnimation {
 
   // The fresh deck's fly-in + unwrap state, or null before it emerges (during the
   // shred). Once past the unwrap it holds at { fly: 1, unwrap: 1 } — a bare resting
-  // deck — until the ceremony ends and it's handed back to the static table layer.
+  // deck — EXCEPT during the riffle (slide-out → riffle → slide-back), where it returns
+  // null so the shuffle renderer (deckShuffle) draws the moving/riffling deck instead.
   deckState(now: number): DeckState | null {
     if (!this.begun_ || now < this.deckFlyStart_) {
       return null
@@ -238,7 +276,40 @@ export class SpawnAnimation {
     if (now < this.unwrapEnd_) {
       return { fly: 1, unwrap: this.unwrapProgress_(now - this.unwrapStart_) }
     }
+    if (now >= this.shuffleSlideOutStart_ && now < this.shuffleSlideBackEnd_) {
+      return null // the riffle owns the deck's draw for this window
+    }
     return { fly: 1, unwrap: 1 }
+  }
+
+  // The fresh deck's unwrap fraction alone (0 wrapped → 1 bare), MONOTONIC: 0 until the
+  // deck lands, climbs through the tear-off, then holds at 1 — including through the
+  // riffle and after. The tear-open / rustling sfx edge off THIS, not deckState().unwrap:
+  // deckState() dips to null (→ 0) during the riffle, which would re-fire those sfx late
+  // as it climbs back to 1. Only the SFX needs this; the renderer uses deckState().
+  unwrap(now: number): number {
+    if (!this.begun_ || now < this.unwrapStart_) {
+      return 0
+    }
+    if (now < this.unwrapEnd_) {
+      return this.unwrapProgress_(now - this.unwrapStart_)
+    }
+    return 1
+  }
+
+  // The unsealed deck's one riffle, or null outside it: while sliding out/back it's a
+  // resting deck at a partial `shift` (0 = shoe, 1 = centre); at centre it riffles once.
+  deckShuffle(now: number): DeckShuffle | null {
+    if (!this.begun_ || now < this.shuffleSlideOutStart_ || now >= this.shuffleSlideBackEnd_) {
+      return null
+    }
+    if (now < this.shuffleStart_) {
+      return { shift: smoothStep((now - this.shuffleSlideOutStart_) / SHUFFLE_SLIDE_MS), riffle: null }
+    }
+    if (now < this.shuffleStop_) {
+      return { shift: 1, riffle: (now - this.shuffleStart_) / RIFFLE_MS }
+    }
+    return { shift: 1 - smoothStep((now - this.shuffleStop_) / SHUFFLE_SLIDE_MS), riffle: null }
   }
 
   // Real elapsed unwrap time → unwrap fraction (0..1), with a plateau at

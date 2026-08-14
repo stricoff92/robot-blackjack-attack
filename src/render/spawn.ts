@@ -10,7 +10,7 @@
 import type { Round } from '../game/round'
 import { deviceDpr } from './canvas'
 import { blitCard, getCardSprite, setCardBack } from './card-sprite'
-import { drawDepletingShoe, drawShoe, shoeAnchor, shoeStackExtent, shoeTopFor, tableCards } from './cards'
+import { drawDepletingShoe, drawShoe, drawShuffle, shoeAnchor, shoeStackExtent, shoeTopFor, tableCards } from './cards'
 import { smoothEnd2, smoothEnd3, smoothStart2, smoothStart4, smoothStep } from './easing'
 import type { CardBack } from './palette'
 import { dealerBox, dealerMouth, type Layout } from './scene'
@@ -30,6 +30,9 @@ export interface SpawnView {
   deckCardChunk(k: number, now: number): number | null
   // The fresh deck's fly-in + unwrap state, or null before it emerges.
   deckState(now: number): { fly: number; unwrap: number } | null
+  // The unsealed deck's one riffle: how far it's slid toward centre (0 = shoe, 1 = centre)
+  // and the 0..1 riffle progress at centre, or null when it isn't shuffling.
+  deckShuffle(now: number): { shift: number; riffle: number | null } | null
 }
 
 // The previous dealer's cards being drawn into the new dealer's mouth and shredded:
@@ -141,6 +144,26 @@ export function drawSpawnDeck(ctx: CanvasRenderingContext2D, l: Layout, back: Ca
   drawShoe(ctx, x, y, rest.w, rest.h)
   drawPlastic(ctx, x, y, rest.w, rest.h, st.unwrap, l)
   ctx.restore()
+}
+
+// The unsealed deck's one riffle, in the incoming dealer's colour: the bare deck slides
+// out from the shoe toward the centre (where the split has room), riffles once, then
+// slides back. `back` is the incoming palette — a plain same-colour riffle of the fresh
+// deck (no cross-fade; the colour already swapped when the wrapped deck flew in).
+export function drawSpawnShuffle(ctx: CanvasRenderingContext2D, l: Layout, back: CardBack, view: SpawnView, now: number): void {
+  const s = view.deckShuffle(now)
+  if (!s) {
+    return
+  }
+  const rest = shoeAnchor(l)
+  const centerX = l.width / 2 - rest.w / 2
+  const x = rest.x + (centerX - rest.x) * s.shift
+  setCardBack(back) // both the sliding deck and the riffle use the incoming colour
+  if (s.riffle !== null) {
+    drawShuffle(ctx, x, rest.y, rest.w, rest.h, s.riffle)
+  } else {
+    drawShoe(ctx, x, rest.y, rest.w, rest.h)
+  }
 }
 
 // Draw a card face-up, centred on (cx, cy) at uniform scale `s` (1 = full size,

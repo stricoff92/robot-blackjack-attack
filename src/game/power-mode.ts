@@ -3,16 +3,18 @@
 // ambient (nexus hover, holo projector, damage sparks) at 60fps forever. That idle repaint is
 // what drains the battery + heats the phone; see the render loop in ui/game-view.ts.
 //
-// Modelled on leaderboard.ts: a thin facade over the platform key/value store (SDK.data
-// on-platform, else localStorage — see ../platform/crazygames) with an in-memory cache. Kept
-// dependency-light (no UI imports) so anything can read it.
+// This is a PER-DEVICE preference (it reflects THIS phone/laptop's battery + thermal reality), so
+// it is stored in the device's own localStorage — deliberately NOT the SDK.data store the rest of
+// the game uses for the run/score. SDK.data syncs across every device a logged-in CrazyGames
+// account plays on ("The data will also be synced on all the devices where the user plays the
+// game"), which is right for a run but WRONG here: toggling saver ON on a phone must not force it ON
+// on the same account's desktop. localStorage never leaves the device. Kept dependency-light (no UI
+// or platform imports) so anything can read it, with an in-memory cache over the storage read.
 //
-// Default (when the player has NEVER touched the toggle) is derived per-device: ON for touch /
-// coarse-pointer devices (phones/tablets — where battery + heat matter) or when the OS "reduce
-// motion" accessibility setting is on; OFF on desktop. The auto-default is NOT persisted, so an
-// unset preference adapts to whatever device the account plays on (SDK.data syncs the EXPLICIT
-// choice across devices, but not the absence of one).
-import { loadValue, saveValue } from '../platform/crazygames'
+// Default (when the player has NEVER touched the toggle) is derived per-device: ON for mobile-class
+// touch devices (phones/tablets — where battery + heat matter) or when the OS "reduce motion"
+// accessibility setting is on; OFF on desktop (incl. touchscreen laptops). The auto-default is NOT
+// persisted, so an unset preference keeps re-deriving from whatever device is in hand.
 
 const SAVER_KEY = 'rba.batterySaver'
 
@@ -29,7 +31,7 @@ export function isBatterySaver(): boolean {
     return forced
   }
   if (cached === null) {
-    const raw = loadValue(SAVER_KEY)
+    const raw = loadLocal(SAVER_KEY)
     cached = raw === null ? defaultBatterySaver() : raw === '1'
   }
   return cached
@@ -39,23 +41,49 @@ export function isBatterySaver(): boolean {
 // untouched preference keeps adapting per-device).
 export function setBatterySaver(on: boolean): void {
   cached = on
-  saveValue(SAVER_KEY, on ? '1' : '0')
+  saveLocal(SAVER_KEY, on ? '1' : '0')
 }
 
-// The per-device default when nothing is stored: ON for touch / coarse-pointer devices or when
-// the OS prefers reduced motion; OFF otherwise.
+// Device-local storage read/write. Any failure (private mode, "Block All Cookies", a blocked
+// storage partition) is swallowed: a read falls back to null → re-derive the per-device default, and
+// a write is dropped but the in-memory `cached` still holds the choice for the rest of the session.
+function loadLocal(key: string): string | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage.getItem(key) : null
+  } catch {
+    return null
+  }
+}
+
+function saveLocal(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    /* storage unavailable — `cached` keeps the choice alive until the tab closes. */
+  }
+}
+
+// The per-device default when nothing is stored: ON for mobile-class touch devices or when the OS
+// prefers reduced motion; OFF otherwise.
 export function defaultBatterySaver(): boolean {
-  return coarsePointer() || prefersReducedMotion()
+  return mobileLikeDevice() || prefersReducedMotion()
 }
 
-function coarsePointer(): boolean {
+// A mobile-class device: the primary pointer is coarse (touch) AND the device can't hover. The
+// `hover: none` clause is what excludes touchscreen laptops/desktops — a mouse can hover, a finger
+// can't — so they (and plain desktops) default OFF, while phones and tablets default ON. We do NOT
+// use `navigator.maxTouchPoints > 0` as a general signal: a touchscreen desktop reports touch
+// points yet is not mobile, and flagging it ON was the over-trigger this replaced.
+function mobileLikeDevice(): boolean {
   if (typeof window === 'undefined') {
     return false
   }
-  if (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches) {
-    return true
+  if (typeof window.matchMedia === 'function') {
+    return window.matchMedia('(hover: none) and (pointer: coarse)').matches
   }
-  return (navigator.maxTouchPoints ?? 0) > 0
+  // Last-resort fallback only when media queries are entirely unavailable — never the case on a
+  // real touchscreen desktop (those support matchMedia), so this can't re-introduce the over-trigger.
+  return typeof navigator !== 'undefined' && (navigator.maxTouchPoints ?? 0) > 0
 }
 
 function prefersReducedMotion(): boolean {

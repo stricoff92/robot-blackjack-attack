@@ -114,25 +114,21 @@ export interface DealerView {
 
 // A frame of the dealer's voice readout, mirrored in the mouth panel. `open` is the
 // overall glow gate (fades the panel light in/out at the emote's edges); `energy` folds
-// the per-syllable pulse into it (surging on each syllable). `tint` picks the colour
-// family (cool = laugh, hot = angry). The rest are the per-dealer wave look — how many
-// waves cross the mouth, their spatial density, and travel rate.
+// the per-syllable pulse into it (surging on each syllable). The rest are the per-dealer
+// wave look — how many waves cross the mouth, their spatial density, and travel rate.
 export interface VoiceEmote {
   open: number
   energy: number
-  tint: 'cool' | 'hot'
   waveCount: number
   cycles: number
   flowHz: number
 }
 
-// Mouth colours per emote tint: the panel lerps from its resting near-black grey toward
-// `lit` with the voice energy, and the travelling waves glow in `wave` (drawn additively).
-// Cool = the laugh (pale blue-white light); hot = the angry growl (angry red/orange).
-const MOUTH_TINTS: Record<VoiceEmote['tint'], { lit: string; wave: string }> = {
-  cool: { lit: '#7e8bad', wave: '206, 220, 248' },
-  hot: { lit: '#a65a4c', wave: '255, 138, 80' },
-}
+// Mouth colours for the laugh: the panel lerps from its resting near-black grey toward
+// `MOUTH_LIT` with the voice energy (pale blue-white light), and the travelling waves glow
+// in `MOUTH_WAVE` (drawn additively).
+const MOUTH_LIT = '#7e8bad'
+const MOUTH_WAVE = '206, 220, 248'
 
 // Paint the dealer figure for this frame. The caller (renderCast_) clears the shared 'cast' canvas
 // once before painting dealer + clown into it, so this must NOT clear (it would wipe the clown).
@@ -352,8 +348,7 @@ export function drawVoiceMouth(
   now: number,
 ): void {
   const energy = voice ? clamp01(voice.energy) : 0
-  const litColor = voice ? MOUTH_TINTS[voice.tint].lit : MOUTH_TINTS.cool.lit
-  ctx.fillStyle = energy > 0.001 ? mixHex(MOUTH, litColor, energy) : MOUTH
+  ctx.fillStyle = energy > 0.001 ? mixHex(MOUTH, MOUTH_LIT, energy) : MOUTH
   ctx.beginPath()
   ctx.roundRect(x, y, w, h, r)
   ctx.fill()
@@ -394,7 +389,7 @@ function drawMouthWaves(
   const cy = y + h / 2
   const e = clamp01(voice.energy)
   const open = clamp01(voice.open)
-  const waveColor = MOUTH_TINTS[voice.tint].wave
+  const waveColor = MOUTH_WAVE
   ctx.globalCompositeOperation = 'lighter'
   ctx.lineCap = 'round'
   const k = (Math.PI * 2 * voice.cycles) / w // radians per pixel → `cycles` full waves across the mouth

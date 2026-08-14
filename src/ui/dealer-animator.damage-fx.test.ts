@@ -1,38 +1,51 @@
 import { describe, expect, it } from 'vitest'
 import { maxHitsFor } from '../game/run'
-import { DealerAnimation } from './dealer-animator'
+import { DAMAGE_ANIM_MS, DealerAnimation, STRIKE_TRAVEL_MS } from './dealer-animator'
 
-// setLevel scales integrity by the dealer's max HIT count (maxHitsFor), so passing
-// (pct/100)×maxHits sets the health fraction to exactly pct%. The damage sparks/smoke
-// (damageBursts) key off that fraction: nothing at/above 75%, ramping denser toward 0.
-function at(healthPct: number): DealerAnimation {
+// The damage sparks/smoke are now a BOUNDED per-hit reaction, not a persistent low-health readout:
+// a hit opens a DAMAGE_ANIM_MS window, and the burst density inside it still keys off the post-hit
+// health fraction (nothing at/above 75%, ramping denser toward 0). Drive a real hit and sample
+// inside the window; `maxTs` (damageWindowEnd) caps the spawn so nothing is cut off at the edge.
+const IMPACT = STRIKE_TRAVEL_MS // impact time for a hit scheduled at startAfter = 0
+const WINDOW_END = IMPACT + DAMAGE_ANIM_MS // the hit's seqEnd_ / damageWindowEnd
+
+// A plain hit (same shift, integrity drops) leaving the dealer at healthPct% health.
+function hitAt(healthPct: number): DealerAnimation {
   const d = new DealerAnimation()
-  d.setLevel((healthPct / 100) * maxHitsFor(1), 1)
+  const max = maxHitsFor(1)
+  d.sync(max, 1, (healthPct / 100) * max, 1, 0)
   return d
 }
 
 describe('dealer damage FX (damageBursts)', () => {
-  it('emits nothing at or above the 75% threshold', () => {
-    expect(at(100).damageBursts(50_000)).toEqual([])
-    expect(at(80).damageBursts(50_000)).toEqual([])
-    expect(at(75).damageBursts(50_000)).toEqual([])
+  const IN = IMPACT + 500 // comfortably inside the window
+  const STEADY = 1600 // far enough in that a full FX_BURST_LIFE of bursts is live, before the fade cap
+
+  it('emits nothing when a hit leaves the dealer at or above the 75% threshold', () => {
+    expect(hitAt(80).damageBursts(IN, WINDOW_END)).toEqual([])
+    expect(hitAt(75).damageBursts(IN, WINDOW_END)).toEqual([])
   })
 
-  it('emits bursts once below the threshold', () => {
-    expect(at(74).damageBursts(50_000).length).toBeGreaterThan(0)
+  it('emits nothing outside a damage window (a damaged but un-hit / idle dealer reads mint)', () => {
+    const d = new DealerAnimation()
+    d.setLevel((20 / 100) * maxHitsFor(1), 1) // low health, but no hit → no window
+    expect(d.damageBursts(50_000, d.damageWindowEnd())).toEqual([])
   })
 
-  it('fires more, stronger bursts the lower the health', () => {
-    const now = 500_000 // well past the burst window, so the active count is steady
-    const mid = at(50).damageBursts(now)
-    const low = at(10).damageBursts(now)
+  it('emits bursts once a hit drops below the threshold', () => {
+    expect(hitAt(74).damageBursts(IN, WINDOW_END).length).toBeGreaterThan(0)
+  })
+
+  it('fires more, stronger bursts the lower the post-hit health', () => {
+    const mid = hitAt(50).damageBursts(STEADY, WINDOW_END)
+    const low = hitAt(10).damageBursts(STEADY, WINDOW_END)
     expect(mid.length).toBeGreaterThan(0)
     expect(low.length).toBeGreaterThanOrEqual(mid.length)
     expect(low[0].power).toBeGreaterThan(mid[0].power) // intensity rises as health falls
   })
 
   it('reports only live bursts — ages within the lifetime, distinct seeds, power in (0,1]', () => {
-    const bursts = at(20).damageBursts(500_000)
+    const bursts = hitAt(20).damageBursts(STEADY, WINDOW_END)
     expect(bursts.length).toBeGreaterThan(0)
     for (const b of bursts) {
       expect(b.age).toBeGreaterThanOrEqual(0)
@@ -44,37 +57,16 @@ describe('dealer damage FX (damageBursts)', () => {
     expect(new Set(seeds).size).toBe(seeds.length)
   })
 
-  it('is deterministic — the same health + time reproduces the same bursts', () => {
-    expect(at(30).damageBursts(123_456)).toEqual(at(30).damageBursts(123_456))
+  it('caps the spawn near the window edge so no half-born burst is cut off', () => {
+    const d = hitAt(20)
+    const full = d.damageBursts(STEADY, WINDOW_END) // whole window still ahead
+    const soon = d.damageBursts(STEADY, STEADY + 500) // window closing in 500ms
+    const closing = d.damageBursts(STEADY, STEADY) // window closing right now
+    expect(soon.length).toBeLessThan(full.length)
+    expect(closing.length).toBe(0) // no burst could fully fade → none spawned
   })
 
-  it('holds the FX at the pre-kill level until the DEFERRED laser strikes (not the click)', () => {
-    // A deferred kill: the Next-hand click schedules the laser for t=1000 (startAfter), and
-    // sync() jumps the model level to the incoming dealer's FULL health. But the sparks/tremor
-    // must keep showing the dying dealer's low health right up until the beam lands — not blank
-    // out at the click. (This regressed once: level snapped at sync-call time.)
-    const d = new DealerAnimation()
-    d.setLevel((10 / 100) * maxHitsFor(1), 1) // the outgoing dealer is at 10% — sparking + trembling
-    // Strike scheduled well after the click (impact = startAfter + STRIKE_TRAVEL_MS), so the
-    // pre-strike window comfortably spans several intermittent tremor pulses.
-    const startAfter = 5000
-    // A kill hands sync() the INCOMING dealer's state: shift 2, full integrity (maxHitsFor(2)) —
-    // so the model level jumps to 1.0 at the click.
-    d.sync((10 / 100) * maxHitsFor(1), 1, maxHitsFor(2), 2, startAfter)
-
-    // Before the beam strikes: still sparking...
-    expect(d.damageBursts(300).length).toBeGreaterThan(0)
-    // ...and still trembling.
-    let tremoredPreStrike = 0
-    for (let t = 0; t < startAfter; t += 5) {
-      const { x, y } = d.tremor(t)
-      tremoredPreStrike = Math.max(tremoredPreStrike, Math.abs(x), Math.abs(y))
-    }
-    expect(tremoredPreStrike).toBeGreaterThan(0)
-
-    // Once the beam lands, the level is the incoming dealer's full → the FX are gone (sampled
-    // after impact but before the death animation, so this isolates the level hand-off).
-    expect(d.damageBursts(startAfter + 150).length).toBe(0)
-    expect(d.tremor(startAfter + 150)).toEqual({ x: 0, y: 0 })
+  it('is deterministic — the same hit + time reproduces the same bursts', () => {
+    expect(hitAt(30).damageBursts(STEADY, WINDOW_END)).toEqual(hitAt(30).damageBursts(STEADY, WINDOW_END))
   })
 })

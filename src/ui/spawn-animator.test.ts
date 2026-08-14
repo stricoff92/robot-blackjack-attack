@@ -111,3 +111,76 @@ describe('SpawnAnimation', () => {
     expect(anim.shredEnd).toBeLessThanOrEqual(end)
   })
 })
+
+// Mirrors render/spawn.ts SHEET_SLIDE_START — the unwrap fraction the rustling sfx fires
+// at. The exact value doesn't matter to these tests (any threshold in (0, 1) exercises the
+// same single-fire property), but keep it in step with the renderer.
+const SHEET_SLIDE_START = 0.54
+
+// Walk `now` across the whole ceremony (a bit past `end`) in small steps, calling `fn`.
+function sweep(t0: number, end: number, fn: (now: number) => void): void {
+  for (let t = t0; t <= end + 2000; t += 5) {
+    fn(t)
+  }
+}
+
+describe('SpawnAnimation.unwrap (packaging sfx timing)', () => {
+  it('is monotonic and holds at 1 through the riffle — no false edge to re-fire the tear sfx', () => {
+    // Regression: deckState() returns null during the riffle (the shuffle renderer owns the
+    // draw then), so its .unwrap dipped 1 → 0 → 1 and re-fired the packaging sfx late. unwrap()
+    // is the monotonic value the sfx must read instead — it must never dip back down.
+    const anim = new SpawnAnimation()
+    const end = anim.begin(1000, 4, true) // a kill ceremony: shred cards + old deck, fly a fresh deck
+    let prev = -1
+    let reachedOne = false
+    sweep(1000, end, (now) => {
+      const u = anim.unwrap(now)
+      expect(u).toBeGreaterThanOrEqual(0)
+      expect(u).toBeLessThanOrEqual(1)
+      expect(u).toBeGreaterThanOrEqual(prev - 1e-9) // never decreases
+      if (u >= 1) {
+        reachedOne = true
+      }
+      if (reachedOne) {
+        expect(u).toBe(1) // once bare it stays bare — including all through the riffle
+      }
+      prev = u
+    })
+    expect(reachedOne).toBe(true)
+  })
+
+  it('fires the tear-open and rustling sfx exactly once each across the whole ceremony', () => {
+    const anim = new SpawnAnimation()
+    const end = anim.begin(1000, 4, true)
+    let prev = 0
+    let opening = 0
+    let rustling = 0
+    sweep(1000, end, (now) => {
+      const u = anim.unwrap(now)
+      if (u > 0 && prev <= 0) {
+        opening += 1
+      }
+      if (u >= SHEET_SLIDE_START && prev < SHEET_SLIDE_START) {
+        rustling += 1
+      }
+      prev = u
+    })
+    expect(opening).toBe(1)
+    expect(rustling).toBe(1)
+  })
+
+  it('fires no packaging sfx on a game-over shred (no fresh deck unwraps)', () => {
+    const anim = new SpawnAnimation()
+    const end = anim.begin(1000, 4, true, true) // shredOnly: chew the table cards, fly NO deck
+    let prev = 0
+    let opening = 0
+    sweep(1000, end, (now) => {
+      const u = anim.unwrap(now)
+      if (u > 0 && prev <= 0) {
+        opening += 1
+      }
+      prev = u
+    })
+    expect(opening).toBe(0)
+  })
+})

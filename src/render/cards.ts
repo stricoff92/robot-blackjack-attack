@@ -14,7 +14,7 @@ import { smoothEnd3, smoothStart2, smoothStep } from './easing'
 import { blitGlowLabel, getGlowLabelSprite } from './holo-text-sprite'
 import type { HoloRayTarget } from './nexus'
 import type { CardBack } from './palette'
-import { dealerBox, feltTopEdgeY, type Layout } from './scene'
+import { dealerBox, dealerMouth, feltTopEdgeY, type Layout } from './scene'
 
 const CARD_RATIO = 0.7 // width / height, roughly a real playing card
 
@@ -103,7 +103,8 @@ export function actionBarReserve(l: Layout): number {
 export interface CardState {
   flight: number // 0..1 progress from the shoe to the slot (1 = landed)
   flip: number // 0..1 reveal flip (0 = face-down, 1 = face-up)
-  collect: number // 0..1 gather back to the deck at end of hand (1 = merged in)
+  collect: number // 0..1 end-of-hand clear (1 = gone)
+  collectToDealer?: boolean // true: fly up into the dealer + vanish; false: gather back to the deck
 }
 
 export interface CardAnim {
@@ -274,6 +275,8 @@ export function drawHands(
   const feltHeight = l.height - feltTop
   const { w: cardW, h: cardH } = cardSize(l)
   const origin = shoeAnchor(l)
+  // Where spent cards fly to despawn between hands — up into the dealer's mouth.
+  const despawnTo = dealerMouth(l)
   // The holo-projected count boxes actually drawn this call — returned so the ray fans
   // target EXACTLY the counts that are on screen (never a count without its ray, or vice
   // versa). Each `drawCount` below pairs with a push here.
@@ -285,7 +288,7 @@ export function drawHands(
   const dealerY = dealerRowY(l)
   const dealerXs = rowXs(l.width / 2, round.dealer.length, cardW)
   round.dealer.forEach((card, i) => {
-    drawDealt(ctx, dealerKey(i), dealerXs[i], dealerY, cardW, cardH, card, i === 1, revealHole, anim, origin, dpr)
+    drawDealt(ctx, dealerKey(i), dealerXs[i], dealerY, cardW, cardH, card, i === 1, revealHole, anim, origin, despawnTo, dpr)
   })
   const shownDealer = faceUpDealer(round, revealHole, anim)
   // `hideCounts` holds every total off the felt (the opening hand keeps them back until
@@ -320,7 +323,7 @@ export function drawHands(
     hand.cards.forEach((card, ci) => {
       const key = playerKey(hi, ci)
       const from = slideOrigin?.(key) ?? origin
-      drawDealt(ctx, key, xs[ci], playerY, w, h, card, false, true, anim, from, dpr)
+      drawDealt(ctx, key, xs[ci], playerY, w, h, card, false, true, anim, from, despawnTo, dpr)
     })
     if (laneSettled(hand.cards.length, (ci) => playerKey(hi, ci), anim) && !hideCounts) {
       // Each hand shows its own win/loss/push — both halves of a split settle.
@@ -402,11 +405,13 @@ function drawDealt(
   revealed: boolean,
   anim: CardAnim | undefined,
   origin: { x: number; y: number },
+  despawnTo: { x: number; y: number },
   dpr: number,
 ): void {
   let flight = 1
   let flip = isHole && !revealed ? 0 : 1
   let collect = 0
+  let collectToDealer = false
   if (anim) {
     const st = anim.state(key)
     if (st === null) {
@@ -415,17 +420,40 @@ function drawDealt(
     flight = st.flight
     flip = st.flip
     collect = st.collect
+    collectToDealer = st.collectToDealer ?? false
   }
   if (collect >= 1) {
-    return // gathered back into the deck
+    return // cleared — flown into the dealer, or merged back into the deck
   }
 
   let x = targetX
   let y = targetY
+  if (collect > 0 && collectToDealer) {
+    // Despawn between hands: the spent card (face-up) flies UP INTO THE DEALER,
+    // shrinking + fading out as it reaches the mouth — no flip, no gather-into-deck,
+    // so the felt clears fast and the next hand deals sooner. Aim the card's CENTRE at
+    // the mouth (like the shred suck), then shrink it to nothing there.
+    const e = smoothStart2(collect)
+    x = targetX + (despawnTo.x - w / 2 - targetX) * e
+    y = targetY + (despawnTo.y - h / 2 - targetY) * e
+    const scale = 1 - 0.55 * e
+    const alpha = 1 - smoothStart2(collect)
+    const sprite = flip >= 0.5 ? getCardSprite(card, w, h, dpr) : getCardSprite(null, w, h, dpr)
+    ctx.save()
+    ctx.globalAlpha = Math.max(0, alpha)
+    const cx = x + w / 2
+    const cy = y + h / 2
+    ctx.translate(cx, cy)
+    ctx.scale(scale, scale)
+    ctx.translate(-cx, -cy)
+    blitCard(ctx, sprite, x, y)
+    ctx.restore()
+    return
+  }
   if (collect > 0) {
-    // Gather back to the deck: flip face-down IN PLACE first, then fly to the deck
-    // top and land on it — no fade, the face-down card just merges into the deck's
-    // top card back.
+    // Game-over gather back to the deck: flip face-down IN PLACE first, then fly to
+    // the deck top and land on it — no fade, the face-down card just merges into the
+    // deck's top card back.
     const flipPortion = 0.4
     if (collect < flipPortion) {
       flip = 1 - collect / flipPortion

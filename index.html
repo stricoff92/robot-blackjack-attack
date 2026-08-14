@@ -49,12 +49,20 @@
       #app {
         position: fixed;
         inset: 0;
-        /* Kill the mobile double-tap-to-zoom gesture across the whole game. iOS
-           Safari ignores viewport `user-scalable=no`, so this is what actually
-           stops a double-tap on a button/HUD element from zooming the page.
-           `manipulation` still allows normal taps/scroll; touch-action resolves up
-           the DOM ancestor chain, so this one rule covers every overlay control.
-           The canvas narrows it further to `none` in its own rule below. */
+      }
+      /* Kill the mobile double-tap-to-zoom gesture across the WHOLE document. iOS
+         Safari ignores the viewport `user-scalable=no` above, so this is what
+         actually stops a double-tap from zooming the page. It is deliberately set on
+         EVERY element, not just an ancestor like #app: iOS does not reliably honor a
+         touch-action that lives only on an ancestor of the tapped node — a double-tap
+         on a button whose own touch-action is still `auto` can zoom anyway — so each
+         control must carry `manipulation` directly. `manipulation` keeps normal taps,
+         fast repeated taps (e.g. tapping Hit several times), scrolling and pinch; it
+         removes only the non-standard double-tap-zoom. The universal selector also
+         reaches the body-level overlays that live OUTSIDE #app (boot splash,
+         CrazyGames ad container, dev error box). The canvas is excluded and narrowed
+         to `none` below so in-world drags never scroll or select. */
+      *:not(canvas) {
         touch-action: manipulation;
       }
       canvas {

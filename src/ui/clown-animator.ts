@@ -159,7 +159,6 @@ export class ClownAnimation implements ClownView {
     return {
       open: env.open,
       energy: env.energy,
-      tint: pattern.tint,
       waveCount: pattern.waveCount,
       cycles: pattern.waveCycles,
       flowHz: pattern.waveFlowHz,

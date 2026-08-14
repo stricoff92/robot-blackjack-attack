@@ -4,8 +4,7 @@ import { FLAGS } from '../flags'
 import { readDebugFlags } from '../game/debug'
 import type { Card } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
-import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, isDealerHijacked, isWinningHand, roundTally, type PlayerHand, type Round, type RoundRules } from '../game/round'
-import { evaluateHand, isBlackjack } from '../game/hand'
+import { canDouble, canForcedSplit, canMulligan, canReturn, canSplit, dealerSettleTotal, DEFAULT_ROUND_RULES, roundTally, type PlayerHand, type Round, type RoundRules } from '../game/round'
 import { handReward } from '../game/rewards'
 import { dealerHardHitCeiling, DESTROY_TOKEN, getShift, maxHitsFor, powerupCost, SABOTAGE_DEALER21_ENERGY, tokenMultiplier, TOTAL_DEALERS, winPointDeltas } from '../game/run'
 import { CODA_ANALYZE_COST, CODA_MULLIGAN_COST, REWARDED_AD_ENERGY, Session, SHOE_DECKS, type SessionState } from '../game/session'
@@ -17,7 +16,7 @@ import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS,
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import { deviceDpr, type LayeredCanvas } from '../render/canvas'
 import { createSpriteCanvas, type SpriteCanvas } from '../render/sprite-canvas'
-import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, drawShuffle, playerCardCenter, setHoloFlickerStatic, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
+import { ANALYSIS_STRIKE_MS, drawAnalysis, drawBustBlock, drawHands, drawMulliganDiscard, drawReturnCard, drawShoe, playerCardCenter, setHoloFlickerStatic, shoeAnchor, SHUFFLE_SPLIT_FRACTION, type RoundResult } from '../render/cards'
 import { drawDamageFx } from '../render/damage-fx'
 import { abbreviateCount } from '../render/format'
 import { drawDealer, drawDealerEyeGlow } from '../render/dealer'
@@ -33,7 +32,7 @@ import { drawCodaCounters } from '../render/coda-counters'
 import { CASH_IN_REVEAL_MS, CASH_IN_STAGGER, drawHandSummary, type HandSummaryView, type SummarySlot } from '../render/hand-summary'
 import { drawHearts } from '../render/hearts'
 import { drawTapToStart } from '../render/tap-to-start'
-import { drawOldDeckShred, drawShred, drawSpawnDeck, SHEET_SLIDE_START } from '../render/spawn'
+import { drawOldDeckShred, drawShred, drawSpawnDeck, drawSpawnShuffle, SHEET_SLIDE_START } from '../render/spawn'
 import { DELTA_FLY_MS, drawScoreDeltas } from '../render/score-deltas'
 import { drawTokens, type Point } from '../render/tokens'
 import { ScoreDeltaFly } from './score-delta-animator'
@@ -54,7 +53,7 @@ import { createStage, type Stage } from './stage'
 import { ViewportGuard } from './viewport-guard'
 import { sfx } from '../audio/sfx'
 import { music } from '../audio/music'
-import { angryGrowlPattern, clownifyLaugh, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
+import { clownifyLaugh, evilLaughPattern, voice, voiceSeedFor, type VoicePattern } from '../audio/voice'
 
 // The token icon, imported once so Vite fingerprints the URL and the browser
 // fetches it a single time on load; every <img> that references it (the token
@@ -216,9 +215,6 @@ const VOICE_START_EPS = 200
 // The dealer (2–6) laughs as the cards deal when the player shoves ALL-IN and the table is
 // still above this integrity fraction (a healthy house savouring a desperate gamble).
 const ALLIN_LAUGH_HEALTH = 0.25
-// "On the ropes": a dealer walking in laughs (mocks) instead of growling when the player would
-// is holding fewer than this many tokens (the incoming dealer mocks a token-poor player).
-const ROPES_TOKENS = 250
 // After the tap-to-start tap, the "TAP TO START" projection fades out over this window before
 // the scene starts (walk-in + HUD + first deal) — a short beat so the tap doesn't snap the game in.
 const TAP_FADE_MS = 300
@@ -395,8 +391,8 @@ class GameView {
   private lastAnimating_ = false
   // Edge tracker for the dealer-death pause: when it clears, buttons re-enable.
   private lastDealerBlocking_ = false
-  // Start-timestamps of the walk-in / walk-off we last voiced, so the growl/laugh fires
-  // exactly ONCE per entrance/exit. Keyed on the START stamp (derived as now − progress·dur)
+  // Start-timestamps of the walk-in / walk-off we last handled, so the walk-in's music turnover
+  // and the walk-off cackle each fire exactly ONCE. Keyed on the START stamp (now − progress·dur)
   // rather than a boolean edge, because the loop re-runs a frame at a slightly different clock
   // (the frozen-clock probe) — a boolean edge double-fires there. Matched with a tolerance:
   // the derived start jitters ~1ms across frames (float rounding of `progress`), while two
@@ -546,15 +542,12 @@ class GameView {
   // drawHands can tween the two originals out of their old slots. Set on a split,
   // cleared on the next action.
   private splitPrev_: Round | null = null
-  // While gathering + shuffling, the deck is drawn on the cards layer (so it can
-  // split/move) and hidden on the static table layer.
-  private deckOnCards_ = false
   // Which dealer's colour the deck is currently painted in (marks progression). On a
   // kill the deck swap is the spawn ceremony (shred + fresh deck), which commits the
   // new colour when it settles (see the deckColorShift assignment there).
   private deckColorShift_ = 1
-  // Edge tracker for the shuffle sfx: true once the riffle passes its split phase
-  // and the piles start merging (where the clip's cascade actually sounds).
+  // Edge tracker for the unseal shuffle sfx: true once the ceremony's riffle passes its
+  // split phase and the piles start merging (where the clip's cascade actually sounds).
   private shuffleMergingLast_ = false
   // Previous frame's deck-unwrap progress (0..1), for firing the packaging sfx as
   // the wrap tears open (unwrap leaves 0) and the sheet slides off left (crosses
@@ -791,8 +784,10 @@ class GameView {
     // Show the balances immediately (no roll up from zero on load).
     this.tokenTicker_.set(this.displayedTokens_(now()))
     this.scoreTicker_.set(this.displayedScore_())
-    // Seed the dealer to the current integrity so a partway-damaged dealer (resume, or the
-    // dealerHealth dev override) shows the right eye flicker + damage sparks from the first frame.
+    // Seed the dealer to the current integrity so the flicker/sparks intensity of its NEXT hit
+    // reflects its current health. A partway-damaged dealer (resume, or the dealerHealth dev
+    // override) now stands mint until it next takes a hit — the damage FX are a bounded per-hit
+    // reaction, no longer a persistent low-health readout.
     this.dealer_.setLevel(this.state_.run.integrity, this.state_.run.shiftIndex)
     // Seed the heart row to the run's current hit points (a resume may sit at partway health) so it
     // paints the right count from the first frame — no phantom pop/heal.
@@ -979,7 +974,7 @@ class GameView {
     const layout = computeLayout(canvas.width, canvas.height)
     this.paintTable_(canvas, layout, this.tableHasDeck_())
     this.updateClown_(t) // a run resumed at dealer 6 snaps the clown to standing beside it
-    this.renderCast_(canvas, layout, t, !this.batterySaver_ || this.dealer_.isSequencing(t)) // sparks only if mid-attack
+    this.renderCast_(canvas, layout, t, this.dealer_.isSequencing(t)) // sparks only during the damage window
     this.renderPlay_(canvas, layout, t)
     this.renderNexus_(canvas, layout, t, t)
     this.renderOverlay_(canvas, layout, t, t, t)
@@ -1075,7 +1070,7 @@ class GameView {
     this.paintTable_(canvas, layout, this.tableHasDeck_())
     // Repaint every dynamic group at its CURRENT animated state, so a resize
     // mid-death/mid-strike doesn't blank the figure or the beam.
-    this.renderCast_(canvas, layout, t, !this.batterySaver_ || this.dealer_.isSequencing(t)) // sparks only if mid-attack
+    this.renderCast_(canvas, layout, t, this.dealer_.isSequencing(t)) // sparks only during the damage window
     this.renderPlay_(canvas, layout, t)
     this.renderNexus_(canvas, layout, t, t)
     this.renderOverlay_(canvas, layout, t, t, t)
@@ -1158,10 +1153,10 @@ class GameView {
   }
 
   // Whether the resting deck belongs on the static table layer this repaint. It moves
-  // to the cards layer while gathering/shuffling (deckOnCards) and while the RGB
-  // dealer is in play (so its colour can cycle) — in both cases the table omits it.
+  // to the cards layer while the RGB dealer is in play (so its colour can cycle), and is
+  // hidden while a spawn ceremony has flown/shredded it — in both cases the table omits it.
   private tableHasDeck_(): boolean {
-    return !this.deckOnCards_ && !this.deckHidden_ && !this.rgbActive_()
+    return !this.deckHidden_ && !this.rgbActive_()
   }
 
   // --- Per-group canvas render -----------------------------------------------------------------
@@ -1197,17 +1192,19 @@ class GameView {
   }
 
   // The dealer layer: the animated robot figure, below the rail so its lower body
-  // and death debris tuck behind the table. A wounded dealer (< 75% health) also sparks
-  // and smokes here — the diegetic replacement for the old health bar — over the figure
-  // but still behind the rail, so downward sparks tuck away like the lower body does.
+  // and death debris tuck behind the table. During its post-hit damage window the dealer also
+  // sparks and smokes here — the reaction to taking a hit — over the figure but still behind the
+  // rail, so downward sparks tuck away like the lower body does.
   private drawDealerFigure_(canvas: LayeredCanvas, layout: Layout, timestamp: number, sparks = true): void {
     const ctx = canvas.layers.cast.ctx // shared with the clown; renderCast_ clears it once
     drawDealer(ctx, layout, this.dealer_, timestamp)
     // Only while the figure is STANDING at its home spot — the burst origins are the
-    // resting figure, so sparks must not show while it's dying, walking in, or off. `sparks` lets
-    // battery saver CLEAR them on a pulse OFF beat (a clean figure) rather than freeze them mid-flight.
+    // resting figure, so sparks must not show while it's dying, walking in, or off. `sparks`
+    // (the dealer's isSequencing) also gives the one clean redraw that CLEARS them the frame the
+    // damage window closes, rather than leaving the last burst painted. damageWindowEnd caps the
+    // spawn so no half-born spark is cut off at the window edge.
     if (sparks && this.dealerStanding_(timestamp)) {
-      drawDamageFx(ctx, layout, this.dealer_.damageBursts(timestamp))
+      drawDamageFx(ctx, layout, this.dealer_.damageBursts(timestamp, this.dealer_.damageWindowEnd()))
     }
   }
 
@@ -1227,7 +1224,7 @@ class GameView {
     // While the opening is held (the dealer is parked off-screen each frame during the
     // tap-to-start / title screen, so its arriving() reads ~0 every frame), DON'T let the clown
     // treat that as a walk-in and trot out over the title screen. It starts following only once the
-    // hold releases and the real walk-in begins (mirrors the walk-in growl's !introHold_ gate).
+    // hold releases and the real walk-in begins (mirrors the walk-in music turnover's !introHold_ gate).
     if (this.introHold_) {
       return
     }
@@ -1240,14 +1237,14 @@ class GameView {
     }
     // Echo the dealer's own laughs onto the clown's grin, a beat behind. Every fresh dealer emote
     // is marked "seen" the frame it appears (so a laugh armed while the clown wasn't yet on screen
-    // is skipped, never fired late) — but only a LAUGH, only while the on-screen figure really is
-    // dealer 6 (never the Banker that walks in after its death), and only while the clown is up,
-    // actually plays. On a walk-off, dealer 6's parting cackle is mirrored as the clown follows.
+    // is skipped, never fired late) — but only while the on-screen figure really is dealer 6
+    // (never the Banker that walks in after its death), and only while the clown is up, actually
+    // plays. On a walk-off, dealer 6's parting cackle is mirrored as the clown follows.
     const de = this.dealer_.currentEmote()
     if (de && de.start !== this.lastClownEmoteStart_) {
       this.lastClownEmoteStart_ = de.start
       const isDealer6 = this.dealer_.figureShift(timestamp) === TOTAL_DEALERS
-      if (de.pattern.kind === 'laugh' && isDealer6 && this.clown_.present(timestamp)) {
+      if (isDealer6 && this.clown_.present(timestamp)) {
         const start = de.start + CLOWN_LAUGH_DELAY_MS
         const pattern = clownifyLaugh(de.pattern)
         voice.play(pattern, Math.max(0, start - now()) / 1000, CLOWN_LAUGH_GAIN)
@@ -1296,9 +1293,9 @@ class GameView {
     // Every back drawn this frame uses the current dealer's deck colour.
     this.applyDeckColor_(timestamp)
 
-    // A dealer-spawn ceremony: the fresh shrink-wrapped deck flies in from the
-    // dealer and unwraps here (in the incoming dealer's colour), instead of the
-    // same-dealer riffle below. The static table deck is untouched (kept as the old
+    // A dealer-spawn ceremony: the fresh shrink-wrapped deck flies in from the dealer
+    // and unwraps here (in the incoming dealer's colour), then gets its one riffle — the
+    // deck's only visible shuffle. The static table deck is untouched (kept as the old
     // deck, or hidden on the opening intro) until this one lands + commits.
     if (this.spawn_.isAnimating(timestamp)) {
       const shift = this.spawnIncomingShift_ ?? this.deckColorShift_
@@ -1310,19 +1307,12 @@ class GameView {
       }
       // A game-over shred flies no fresh deck in — it just chews the table cards.
       if (!this.spawnShredOnly_) {
-        drawSpawnDeck(ctx, layout, dealerColors(shift, timestamp).back, this.spawn_, timestamp)
-      }
-    } else if (this.deckOnCards_) {
-      // While gathering/shuffling, the deck lives on this layer so it can slide
-      // out to the centre (in front of the dealer) and split for the riffle.
-      const rest = shoeAnchor(layout)
-      const centerX = layout.width / 2 - rest.w / 2
-      const x = rest.x + (centerX - rest.x) * this.anim_.deckShift()
-      const shuffle = this.anim_.shuffle()
-      if (shuffle !== null) {
-        drawShuffle(ctx, x, rest.y, rest.w, rest.h, shuffle)
-      } else {
-        drawShoe(ctx, x, rest.y, rest.w, rest.h)
+        const back = dealerColors(shift, timestamp).back
+        // drawSpawnDeck draws the fly-in/unwrap/resting deck; drawSpawnShuffle draws the
+        // one riffle (slide out → riffle → slide back). They're mutually exclusive windows
+        // (deckState yields to deckShuffle during the riffle), so both can run unconditionally.
+        drawSpawnDeck(ctx, layout, back, this.spawn_, timestamp)
+        drawSpawnShuffle(ctx, layout, back, this.spawn_, timestamp)
       }
     } else if (this.rgbActive_() && !this.deckHidden_) {
       // The RGB dealer's resting deck stays on this per-frame layer so its colour keeps
@@ -1733,54 +1723,23 @@ class GameView {
     if (phase === 'resolved' && round) {
       // The player-won/player-lost sting itself is NOT played here any more — it fires with the
       // hand-summary mark's fade-in (see summaryAppear_), and nowhere else. This card-settle beat
-      // now only drives the dealer's VOICE reaction (laugh / growl).
+      // now only drives the dealer's VOICE reaction (the evil laugh).
       // A dealer that was just DESTROYED doesn't react. applyRound has already advanced the
-      // shift to the next dealer (so playDealerAngry/Laugh would speak in the WRONG dealer's
-      // voice) and zeroed handsThisDealer — which, at a resolved hand, only happens on a kill.
-      // The kill/attack + walk-in sequence carries the audio instead. Dealer 1 depends on this:
-      // beating it can trip an angry-growl trigger while the shift already reads 2, and Dealer 1
-      // must stay completely silent.
+      // shift to the next dealer (so playDealerLaugh would speak in the WRONG dealer's voice)
+      // and zeroed handsThisDealer — which, at a resolved hand, only happens on a kill. The
+      // kill/attack + walk-in sequence carries the audio instead. Dealer 1 depends on this:
+      // beating it could trip a laugh while the shift already reads 2, and Dealer 1 must stay
+      // completely silent.
       if (run.handsThisDealer === 0) {
         return
       }
       // The dealer cackles when it OUTSCORED the player: a 'lose' hand (the player stood and
       // the dealer's total beat theirs, incl. a dealer natural). A player 'bust' is their own
-      // doing and 'push'/'voided' is a wash — neither earns a laugh. Otherwise, some
-      // player triumphs make the dealer GROWL instead (see angryResolutionTrigger). The two
-      // are mutually exclusive, and the laugh wins if somehow both apply.
+      // doing and 'push'/'voided' is a wash — neither earns a laugh.
       if (round.hands.some((hand) => hand.outcome === 'lose')) {
         this.playDealerLaugh_()
-      } else if (this.angryResolutionTrigger_(round)) {
-        this.playDealerAngry_()
       }
     }
-  }
-
-  // Whether this resolved round should make the dealer GROWL (an agitated reaction to the
-  // player pulling something off). The three always-on cases plus one that only fires half
-  // the time (a below-17 stand that the dealer's own bust bailed out — cheeky luck).
-  private angryResolutionTrigger_(round: Round): boolean {
-    // The player hits a natural blackjack (a real two-card 21 — NOT a hijacked dealer 21,
-    // which also carries a 'blackjack' outcome).
-    if (round.hands.some((hand) => hand.outcome === 'blackjack' && isBlackjack(hand.cards))) {
-      return true
-    }
-    // A token-free Double that WON.
-    if (round.hands.some((hand) => hand.freeDoubled && isWinningHand(hand))) {
-      return true
-    }
-    // The dealer's own natural blackjack was voided (Sabotage T2) or hijacked (T3).
-    if (isBlackjack(round.dealer) && (isDealerHijacked(round) || round.hands.some((h) => h.outcome === 'voided'))) {
-      return true
-    }
-    // The player stood below 17 and the dealer busted (a lucky bail-out) — only half the time.
-    if (
-      dealerSettleTotal(round) > 21 &&
-      round.hands.some((h) => h.outcome === 'win' && !h.busted && evaluateHand(h.cards).total < 17)
-    ) {
-      return Math.random() < 0.5
-    }
-    return false
   }
 
   // The dealer's evil-laugh voice emote on a house win: the mouth panel lights up with
@@ -1802,8 +1761,8 @@ class GameView {
   }
 
   // The Banker's amused cackle — he's entertained by the gamble no matter how it lands. Fired
-  // on his walk-in, on each double-or-nothing, and on a losing hand (never a growl: he's never
-  // rattled). `startAt` is the absolute moment it should begin (a future walk-in, or now).
+  // on his walk-in, on each double-or-nothing, and on a losing hand (he's never rattled).
+  // `startAt` is the absolute moment it should begin (a future walk-in, or now).
   private playBankerLaugh_(startAt: number, endBy?: number): void {
     const base = evilLaughPattern(BANKER_VOICE_SEED, BANKER_LAUGH_SHIFT)
     // Twice as long: run the cackle through a second time (slightly overlapped) — "hahaha… hahaha".
@@ -1846,42 +1805,6 @@ class GameView {
     }
   }
 
-  // The dealer's angry-growl emote — the agitated counterpart to the laugh, fired when the
-  // player pulls something off (see the resolution + action triggers). Same seed/shift voice
-  // identity, a hot-tinted mouth, and a short lead so it reads as an immediate reaction.
-  // Dealer 1 is silent (voiceSeedFor returns null).
-  private playDealerAngry_(): void {
-    const shift = this.state_.run.shiftIndex
-    const seed = voiceSeedFor(shift)
-    if (seed === null) {
-      return
-    }
-    const pattern = angryGrowlPattern(seed, shift)
-    const lead = 0.05 // a quick, immediate snarl
-    voice.play(pattern, lead)
-    this.dealer_.emote(now() + lead * 1000, pattern)
-  }
-
-  // A dealer (2–6) stomps in growling — a short (600–800ms) growl fired as the walk-in begins.
-  // BUT if the player is on the ropes (would go bankrupt within ROPES_HANDS losing hands and is
-  // low on tokens), the incoming dealer MOCKS them with a laugh instead. Dealer 1 is silent.
-  private playWalkInGrowl_(timestamp: number): void {
-    const shift = this.dealer_.figureShift(timestamp)
-    // The Banker isn't a menacing dealer — his amused laugh is fired from beginCoda instead.
-    if (shift > TOTAL_DEALERS) {
-      return
-    }
-    const seed = voiceSeedFor(shift)
-    if (seed === null) {
-      return
-    }
-    const run = this.state_.run
-    const onTheRopes = run.tokens < ROPES_TOKENS
-    const pattern = onTheRopes ? evilLaughPattern(seed, shift) : angryGrowlPattern(seed, shift)
-    voice.play(pattern, 0) // starts now, in step with the walk-in's first steps
-    this.dealer_.emote(timestamp, pattern)
-  }
-
   // Game over — the player went bankrupt — so the victorious dealer (2–6) saunters off
   // CACKLING. The natural-length laugh keeps ringing a beat past the exit. Dealer 1 silent.
   private playWalkOffLaugh_(timestamp: number): void {
@@ -1897,37 +1820,6 @@ class GameView {
     const pattern = evilLaughPattern(seed, shift)
     voice.play(pattern, 0)
     this.dealer_.emote(timestamp, pattern)
-  }
-
-  // Action-driven angry triggers, checked from run() off the before/after round diff:
-  // the player FREEZES the dealer, or makes a risky HIT at >= 16 and survives it (half the
-  // time). Both happen mid-hand with the dealer standing. (Resolution triggers are handled
-  // separately in playResultSting.)
-  private checkAngryAction_(prevRound: Round | null, prevPhase: SessionState['phase']): void {
-    const round = this.state_.round
-    if (!round || !prevRound) {
-      return
-    }
-    // Freeze Dealer just used — the dealer was forced to stand on its total.
-    if (round.dealerFrozen && !prevRound.dealerFrozen) {
-      this.playDealerAngry_()
-      return
-    }
-    // A risky HIT that survived and left the player still in the hand: same hand set, exactly
-    // one card added to a hand (rules out split/deal/return), it wasn't a Double, the hand
-    // didn't bust, and it was already >= 16 before the card. Half the time.
-    if (prevPhase === 'playing' && this.state_.phase === 'playing' && round.hands.length === prevRound.hands.length) {
-      for (let i = 0; i < round.hands.length; i++) {
-        const nh = round.hands[i]
-        const ph = prevRound.hands[i]
-        if (nh.cards.length === ph.cards.length + 1 && !nh.doubled && !nh.busted) {
-          if (evaluateHand(ph.cards).total >= 16 && Math.random() < 0.5) {
-            this.playDealerAngry_()
-          }
-          return
-        }
-      }
-    }
   }
 
   // Chips/bankroll are gone; this layer now only carries the coda's glass winnings counters (the
@@ -2443,10 +2335,11 @@ class GameView {
         this.releaseHeldScore_()
       }
     }
-    // The fresh deck's shrink-wrap: read the same unwrap fraction the renderer uses
-    // and fire the tear-open sfx as it begins peeling (unwrap leaves 0), then the
-    // rustling sfx as the big sheet starts sliding off to the left.
-    const unwrap = this.spawn_.deckState(timestamp)?.unwrap ?? 0
+    // The fresh deck's shrink-wrap: fire the tear-open sfx as it begins peeling (unwrap
+    // leaves 0), then the rustling sfx as the big sheet starts sliding off to the left.
+    // Read the MONOTONIC unwrap() — NOT deckState().unwrap, which dips to 0 during the
+    // riffle and would re-fire both sfx late as it climbs back to 1.
+    const unwrap = this.spawn_.unwrap(timestamp)
     if (unwrap > 0 && this.prevUnwrap_ <= 0) {
       sfx.play('packaging-opening')
     }
@@ -2454,6 +2347,15 @@ class GameView {
       sfx.play('packaging-rustling')
     }
     this.prevUnwrap_ = unwrap
+    // The unsealed deck's one riffle: fire the shuffle sfx the frame it passes its split
+    // phase and the piles start merging — where the clip's cascade sits (no silent lead-in),
+    // and the merge is sized to the clip so they end together.
+    const riffleT = this.spawn_.deckShuffle(timestamp)?.riffle ?? null
+    const merging = riffleT !== null && riffleT >= SHUFFLE_SPLIT_FRACTION
+    if (merging && !this.shuffleMergingLast_) {
+      sfx.play('shuffle')
+    }
+    this.shuffleMergingLast_ = merging
     // The dealer's shredder: start the looping bed (shredder + vacuum) as the first
     // card is sucked in, fast-fade it once the last is gone.
     const shredding = this.spawn_.isShredding(timestamp)
@@ -2495,17 +2397,15 @@ class GameView {
     for (let i = 0; i < steps; i += 1) {
       sfx.play('footstep')
     }
-    // Voice on entrances/exits, detected off the walk animations (once per start stamp):
-    //  • a dealer 2–6 stomps in GROWLING (the growl ends exactly as it plants), and
-    //  • at game over (the player went bankrupt) the dealer strolls off CACKLING.
-    // Both skip dealer 1 (silent). The intro-hold guard keeps the opening (invisible,
-    // parked) dealer from growling before its real walk-in.
+    // A dealer walk-in is SILENT — the stomp-in choreography carries it, no voice. (At game
+    // over, when the player went bankrupt, the dealer strolls off CACKLING — handled below.)
+    // The walk-in is still detected here to turn the soundtrack over as a new dealer arrives;
+    // the intro-hold guard keeps the opening (invisible, parked) dealer from tripping it early.
     const arriving = this.dealer_.arriving(timestamp)
     if (arriving !== null && !this.introHold_) {
       const startAt = timestamp - arriving * KILL_ARRIVE_MS
       if (Math.abs(startAt - this.lastWalkInStart_) > VOICE_START_EPS) {
         this.lastWalkInStart_ = startAt
-        this.playWalkInGrowl_(timestamp)
         // A new dealer (2..6) is starting — turn the soundtrack over (fade out, fade a fresh
         // one in). NOT the Banker: his coda picks its song by the player's choice (double-or-
         // nothing snaps in the coda theme; cash out leaves the current track), so his walk-in
@@ -2524,17 +2424,6 @@ class GameView {
         this.playWalkOffLaugh_(timestamp)
       }
     }
-    // Track the riffle's progress (null when not shuffling) — used to fire the shuffle
-    // sfx at the merge and to draw the reforming deck.
-    const shuffleT = this.anim_.shuffle()
-    // Fire the shuffle sfx the frame the riffle passes its split phase and the
-    // piles start merging — that's where the clip's cascade sound sits (it has no
-    // silent lead-in), and the merge is sized to the clip so they end together.
-    const merging = shuffleT !== null && shuffleT >= SHUFFLE_SPLIT_FRACTION
-    if (merging && !this.shuffleMergingLast_) {
-      sfx.play('shuffle')
-    }
-    this.shuffleMergingLast_ = merging
     // The result just became visible — the resolved/over hand's cards have
     // settled (same gate the Win/Lose label uses). Play the win or loss sting
     // once; the flag resets when the round leaves the resolved/over phases.
@@ -2599,10 +2488,10 @@ class GameView {
     //    (deals, walk-ins), so they can't use the constant (that would draw them "before" their
     //    walk-in — the dealer would vanish). While idle they hold a RECENT frozen time (static); while
     //    busy they're live.
-    // A damaged dealer FULLY PARKS when idle (no idle spark animation — `drawSparks` off while quiet):
-    // it sits static, and sparks only fly during hits/strikes, which are busy → full speed. The holo
-    // readouts also don't flicker in saver (holoFlicker frozen, see render/cards). Outside saver every
-    // clock is the live timestamp and every layer repaints, exactly as before.
+    // The dealer's damage reaction is a BOUNDED window (isSequencing), so a damaged-then-settled dealer
+    // is mint + static and the loop parks the same in both modes — there is no dealer-specific saver
+    // branch anymore. The holo readouts still don't flicker in saver (holoFlicker frozen, see
+    // render/cards). Outside saver every clock is the live timestamp and every layer repaints, as before.
     const saver = this.batterySaver_
     // The SPLASH screen (tap-to-start / Continue / New game, i.e. before `started_`) always runs the
     // nexus + light rays LIVE, even in saver — the user wants that one screen to showcase the animation.
@@ -2617,38 +2506,35 @@ class GameView {
     const frozenNow = quiet ? this.freezeAt_ : timestamp
     // The dealer FIGURE runs on its OWN clock, independent of the cards. It's live only while the dealer
     // is doing something itself — a hit/kill/walk-in (isSequencing/isBlocking) or an emote (a laugh) —
-    // and frozen otherwise, EVEN when the cards are being dealt. Without this, dealing a hand (a busy
-    // frame) woke a wounded dealer's ambient sparks + eye-flicker, then they refroze — the damage FX
-    // looked coupled to the deal. Now the diegetic damage plays only when the dealer is actually
-    // attacked. Outside saver the figure is always live (continuous ambient, as before). The `|| timestamp`
-    // guards the pre-first-choreography frames (title screen) where dealerFreezeAt_ is still 0.
+    // and frozen otherwise, EVEN when the cards are being dealt. Since the damage reaction is now the
+    // bounded isSequencing window (not an unbounded low-health ambient), the figure clock needs no
+    // saver-specific branch: it's live while choreographing/emoting/blocking (or the clown is) and
+    // frozen when idle-and-mint, identically in both modes. The `|| timestamp` guards the
+    // pre-first-choreography frames (title screen) where dealerFreezeAt_ is still 0.
     const dealerChoreographing =
       this.dealer_.isSequencing(timestamp) || this.dealer_.isEmoting(timestamp) || this.dealer_.isBlocking(timestamp)
     // The clown shares this cast render clock (figureNow). Keep it LIVE while the clown is walking
     // in/off or laughing — otherwise saver freezes figureNow (the dead dealer 6 stops choreographing)
     // and the clown, whose state machine runs on the live clock, renders stuck mid-walk-off and then
     // pops to hidden. A steady standing clown reports false, so saver still freezes the idle scene.
-    if (!saver || dealerChoreographing || this.clown_.isAnimating(timestamp)) {
+    if (dealerChoreographing || this.clown_.isAnimating(timestamp)) {
       this.dealerFreezeAt_ = timestamp
     }
     const figureNow = this.dealerFreezeAt_ || timestamp
-    // Sparks (smoke/spark bursts) fire only while the dealer is under attack (a strike/hit/kill
-    // sequence), never during unrelated activity; outside saver they're the continuous health readout.
-    const drawSparks = !saver || this.dealer_.isSequencing(timestamp)
+    // Sparks (smoke/spark bursts) fire only during the dealer's bounded damage window (isSequencing),
+    // never during unrelated activity — identically in both battery modes.
+    const drawSparks = this.dealer_.isSequencing(timestamp)
     // Dirty-flag gating for the 'cast' + 'nexus' canvases (Stage B): keep them dirty while something
     // on them is animating, else skip the redraw (their last frame persists). 'cast' = dealer/clown
-    // figures. In saver it's dirty only while the dealer choreographs (+ one clean redraw the frame
-    // AFTER, to settle the resting pose / clear sparks); outside saver its ambient flicker/sparks run
-    // every frame (isAnimating). 'nexus' = the device (hovers every frame outside saver → always dirty
-    // there; in saver dirty only when the laser/heal fires). play + overlay always redraw (field comment).
+    // figures. It's dirty while the dealer choreographs — which now spans the WHOLE bounded damage
+    // window (dealerChoreographing = isSequencing|isEmoting|isBlocking) — plus one clean redraw the
+    // frame AFTER (lastDealerChoreographing_) to settle the resting pose / clear the last sparks. Same
+    // in both modes. 'nexus' = the device (hovers every frame outside saver → always dirty there; in
+    // saver dirty only when the laser/heal fires). play + overlay always redraw (field comment).
     if (
       dealerChoreographing ||
       this.lastDealerChoreographing_ ||
       this.clown_.present(timestamp) ||
-      // Normal mode keeps the ambient damage FX (eye-flicker <33% AND sparks/smoke <75%) running every
-      // frame — ambientDamageActive is the widest band, so it must be OR'd in (isAnimating alone only
-      // covers the <33% flicker + active sequences). Saver deliberately omits this: no idle ambient.
-      (!saver && (this.dealer_.isAnimating(timestamp) || this.dealer_.ambientDamageActive(timestamp))) ||
       (!quiet && this.rgbActive_())
     ) {
       this.castDirty_ = true
@@ -2709,12 +2595,6 @@ class GameView {
         this.revealOpeningButtons_()
       }
 
-      if (this.deckOnCards_) {
-        // Gather + shuffle finished: hand the deck back to the static table layer
-        // (unless the RGB dealer keeps it on the cards layer to keep shimmering).
-        this.deckOnCards_ = false
-        this.paintTable_(canvas, layout, this.tableHasDeck_())
-      }
       if (this.spawnIncomingShift_ !== null) {
         // Spawn ceremony finished: the fresh deck has landed + unwrapped. Commit its
         // colour and hand it back to the static table layer (the old deck it flew in
@@ -2878,9 +2758,9 @@ class GameView {
   // Whether anything is actively MOVING this frame — the signal the battery-saver grace clock keys
   // off. Built only from reliable, enumerable signals (each animator's own isAnimating, the dealer's
   // transient/emote states, armed STATE-CHANGING timers). It deliberately does NOT enumerate every
-  // short cosmetic fade — SETTLE_GRACE_MS holds the loop open well past those. The dealer's
-  // low-health AMBIENT (idle sparks/shimmer) is excluded so an idle damaged dealer counts as quiet
-  // and the loop fully parks (its idle sparks are suppressed while parked — see drawSparks).
+  // short cosmetic fade — SETTLE_GRACE_MS holds the loop open well past those. The dealer's damage
+  // reaction is now a bounded window reported by isSequencing (below), so it keeps the loop live for
+  // the whole DAMAGE_ANIM_MS in BOTH modes; once it settles to mint the dealer is static and parks.
   //
   // MAINTENANCE: keep this list in sync with the animation sources. Any NEW canvas animation that can
   // run LONGER than SETTLE_GRACE_MS (1200ms) must be registered here (or be driven by an armed timer
@@ -3762,10 +3642,6 @@ class GameView {
     // flip instead of the Next-hand button, so a normal deal and an instant blackjack look
     // identical until the reveal settles. Every other action resets it (never 'betting' here).
     this.dealNatural_ = prevPhase === 'betting' && this.state_.phase === 'resolved'
-    // Action-driven angry emotes (freeze used, a lucky risky hit): fired here off the
-    // before/after diff, while the dealer stands mid-hand. Resolution-driven ones live in
-    // playResultSting instead.
-    this.checkAngryAction_(prevRound, prevPhase)
     // A hand just started (cards dealing) with the player shoved all-in vs a healthy table:
     // the dealer laughs.
     this.checkDealLaugh_(prevRound)
@@ -3834,9 +3710,9 @@ class GameView {
     if ((prevRound || prevPhase === 'over') && !this.state_.round) {
       // Next hand called: settle the deferred chips now (winners collect, losers pay
       // the house). What follows depends on whether the DEALER CHANGES. A same-dealer
-      // hand gathers the spent cards back into the deck + riffles; a dealer SPAWN — a
-      // kill, or a New run's reset — instead shreds the old cards into the new
-      // dealer's mouth and flies in a fresh shrink-wrapped deck (the ceremony).
+      // hand flies the spent cards up into the dealer to vanish (the deck stays put — no
+      // riffle); a dealer SPAWN — a kill, or a New run's reset — instead shreds the old
+      // cards into the new dealer's mouth and flies in a fresh shrink-wrapped deck (the ceremony).
       this.summaryFadeAt_ = t // the hand-summary fades out as the player calls the next hand
       // Everything the click sets in motion (gather / walk-off / walk-in) waits for that fade-out to
       // finish first — the table clears only once the summary has gone (the laser already fired on
@@ -3872,16 +3748,10 @@ class GameView {
       const isKill = !!this.pendingAttack_ && prevPhase === 'resolved' && this.pendingAttack_.kind === 'kill'
       const isWindowOut = !!this.pendingAttack_ && prevPhase === 'resolved' && this.pendingAttack_.kind === 'windowOut'
       const newRun = prevPhase === 'over'
-      const ceremony = isKill || isWindowOut || newRun
 
-      if (!ceremony) {
-        // Same dealer: move the deck onto the cards layer so the gather + riffle can
-        // slide + split it. A ceremony instead keeps the old deck on the static table
-        // until the fresh one lands over it, so its colour swap stays hidden.
-        this.deckOnCards_ = true
-        const canvas = this.stage_.canvas
-        this.paintTable_(canvas, computeLayout(canvas.width, canvas.height), false)
-      }
+      // Same dealer: the deck stays put on the static table layer — the spent cards fly
+      // up into the dealer and vanish (no gather-into-deck, no riffle). A ceremony instead
+      // keeps the old deck resting until the fresh wrapped deck flies in over it.
       // A New run zeroes the count: snap it rather than dramatically rolling the whole
       // balance down (a full reset isn't a "spend").
       if (newRun) {
@@ -3949,7 +3819,7 @@ class GameView {
             this.playArrival_()
           }
         } else {
-          // Same dealer, just damaged: once the summary clears, gather the cards back + riffle.
+          // Same dealer, just damaged: once the summary clears, the spent cards fly into the dealer.
           this.anim_.collect(prevRound, summaryFadeEnd + GATHER_GAP)
           this.dealAfter_ = this.anim_.animEnd
         }
@@ -3973,7 +3843,7 @@ class GameView {
         // just fly the fresh deck in.
         this.dealAfter_ = this.beginSpawn_(shiftIndex, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP, false)
       } else if (prevRound) {
-        // No attack (a losing/pushing hand): once the summary clears, gather the cards back in.
+        // No attack (a losing/pushing hand): once the summary clears, the spent cards fly into the dealer.
         // Refresh the health + dealer state now (a heal already played its beam on the resolve).
         // (Reached only with a round in hand — a round-less restart always took the `newRun` branch
         // above; the guard narrows for TS.)
@@ -4332,7 +4202,6 @@ class GameView {
       this.dealer_.setLevel(w.incomingIntegrity, w.incomingShift)
       this.dealer_.setShift(w.incomingShift)
       this.dealer_.spawn(t)
-      this.playWalkInGrowl_(t)
       this.dealAfter_ = this.beginSpawn_(w.incomingShift, t + KILL_ARRIVE_MS - SHRED_ARRIVE_OVERLAP)
     })
   }
@@ -4711,15 +4580,10 @@ class GameView {
       }
     } else if (prevRound && !round) {
       // codaResolveNext cleared the resolved hand. A coda win/push hand (bet 0) is still on the
-      // felt — gather it away (with a riffle); the killing hand (a real bet) was already shredded.
+      // felt — the spent cards fly up into the Banker to vanish (like between hands); the killing
+      // hand (a real bet) was already shredded.
       if (prevRound.hands[0].bet === 0) {
         this.collectRound_ = prevRound
-        // Move the deck onto the cards layer so the gather + riffle actually slides/splits it
-        // (like the main game's next-hand gather) — otherwise the shuffle sfx plays but nothing
-        // moves. The settle hands the deck back to the static layer when it finishes.
-        this.deckOnCards_ = true
-        const canvas = this.stage_.canvas
-        this.paintTable_(canvas, computeLayout(canvas.width, canvas.height), false)
         this.anim_.collect(prevRound, t)
       }
       // A push auto-re-deals with no re-prompt — DON'T re-show the stake projection (it flashed

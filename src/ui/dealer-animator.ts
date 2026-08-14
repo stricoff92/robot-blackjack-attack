@@ -60,6 +60,12 @@ const FX_MAX_INTERVAL = 1100 // ms between bursts just under the threshold (spar
 const FX_MIN_INTERVAL = 230 // ms between bursts near death (bursts stay distinct, not a stream)
 const FX_BURST_LIFE = 1200 // a burst is finished (dropped) once it ages past this
 
+// A hit opens a BOUNDED damage-reaction window: sparks/smoke/eye-flicker/tremor play for this
+// long after impact, then the dealer returns to mint condition (full eye glow) regardless of
+// health. Exceeds FX_BURST_LIFE so the last spawned burst can fully fade before the window
+// closes (see damageBursts's maxTs cap). Kills run their own death choreography — no window.
+export const DAMAGE_ANIM_MS = 3200
+
 // Damage tremors: intermittent whole-figure shudders that fade in below 50% health and get
 // MORE FREQUENT toward death (down to ~1/sec) — but every shudder shakes at the SAME,
 // always-noticeable magnitude. Damage reads through the RATE, not the strength: a faint
@@ -151,9 +157,12 @@ export class DealerAnimation implements DealerView, StrikeView {
       this.strikeStart_ = startAfter
       this.hitStart_ = startAfter + STRIKE_TRAVEL_MS
       this.levelAt_ = this.hitStart_ // the added damage shows when the beam lands, not at the click
-      // Keep the loop alive until the slower of the hit effects and the brow
-      // roll-back finishes (the deal gate stays on HIT_TOTAL_MS — see above).
-      this.seqEnd_ = startAfter + Math.max(HIT_TOTAL_MS, STRIKE_TRAVEL_MS + BROW_FEAR_TOTAL_MS)
+      // Open the bounded damage-reaction window: the sparks/smoke/flicker/tremor (and the shorter
+      // flash/shake/beam/brow sub-effects, which run in their own windows off hitStart_) play for
+      // DAMAGE_ANIM_MS after impact, then the figure settles back to mint. seqEnd_ IS that window —
+      // it keeps the render loop alive across it in BOTH battery modes. Deal pacing is unaffected
+      // (the deal gate uses HIT_TOTAL_MS directly, not seqEnd_).
+      this.seqEnd_ = this.hitStart_ + DAMAGE_ANIM_MS
       return
     }
     // No damage this action (deal, loss, push): leave the figure idle.
@@ -212,7 +221,7 @@ export class DealerAnimation implements DealerView, StrikeView {
     this.seqEnd_ = startAfter + KILL_ARRIVE_MS
   }
 
-  // Begin a voice emote (laugh or angry growl) at `startAfter`, shaped by `pattern` — the
+  // Begin a voice emote (the evil laugh) at `startAfter`, shaped by `pattern` — the
   // SAME pattern handed to voice.play, so the mouth's waves pulse in step with the
   // syllables. Independent of mode (the dealer stands, emotes, and may even walk off still
   // emoting at game over); overwriting simply restarts. Silent dealers never call this
@@ -290,38 +299,20 @@ export class DealerAnimation implements DealerView, StrikeView {
     return steps
   }
 
-  // True while any strike/hit/kill sequence is playing OR the eyes are flickering
-  // from low health — keeps the GameView loop alive so the flicker keeps ticking.
-  isAnimating(now: number): boolean {
-    if (this.mode_ !== 'none' && now < this.seqEnd_) {
-      return true
-    }
-    return this.damageIntensity_(now) > 0
-  }
-
-  // The TRANSIENT choreography only (hit/kill/spawn/leave) — no low-health ambient. Battery
-  // saver treats this as real work that must keep the loop at full speed, while the low-health
-  // ambient damage FX below is suppressed and the loop fully parks when the dealer is idle.
-  // (isAnimating() conflates the two.)
+  // True while a strike/hit/kill/walk sequence is playing — keeps the GameView loop alive across
+  // it. For a HIT this now spans the whole bounded damage window (DAMAGE_ANIM_MS): the sparks/
+  // smoke/flicker/tremor all fire inside it, so this single signal drives the loop-liveness and
+  // cast repaint for the entire damage reaction, identically in both battery modes. Outside any
+  // sequence the dealer is mint and static, so the loop parks (in saver) as before.
   isSequencing(now: number): boolean {
     return this.mode_ !== 'none' && now < this.seqEnd_
   }
 
-  // True while the mouth is mid-emote (an evil laugh / growl). This animation is driven purely
-  // by the voice envelope and is NOT reported by isAnimating() (see emoteStart_ note) — battery
+  // True while the mouth is mid-emote (an evil laugh). This animation is driven purely
+  // by the voice envelope and is NOT reported by isSequencing() (see emoteStart_ note) — battery
   // saver queries it so it never parks the loop and freezes the mouth mid-laugh.
   isEmoting(now: number): boolean {
     return this.voice(now) !== null
-  }
-
-  // True while the diegetic damage FX (sparks/smoke/tremor/eye-flicker) are firing — health
-  // below FX_THRESHOLD (75%), the widest of the damage bands. A persistent per-frame ambient.
-  // This is the NORMAL-mode cast-layer repaint trigger only (game-view keeps the 'cast' canvas
-  // dirty while it's true, since isAnimating() misses the 33–75% band); battery saver ignores it —
-  // an idle damaged dealer's ambient is suppressed and the loop fully parks (sparks fly only during
-  // a strike, see game-view drawSparks).
-  ambientDamageActive(now: number): boolean {
-    return this.damageFxIntensity_(now) > 0
   }
 
   // True across the whole kill, so buttons stay disabled for the entire death →
@@ -335,25 +326,34 @@ export class DealerAnimation implements DealerView, StrikeView {
     return now >= this.killStart_ && now < blockEnd
   }
 
-  // The damage bursts (sparks + smoke) erupting off the figure this frame: empty at or
-  // above FX_THRESHOLD health, otherwise one entry per burst still within its life window,
-  // firing faster as health nears zero. Time-quantized off `now` (no persisted state); the
-  // renderer draws each from its age + seed. The CALLER gates drawing on the figure
-  // standing at its home spot (not dying/arriving/leaving), so bursts never show detached
-  // during a transition — here we only report what the health level calls for.
-  damageBursts(now: number): DamageBurstState[] {
+  // The damage bursts (sparks + smoke) erupting off the figure this frame: empty outside the
+  // bounded damage window (damageFxIntensity_ is 0 there), otherwise one entry per burst still
+  // within its life window, firing faster as health nears zero. Time-quantized off `now` (no
+  // persisted state); the renderer draws each from its age + seed. `maxTs` is the window end
+  // (damageWindowEnd): a burst is only spawned if it can FULLY fade (≈FX_BURST_LIFE) before then,
+  // so the effect thins out and finishes clean at the edge — no half-born spark cut off at 3200ms.
+  // The CALLER also gates drawing on the figure standing at its home spot (not dying/arriving/
+  // leaving), so bursts never show detached during a transition.
+  damageBursts(now: number, maxTs: number): DamageBurstState[] {
     const power = this.damageFxIntensity_(now)
     if (power <= 0) {
       return []
     }
     const interval = FX_MIN_INTERVAL + (FX_MAX_INTERVAL - FX_MIN_INTERVAL) * (1 - power)
     const first = Math.max(0, Math.ceil((now - FX_BURST_LIFE) / interval))
-    const last = Math.floor(now / interval)
+    // Stop spawning once a fresh burst couldn't finish before the window closes (fade-out cap).
+    const last = Math.min(Math.floor(now / interval), Math.floor((maxTs - FX_BURST_LIFE) / interval))
     const bursts: DamageBurstState[] = []
     for (let k = first; k <= last; k++) {
       bursts.push({ age: now - k * interval, power, seed: k })
     }
     return bursts
+  }
+
+  // End of the active hit's damage window — the maxTs the spark spawner caps its fade-out against.
+  // 0 when no hit window is open (idle / kill / walk), where damageBursts returns [] anyway.
+  damageWindowEnd(): number {
+    return this.mode_ === 'hit' ? this.seqEnd_ : 0
   }
 
   // --- DealerView --------------------------------------------------------------
@@ -440,6 +440,9 @@ export class DealerAnimation implements DealerView, StrikeView {
   // Tremor intensity, 0..1: 0 at/above 50% health, ramping linearly to 1 as it empties. Sets
   // how far the shudder interval is compressed toward its ~1/sec floor (NOT the magnitude).
   private tremorIntensity_(now: number): number {
+    if (!this.inDamageWindow_(now)) {
+      return 0 // outside the 3200ms window the figure is steady (mint)
+    }
     const level = this.currentLevel_(now)
     if (level >= TREMOR_THRESHOLD) {
       return 0
@@ -499,7 +502,6 @@ export class DealerAnimation implements DealerView, StrikeView {
     return {
       open: env.open,
       energy: env.energy,
-      tint: pattern.tint,
       waveCount: pattern.waveCount,
       cycles: pattern.waveCycles,
       flowHz: pattern.waveFlowHz,
@@ -643,9 +645,18 @@ export class DealerAnimation implements DealerView, StrikeView {
     return this.mode_ === 'hit' || this.mode_ === 'kill'
   }
 
+  // The bounded post-hit damage window [impact, impact + DAMAGE_ANIM_MS). Only a HIT opens one;
+  // outside it (idle, or during a kill / walk-in / walk-off) all four damage visuals are off and
+  // the dealer reads as mint — full eye glow, no sparks/smoke/flicker/tremor. This is what turns
+  // the old unbounded low-health ambient into a self-contained reaction that ends after 3200ms.
+  private inDamageWindow_(now: number): boolean {
+    return this.mode_ === 'hit' && now >= this.hitStart_ && now < this.seqEnd_
+  }
+
   // The health fraction the damage FX should reflect right now: the previously-shown level
-  // until a scheduled strike lands (`levelAt`), then the new level. This is what keeps a
-  // deferred laser's drop from blanking the effects at the click — they hold until impact.
+  // until a scheduled strike lands (`levelAt`), then the new level. Within the damage window
+  // now >= levelAt_ (== hitStart_) always holds, so this returns the post-hit level_; the
+  // prevLevel_ hold only matters at the click, before the window opens.
   private currentLevel_(now: number): number {
     return now >= this.levelAt_ ? this.level_ : this.prevLevel_
   }
@@ -654,6 +665,9 @@ export class DealerAnimation implements DealerView, StrikeView {
   // fraction currently in effect: 0 at/above the damage threshold, ramping to 1 as it
   // approaches empty. Drives both the flicker and whether the loop keeps ticking.
   private damageIntensity_(now: number): number {
+    if (!this.inDamageWindow_(now)) {
+      return 0 // outside the 3200ms window the eyes glow steady (mint)
+    }
     const level = this.currentLevel_(now)
     if (level <= 0 || level >= DAMAGE_THRESHOLD) {
       return 0
@@ -665,6 +679,9 @@ export class DealerAnimation implements DealerView, StrikeView {
   // Sets the spark/smoke burst frequency + density. Unlike damageIntensity() (the eye
   // flicker) it does NOT zero out at level 0 — a near-dead standing dealer sparks hardest.
   private damageFxIntensity_(now: number): number {
+    if (!this.inDamageWindow_(now)) {
+      return 0 // outside the 3200ms window no sparks/smoke fire (mint)
+    }
     const level = this.currentLevel_(now)
     if (level >= FX_THRESHOLD) {
       return 0
