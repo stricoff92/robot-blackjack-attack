@@ -12,7 +12,7 @@ import { getPersonalBest } from '../game/leaderboard'
 import { isBatterySaver, setBatterySaver } from '../game/power-mode'
 import { isMusicMuted, setMusicMuted } from '../game/music-mute'
 import { clearRun, loadSession, type PersistedSession } from '../game/persistence'
-import { clearScoreBanner, gameplayStart, gameplayStop, isCrazyGamesApp, pickBannerSize, reportGameCompletedPercentage, requestMidgameAd, requestRewardedAd, requestScoreBanner, rewardedAdsSupported } from '../platform/crazygames'
+import { type BannerSize, clearScoreBanner, gameplayStart, gameplayStop, isCrazyGamesApp, pickBannerSize, reportGameCompletedPercentage, requestMidgameAd, requestRewardedAd, requestScoreBanner, rewardedAdsSupported } from '../platform/crazygames'
 import { blackjackPointBonusFor, nextTierLabel, rulesForUpgrades, UPGRADE_PATHS, type UpgradePath, type UpgradePathInfo } from '../game/upgrades'
 import { getCardSprite, setCardBack } from '../render/card-sprite'
 import { deviceDpr, type LayeredCanvas } from '../render/canvas'
@@ -703,12 +703,17 @@ class GameView {
   // auto-deal + collectRound clear so no hand deals over the empty table behind the ad (the required
   // "pause"). `scoreBannerEl_` is the score-screen display-banner container; `scoreBannerAt_` stamps
   // the last request so the SDK's 30s per-container cooldown isn't tripped by a fast New-run loop.
+  // `scoreBannerSize_` is the size currently on screen (null = no banner up), which reflowScoreBanner_
+  // compares against on resize; `scoreBannerRetry_` means a wanted banner lost its request to that
+  // cooldown, so the frame loop should ask again once the window lapses.
   // `forceRewardAd_` (?rewardad) forces the rewarded-ad button visible past its gates, for testing.
   // `suppressAds_` (?suppressads) is the opposite umbrella — it skips ALL ad surfaces (interstitials,
   // the rewarded-ad button, the score banner) so a gameplay recording is never interrupted by one.
   private adPausing_ = false
   private scoreBannerEl_!: HTMLElement
   private scoreBannerAt_ = 0
+  private scoreBannerSize_: BannerSize | null = null
+  private scoreBannerRetry_ = false
   private forceRewardAd_ = false
   private suppressAds_ = false
   // Rewarded-ad "ignore = no" cadence: `adWasOffered_` latches true while the top-up button is being
@@ -831,7 +836,9 @@ class GameView {
     this.stage_.overlay.classList.add('hud-hidden') // hide counters + buttons during the intro
     // The button groups stay hidden a beat LONGER than the rest of the HUD: on start the counters
     // fade in, but the powerups / action / info buttons hold back through the dealer walk-in + first
-    // deal, then fade in once that hand is fully dealt (revealOpeningButtons).
+    // deal, then fade in once that hand is fully dealt (revealOpeningButtons). The corner toggles
+    // (battery + music) are gated here only so they can't be tapped invisibly through the intro —
+    // they come back with the counters on start, not after the deal (revealCornerToggles).
     this.powersEl_.classList.add('opening-hidden')
     this.actionsEl_.classList.add('opening-hidden')
     this.infoBtnEl_.classList.add('opening-hidden')
@@ -1135,11 +1142,21 @@ class GameView {
     this.powersEl_.classList.remove('opening-hidden')
     this.actionsEl_.classList.remove('opening-hidden')
     this.infoBtnEl_.classList.remove('opening-hidden')
-    this.batteryBtnEl_.classList.remove('opening-hidden')
-    this.musicBtnEl_.classList.remove('opening-hidden')
+    this.revealCornerToggles_() // (already gone in the normal flow — they arrive with the HUD)
     // The full column (now including the help button, hidden during the intro) is live — re-measure
     // so the guard trips on a too-short screen even if the player never resizes after the deal.
     this.viewportGuard_?.evaluate()
+  }
+
+  // The bottom-right corner toggles (music mute + battery saver) come back the instant the HUD fades
+  // in, NOT with the play buttons after the opening deal: the title-screen saver pill is dropped the
+  // same frame, and the walk-in + first deal — music just started, several seconds of ceremony — is
+  // exactly when a player reaches for mute. They're settings, not play, so nothing is given away by
+  // having them live early. Still `opening-hidden` before that: the overlay is only transparent
+  // during the intro, and an invisible-but-clickable button in the corner would eat tap-to-start.
+  private revealCornerToggles_(): void {
+    this.batteryBtnEl_.classList.remove('opening-hidden')
+    this.musicBtnEl_.classList.remove('opening-hidden')
   }
 
   // Arm the opening ceremony but hold it: park the dealer off-screen (so the initial
@@ -1192,6 +1209,8 @@ class GameView {
     // A resize / orientation change reaches here via the stage ResizeObserver — re-check whether the
     // control layout still fits the (new) viewport height.
     this.viewportGuard_?.evaluate()
+    // ...then re-fit the score banner to the new viewport (and drop it if the guard just took over).
+    this.reflowScoreBanner_(t)
     // The manual repaint above painted the ambient (nexus/holo) at the LIVE clock — but in battery
     // saver, if the loop is parked, that leaves it frozen at a live-time pose (the parked frame draws
     // at the static/frozen clocks). Wake the loop so it repaints once at the correct saver clocks and
@@ -2405,6 +2424,7 @@ class GameView {
       this.introCatcher_ = null
       this.saverToggleEl_?.remove() // the title pill goes with the catcher (HUD button takes over)
       this.saverToggleEl_ = null
+      this.revealCornerToggles_() // ...and the HUD button (+ music mute) takes over THIS frame
       this.dismissCreditsUi_() // the Credits link + modal go too
     }
     // Game over: the ending cards have just finished being sucked up. Latch the reveal
@@ -2417,7 +2437,14 @@ class GameView {
       this.scorePage_ = 0
       this.lastPagerPos_ = ''
       this.syncOverlay_(timestamp) // syncScorePager_ runs at the end → the pager appears + positions
-      this.showScoreBanner_(timestamp) // request the top-right display banner (dev: a placeholder)
+      this.showScoreBanner_(timestamp) // request the top-left display banner (dev: a placeholder)
+    }
+    // A rotate re-fitted the banner (reflowScoreBanner_) but the SDK's 30s per-container cooldown was
+    // still closed, or the reveal itself landed inside it after a fast New-run → game-over loop. Ask
+    // again as it lapses, so the slot isn't lost for the whole score screen. Self-guarded (one request
+    // per 30s at most) and inert otherwise — the flag is only ever armed by showScoreBanner_.
+    if (this.scoreBannerRetry_ && this.scoreRevealed_ && !this.scoreBannerSize_) {
+      this.showScoreBanner_(timestamp)
     }
     // A card just launched from the shoe (one entry per fresh flight this frame) —
     // fire the draw sfx for each. Glides (split originals) are excluded upstream.
@@ -4433,9 +4460,12 @@ class GameView {
       return
     }
     if (this.scoreBannerAt_ > 0 && timestamp - this.scoreBannerAt_ < BANNER_MIN_REQUEST_GAP_MS) {
+      this.scoreBannerRetry_ = true // blocked by the cooldown — the frame loop retries when it lapses
       return
     }
     this.scoreBannerAt_ = timestamp
+    this.scoreBannerRetry_ = false
+    this.scoreBannerSize_ = size
     this.scoreBannerEl_.style.width = `${size.width}px`
     this.scoreBannerEl_.style.height = `${size.height}px`
     this.scoreBannerEl_.classList.remove('is-hidden')
@@ -4446,7 +4476,34 @@ class GameView {
   // when leaving the score screen for a New run.
   private hideScoreBanner_(): void {
     clearScoreBanner(SCORE_BANNER_ID)
+    this.scoreBannerSize_ = null
+    this.scoreBannerRetry_ = false // only showScoreBanner_ re-arms it, and only on a cooldown miss
     this.scoreBannerEl_.classList.add('is-hidden')
+  }
+
+  // Re-fit a LIVE score banner after a resize / orientation change (from onResize_). The banner is a
+  // fixed-pixel box placed once at reveal, so a rotate can push it out of the window or leave the
+  // viewport-guard modal sitting on top of it — and CrazyGames only validates "fully inside the game
+  // window" at request time, so neither ever self-corrects. Deliberately narrow: it acts ONLY when the
+  // best-fit size actually changed (or the guard started blocking), because dropping and re-requesting
+  // on every ResizeObserver tick (a mobile URL bar collapsing, a window drag) would spend the SDK's 30s
+  // per-container cooldown and leave the slot empty. A no-op until a banner is up — which also covers
+  // createStage's first synchronous onResize_, before the overlay elements exist.
+  private reflowScoreBanner_(timestamp: number): void {
+    const current = this.scoreBannerSize_
+    if (!current) {
+      return
+    }
+    const size = pickBannerSize(this.stage_.canvas.width, this.stage_.canvas.height)
+    const fits = size !== null && size.width === current.width && size.height === current.height
+    if (fits && !this.viewportGuard_?.isBlocking()) {
+      return
+    }
+    this.hideScoreBanner_()
+    // Re-request at the new size. Self-guarded: showScoreBanner_ no-ops while the guard blocks and
+    // when nothing fits; inside the 30s cooldown (the common case, since a rotate usually lands soon
+    // after the reveal) it arms scoreBannerRetry_ and the frame loop picks it up when that lapses.
+    this.showScoreBanner_(timestamp)
   }
 
   // Optional rewarded-ad energy top-up (between hands). Requests a CrazyGames rewarded video; on a
@@ -4488,6 +4545,10 @@ class GameView {
   // ad is a no-op and restart runs immediately). The static 'over' screen has no auto-deal to guard,
   // and restart's music.resumeAfterEnd fires inside run_ so audio returns after the ad, not before.
   private requestNewRunWithAd_(): void {
+    // Drop the score banner BEFORE the interstitial: CrazyGames treats a display banner and a video ad
+    // as mutually exclusive (a banner request during playback errors with `videoAdPlaying`), and this
+    // one would otherwise sit under the ad until run_'s New-run branch clears it on the far side.
+    this.hideScoreBanner_()
     if (this.suppressAds_) {
       this.run_(() => this.session_.restart())
       return
@@ -5101,10 +5162,10 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
     lines: [
       'Poker chip icons by IconsNova (Flaticon)',
       'Battery icons by Prosymbols Premium (Flaticon)',
-      'Star icons by Magnific (Flaticon)',
+      'Star and music icons by Magnific (Flaticon)',
       'Green icons by Hilmy Abiyyu A. (Flaticon)',
       'Thief icons by Hight Quality Icons (Flaticon)',
-      'Music icons by Magnific (Flaticon)',
+      'Spade icons by Md Tanvirul Haque (Flaticon)',
     ],
   },
   {
@@ -5131,13 +5192,29 @@ function restartAnimation(el: HTMLElement, className: string): void {
   el.classList.add(className)
 }
 
+// How long to leave `is-press` on before stripping it: past the LONGER of the two animations that
+// can stack under it (btn-press 170ms; ability buttons add ability-zap 260ms), plus slack.
+const PRESS_POP_MS = 320
+
 // Fire the one-shot press-pop (the `.is-press` keyframe) on pointerdown. pointerdown, not :active,
 // so the flash plays fully regardless of how long the button is held or how fast it's tapped —
 // which is what makes every interaction legible in the cursor-less, auto-sped-up CrazyGames
 // preview video (and on mobile, which has no hover state). Safe to stack alongside a button's
 // existing click/pointerdown listeners.
 function pressPop(btn: HTMLElement): void {
-  btn.addEventListener('pointerdown', () => restartAnimation(btn, 'is-press'))
+  let timer = 0
+  btn.addEventListener('pointerdown', () => {
+    restartAnimation(btn, 'is-press')
+    // Then take the class back off. A LEFT-ON `is-press` re-plays its keyframes every time the
+    // browser rebuilds the element's box or re-resolves which animation applies — the upgrade
+    // takeover closing (the powerup column goes display:none → flex), a button un-hiding, an
+    // ability disarming (the `:not(.is-active)` rule swapping in a different animation list). The
+    // result is buttons popping as if pressed when nobody touched them. Timed rather than hung off
+    // `animationend`: two animations stack here (the shorter would fire first and cut the zap), and
+    // under prefers-reduced-motion the animations are `none`, so no end event ever arrives.
+    window.clearTimeout(timer)
+    timer = window.setTimeout(() => btn.classList.remove('is-press'), PRESS_POP_MS)
+  })
 }
 
 // A fresh <img> for the token icon. Every instance shares the one imported

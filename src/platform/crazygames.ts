@@ -338,11 +338,16 @@ export interface BannerSize {
   height: number
 }
 
+// Every threshold is at LEAST the banner's own footprint plus the container's 12px top / 14px left
+// inset (game-view.css .hud-score-banner): CrazyGames rejects a container that isn't fully inside the
+// game window ('notVisible'), so a size that physically can't fit must never be picked — it would
+// just burn a request and the 30s cooldown. The roomier numbers above that floor are editorial (air
+// around the score art).
 const BANNER_SIZES: readonly { size: BannerSize; minW: number; minH: number }[] = [
   { size: { width: 300, height: 250 }, minW: 640, minH: 700 },
-  { size: { width: 728, height: 90 }, minW: 1000, minH: 0 },
+  { size: { width: 728, height: 90 }, minW: 1000, minH: 102 },
   { size: { width: 320, height: 100 }, minW: 380, minH: 480 },
-  { size: { width: 320, height: 50 }, minW: 360, minH: 0 },
+  { size: { width: 320, height: 50 }, minW: 360, minH: 62 },
 ]
 
 export function pickBannerSize(cssWidth: number, cssHeight: number): BannerSize | null {
@@ -371,6 +376,13 @@ export function isCrazyGamesApp(): boolean {
   }
 }
 
+// Container ids we've asked the SDK for a banner in — added on request, dropped on a clear or a
+// failed request. `clearBanner` on a container the SDK never filled is an error on its side (console
+// noise that buries the real ad logs), so clearScoreBanner consults this instead of clearing blind.
+// An IN-FLIGHT request counts as live: a clear that races the promise must still tear the banner
+// down, or it would paint itself into an empty container after the score screen is gone.
+const liveBanners = new Set<string>()
+
 // Request a display banner into an existing DOM container (already sized to width×height). On a real
 // CrazyGames host this asks the SDK and calls onUnfilled on any no-fill/error so the caller hides the
 // empty box. In dev (off the real host) it paints a plain "AD" placeholder so banner placement/sizing
@@ -378,12 +390,15 @@ export function isCrazyGamesApp(): boolean {
 export function requestScoreBanner(id: string, width: number, height: number, onUnfilled: () => void): void {
   const s = sdk()
   if (s && getEnvironment() === 'crazygames') {
+    liveBanners.add(id)
     try {
       s.banner.requestBanner({ id, width, height }).catch((e) => {
+        liveBanners.delete(id) // nothing was filled — don't clear a container the SDK never created
         devLog(`[crazygames] requestBanner failed: ${String(e)}`)
         onUnfilled()
       })
     } catch (e) {
+      liveBanners.delete(id)
       devLog(`[crazygames] requestBanner threw: ${String(e)}`)
       onUnfilled()
     }
@@ -403,7 +418,8 @@ export function requestScoreBanner(id: string, width: number, height: number, on
 // Clear a banner container: drop the SDK banner (real host only) and remove any dev placeholder.
 export function clearScoreBanner(id: string): void {
   const s = sdk()
-  if (s && getEnvironment() === 'crazygames') {
+  if (s && getEnvironment() === 'crazygames' && liveBanners.has(id)) {
+    liveBanners.delete(id)
     try {
       s.banner.clearBanner(id)
     } catch (e) {

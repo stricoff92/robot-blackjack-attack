@@ -1229,7 +1229,9 @@ button.is-hidden,
  * Opacity (not display) so it eases in with the same 0.5s the groups transition; pointer-events
  * off — including the child buttons, which re-enable themselves under a `pointer-events: none`
  * parent — so the invisible buttons can't be hit. Added at construction, removed once (never
- * re-added) by revealOpeningButtons, so only the opening sequence is gated. */
+ * re-added), so only the opening sequence is gated. The two corner toggles (battery + music) are
+ * released EARLIER than the rest — with the HUD on start, not after the deal — see
+ * revealCornerToggles; they're listed here purely so they can't be tapped through the intro. */
 .hud-powerups.opening-hidden,
 .hud-actions.opening-hidden,
 .hud-info.opening-hidden,

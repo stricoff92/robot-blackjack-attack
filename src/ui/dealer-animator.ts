@@ -64,7 +64,7 @@ const FX_BURST_LIFE = 1200 // a burst is finished (dropped) once it ages past th
 // long after impact, then the dealer returns to mint condition (full eye glow) regardless of
 // health. Exceeds FX_BURST_LIFE so the last spawned burst can fully fade before the window
 // closes (see damageBursts's maxTs cap). Kills run their own death choreography — no window.
-export const DAMAGE_ANIM_MS = 3200
+export const DAMAGE_ANIM_MS = 5000
 
 // Damage tremors: intermittent whole-figure shudders that fade in below 50% health and get
 // MORE FREQUENT toward death (down to ~1/sec) — but every shudder shakes at the SAME,
@@ -331,7 +331,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // within its life window, firing faster as health nears zero. Time-quantized off `now` (no
   // persisted state); the renderer draws each from its age + seed. `maxTs` is the window end
   // (damageWindowEnd): a burst is only spawned if it can FULLY fade (≈FX_BURST_LIFE) before then,
-  // so the effect thins out and finishes clean at the edge — no half-born spark cut off at 3200ms.
+  // so the effect thins out and finishes clean — no half-born spark cut off when the window ends.
   // The CALLER also gates drawing on the figure standing at its home spot (not dying/arriving/
   // leaving), so bursts never show detached during a transition.
   damageBursts(now: number, maxTs: number): DamageBurstState[] {
@@ -441,7 +441,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // how far the shudder interval is compressed toward its ~1/sec floor (NOT the magnitude).
   private tremorIntensity_(now: number): number {
     if (!this.inDamageWindow_(now)) {
-      return 0 // outside the 3200ms window the figure is steady (mint)
+      return 0 // outside the damage window the figure is steady (mint)
     }
     const level = this.currentLevel_(now)
     if (level >= TREMOR_THRESHOLD) {
@@ -648,7 +648,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // The bounded post-hit damage window [impact, impact + DAMAGE_ANIM_MS). Only a HIT opens one;
   // outside it (idle, or during a kill / walk-in / walk-off) all four damage visuals are off and
   // the dealer reads as mint — full eye glow, no sparks/smoke/flicker/tremor. This is what turns
-  // the old unbounded low-health ambient into a self-contained reaction that ends after 3200ms.
+  // the old unbounded low-health ambient into a self-contained reaction that ends after DAMAGE_ANIM_MS.
   private inDamageWindow_(now: number): boolean {
     return this.mode_ === 'hit' && now >= this.hitStart_ && now < this.seqEnd_
   }
@@ -666,7 +666,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // approaches empty. Drives both the flicker and whether the loop keeps ticking.
   private damageIntensity_(now: number): number {
     if (!this.inDamageWindow_(now)) {
-      return 0 // outside the 3200ms window the eyes glow steady (mint)
+      return 0 // outside the damage window the eyes glow steady (mint)
     }
     const level = this.currentLevel_(now)
     if (level <= 0 || level >= DAMAGE_THRESHOLD) {
@@ -680,7 +680,7 @@ export class DealerAnimation implements DealerView, StrikeView {
   // flicker) it does NOT zero out at level 0 — a near-dead standing dealer sparks hardest.
   private damageFxIntensity_(now: number): number {
     if (!this.inDamageWindow_(now)) {
-      return 0 // outside the 3200ms window no sparks/smoke fire (mint)
+      return 0 // outside the damage window no sparks/smoke fire (mint)
     }
     const level = this.currentLevel_(now)
     if (level >= FX_THRESHOLD) {

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  clearScoreBanner,
   isCrazyGamesApp,
   pickBannerSize,
   requestMidgameAd,
   requestRewardedAd,
+  requestScoreBanner,
   setAudioMuteControl,
 } from './crazygames'
 
@@ -52,6 +54,62 @@ describe('pickBannerSize', () => {
 
   it('returns null when even the smallest banner will not fit', () => {
     expect(pickBannerSize(300, 300)).toBeNull()
+  })
+
+  // CrazyGames rejects a container that isn't FULLY inside the game window ('notVisible'), so a size
+  // taller than the viewport must never be picked — it would only burn the request and the 30s
+  // cooldown. Wide-but-short windows are the case: the 728×90 leaderboard needs its 90px plus the
+  // container's 12px top inset.
+  it('never picks a banner that cannot sit fully inside the window', () => {
+    expect(pickBannerSize(1000, 95)).toEqual({ width: 320, height: 50 }) // too short for 728×90
+    expect(pickBannerSize(1000, 55)).toBeNull() // too short for even 320×50
+  })
+})
+
+describe('score banner wrapper (fake SDK)', () => {
+  function installBannerSdk(requestBanner: () => Promise<void>): { clearBanner: ReturnType<typeof vi.fn> } {
+    const clearBanner = vi.fn()
+    vi.stubGlobal('window', {
+      CrazyGames: {
+        SDK: {
+          environment: 'crazygames',
+          banner: { requestBanner, clearBanner, clearAllBanners: () => {} },
+        },
+      },
+    })
+    return { clearBanner }
+  }
+
+  it('clears a container it actually requested', () => {
+    const { clearBanner } = installBannerSdk(() => Promise.resolve())
+    requestScoreBanner('filled-banner', 300, 250, () => {})
+
+    clearScoreBanner('filled-banner')
+
+    expect(clearBanner).toHaveBeenCalledWith('filled-banner')
+  })
+
+  // clearBanner on a container the SDK never filled is an error on its side — pure console noise that
+  // buries the real ad logs. Reached whenever the banner was skipped (native app, no fitting size, the
+  // 30s cooldown) and the score screen is then left for a New run.
+  it('does not clear a container it never requested', () => {
+    const { clearBanner } = installBannerSdk(() => Promise.resolve())
+
+    clearScoreBanner('never-requested-banner')
+
+    expect(clearBanner).not.toHaveBeenCalled()
+  })
+
+  it('reports a rejected request as unfilled, and then has nothing to clear', async () => {
+    const { clearBanner } = installBannerSdk(() => Promise.reject(new Error('unfilled')))
+    const onUnfilled = vi.fn()
+
+    requestScoreBanner('unfilled-banner', 300, 250, onUnfilled)
+    await Promise.resolve() // let the rejection's .catch settle
+
+    expect(onUnfilled).toHaveBeenCalledTimes(1)
+    clearScoreBanner('unfilled-banner')
+    expect(clearBanner).not.toHaveBeenCalled()
   })
 })
 

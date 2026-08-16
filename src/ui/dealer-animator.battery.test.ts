@@ -26,7 +26,7 @@ describe('dealer battery-saver queries', () => {
       d.sync(maxHitsFor(1), 1, maxHitsFor(1) - 1, 1, 0) // a plain hit at t=0, impact at STRIKE_TRAVEL_MS
       const end = STRIKE_TRAVEL_MS + DAMAGE_ANIM_MS
       expect(d.isSequencing(0)).toBe(true)
-      expect(d.isSequencing(1000)).toBe(true) // deep inside the 3200ms window (was false pre-refactor)
+      expect(d.isSequencing(1000)).toBe(true) // deep inside the damage window (was false pre-refactor)
       expect(d.isSequencing(end - 1)).toBe(true)
       expect(d.isSequencing(end + 1)).toBe(false)
     })

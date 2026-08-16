@@ -4,7 +4,7 @@ import { DAMAGE_ANIM_MS, DealerAnimation, STRIKE_TRAVEL_MS } from './dealer-anim
 
 // Tremors are now bounded to the post-hit damage window [IMPACT, WINDOW_END): they fade in below
 // 50% health and fire more often the lower it is, every shudder at the SAME noticeable magnitude.
-// (Because the window (3200ms) is comparable to the shudder interval, a light hit near the top of
+// (Because the window (DAMAGE_ANIM_MS) is comparable to the shudder interval, a light hit near the top of
 // the band may fire only 0-1 pulses — the cadence is unchanged, just observed over a short window.)
 const IMPACT = STRIKE_TRAVEL_MS
 const WINDOW_END = IMPACT + DAMAGE_ANIM_MS
