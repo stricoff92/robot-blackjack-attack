@@ -1,5 +1,6 @@
 import { createShoe, shuffle, type Card, type Rank } from './deck'
 import { cardValue, isBlackjack } from './hand'
+import { replayHandHistory } from './hand-history'
 import { bustChanceOnHit, computeAnalysis, dealerWinChance, NOTHING_KNOWN, type Analysis, type Knowledge } from './odds'
 import { POWERUPS, type PowerupId } from './powerups'
 import { createRng, type Rng, type SeededRng } from './random'
@@ -71,6 +72,8 @@ export interface SessionOptions {
   hearts?: number | null
   /** Dev switch: start the initial run at this dealer (1-based); null = the first dealer. */
   startDealer?: number | null
+  /** Dev switch: replay this win(true)/loss(false) history into the opening dealer's fight; null = none. */
+  handHistory?: boolean[] | null
   /** Dev switch: start the initial run with these unlocked upgrade tiers; null = none. */
   startUpgrades?: RunUpgrades | null
   /** Dev switch: force the dealer's opening two cards to be a natural 21 every deal. */
@@ -166,6 +169,7 @@ export class Session {
   private dealerHealth_: number | null
   private startHearts_: number | null
   private startDealer_: number | null
+  private handHistory_: boolean[] | null
   private startUpgrades_: RunUpgrades | null
   private forceDealerNatural_: boolean
   private forcePlayerNatural_: boolean
@@ -181,6 +185,7 @@ export class Session {
     this.dealerHealth_ = options.dealerHealth ?? null
     this.startHearts_ = options.hearts ?? null
     this.startDealer_ = options.startDealer ?? null
+    this.handHistory_ = options.handHistory ?? null
     this.startUpgrades_ = options.startUpgrades ?? null
     this.forceDealerNatural_ = options.forceDealerNatural ?? false
     this.forcePlayerNatural_ = options.forcePlayerNatural ?? false
@@ -209,6 +214,17 @@ export class Session {
       // would open partway drained, e.g. 100/220 at Dealer 6).
       run = { ...run, shiftIndex: this.startDealer_, kills, integrity: maxHitsFor(this.startDealer_) }
     }
+    if (this.handHistory_ !== null) {
+      // Replay the synthetic win/loss history through the real reducer so score, dealer HP, hearts,
+      // energy, and the round counter all match having actually played those hands on this dealer.
+      // Applied from the dealer's full health (above) and BEFORE the explicit dealerHealth/hearts
+      // knobs, so those still win if someone combines them. Kept as-is (history ignored) when the
+      // history is invalid for a mid-fight state on this dealer — see replayHandHistory.
+      const replayed = replayHandHistory(run, this.handHistory_)
+      if (replayed !== null) {
+        run = replayed
+      }
+    }
     if (this.dealerHealth_ !== null) {
       // dealerHealth is a percentage of the current dealer's own max health (hits).
       run = { ...run, integrity: Math.round((maxHitsFor(run.shiftIndex) * this.dealerHealth_) / 100) }
@@ -233,6 +249,7 @@ export class Session {
     this.dealerHealth_ = null
     this.startHearts_ = null
     this.startDealer_ = null
+    this.handHistory_ = null
     this.startUpgrades_ = null
     this.forceDealerNatural_ = false
     this.forcePlayerNatural_ = false

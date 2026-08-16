@@ -39,12 +39,14 @@ server is `5173`.)
 | `dealerHealth=<n>` | `1`–`100` | Start the first dealer at `n`% health (see the low-health eye flicker / a quick kill). |
 | `hearts=<n>` | `1`–`5` | Start with `n` player hit points (heart-chips) — reach the heart pop, heal beam, or heart-death coda without grinding losses. `hearts=1` → the next loss pops the last heart and opens the coda; `hearts=2` → a qualifying win heals back. |
 | `dealer=<n>` | `1`–`6` | Start the run at dealer `n` (jumps straight to that dealer's colour). |
+| `handhistory=<bits>` | `0`/`1` string | Replay a win(`1`)/loss(`0`) history for the opening dealer, one char per prior hand, then load on the next hand. `11001` = win, win, loss, loss, win → loads on hand 6 with 3 wins scored (compounding curve), the dealer damaged by those wins, 2 hearts spent, and the energy those hands earned. Pairs with `dealer=<n>` (applies to that dealer). **Strict:** only `0`/`1`; length ≤ the dealer's window (`maxHands`: 11/14/16/18/25/29 for dealers 1–6); and it's **ignored** (with a console warning) if the replay wouldn't leave you still mid-fight on that dealer — i.e. enough `1`s to kill it, enough `0`s to zero your 8 hearts, or a full window (all cases would end the dealer / open the coda). |
 | `sabotageUpgrade=<t>` | `0`–`3` | Start with the **Sabotage** (anti-dealer) path unlocked through tier `t`. |
 | `chipUpgrade=<t>` | `0`–`3` | Start with the **Payout** path unlocked through tier `t`. (Legacy param name — the path pays out in points now, not chips.) |
 | `tokenUpgrades=<t>` | `0`–`3` | Start with the **Energy** (`tokenEco`) path unlocked through tier `t`. |
 | `dealerBlackjack` | *(flag)* | The dealer draws a natural 21 (Ace + ten-value) **every** hand. |
 | `playerBlackjack` | *(flag)* | The player is dealt a natural 21 (Ace + ten-value) **every** hand (test the blackjack point bonus / win). |
 | `rewardad` | *(flag)* | Force the "watch ad for +100 energy" button visible on every between-hands (Next-hand) screen, past its low-energy threshold + once-per-dealer / 3-per-run caps. Off-platform the reward is granted immediately (no real ad serves in dev), so the flow is testable on demand. Pair with `tokens=<n>` to also see it under its natural low-energy trigger. |
+| `suppressads` | *(flag)* | Skip **every** ad surface — the between-dealers (into dealer 4) and New-run interstitials, the rewarded-ad button, and the score-screen banner. For recording gameplay clips with no ad interruptions. Overrides `rewardad`. |
 
 Invalid or out-of-range values are ignored (the param falls back to off). Numeric
 params are clamped to their stated range; `dealer` also caps at the roster size.
@@ -86,6 +88,7 @@ which resolves the round right at the deal. Combine it with `sabotageUpgrade` /
 ?forcePairs=8                          # split 8s every hand
 ?forcePairs&tokens=1000                # splits + re-splits with tokens to burn
 ?dealer=6&dealerHealth=5               # the final RGB dealer, near death
+?dealer=4&handhistory=11001            # dealer 4, hand 6: won 1/2/5, lost 3/4 (3 wins scored)
 ?dealer=6&points=50000                 # jump to Dealer 6 with a score, to reach the coda quickly
 ?chipUpgrade=3&tokenUpgrades=2         # maxed Payout + Energy through tier 2
 ?sabotageUpgrade=3&dealer=5            # maxed Sabotage, starting at dealer 5

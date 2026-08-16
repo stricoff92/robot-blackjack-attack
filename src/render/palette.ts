@@ -67,27 +67,22 @@ const BANKER_COLORS: DealerColors = {
 // Fixed hues for dealers 1..5: blue, purple, green, yellow, red.
 const DEALER_HUES = [220, 275, 140, 48, 2] as const
 
-// RGB dealer: a true RGB cycle — three sine waves a third of a period out of phase
-// sweep the colour around the wheel every RGB_PERIOD_MS. The bowtie takes the exact
-// colour each frame (smooth); the deck snaps its colour to RGB_STEPS phase steps so
-// its card-back sprite cache stays small and is reused every cycle (re-rendering a
-// back sprite each frame would thrash the cache and allocate an offscreen per frame).
+// RGB dealer: the card backs ride a true RGB cycle — three sine waves a third of a period
+// out of phase sweep the colour around the wheel every RGB_PERIOD_MS, snapped to RGB_STEPS
+// phase steps so the card-back sprite cache stays small and is reused every cycle (re-rendering
+// a back sprite each frame would thrash the cache and allocate an offscreen per frame). The
+// bowtie no longer cycles: it's a fixed light grey (RGB_BOWTIE). The sweep read as distracting
+// and, worse, froze on whatever colour it last held when the render loop parked in battery-saver.
 const RGB_PERIOD_MS = 600
 const RGB_STEPS = 16
+// The RGB dealer's fixed light grey/white bowtie (and a slightly darker knot).
+const RGB_BOWTIE = '#e8ecf3'
+const RGB_BOWTIE_KNOT = '#aab3c2'
 
 export function isRgbDealer(shiftIndex: number): boolean {
   // The final dealer and anything past it shimmer — EXCEPT the Banker coda's sentinel,
   // which has its own fixed charcoal-and-gold kit and must not be treated as RGB.
   return shiftIndex >= RGB_DEALER && shiftIndex !== BANKER_SHIFT
-}
-
-// The FULL-INTENSITY RGB colour for `now` — the same spectrum cycle the RGB dealer's bowtie
-// rides, but WITHOUT the pastel desaturation the dealer's kit applies (RGB_SATURATION). The
-// clown sidekick wears this: the identical hue as the dealer 6 bowtie at every instant, only
-// pure/saturated rather than washed out. `dark` is a shaded variant for the bowtie knot.
-export function rgbFullColor(now: number): { color: string; dark: string } {
-  const rgb = cycleRgb(now, RGB_PERIOD_MS)
-  return { color: rgbCss(rgb), dark: rgbCss(scale(rgb, 0.72)) }
 }
 
 // The fixed dealers' colour kits are constant per shiftIndex, but dealerColors is
@@ -103,14 +98,14 @@ export function dealerColors(shiftIndex: number, now: number): DealerColors {
     return BANKER_COLORS // THE BANKER: fixed charcoal + gold, not a shimmering boss
   }
   if (isRgbDealer(shiftIndex)) {
-    const bowtieRgb = desaturate(cycleRgb(now, RGB_PERIOD_MS))
     // Snap the deck to the centre of the current phase step, so a whole step shares
     // one cached back sprite (and the same step recurs every cycle → cache hits).
     const step = Math.floor(rgbPos(now) * RGB_STEPS)
     const deckRgb = desaturate(cycleRgb(((step + 0.5) / RGB_STEPS) * RGB_PERIOD_MS, RGB_PERIOD_MS))
     return {
-      bowtie: rgbCss(bowtieRgb),
-      bowtieKnot: rgbCss(scale(bowtieRgb, 0.72)),
+      // Fixed light-grey bowtie (no longer rides the colour cycle — see RGB_BOWTIE).
+      bowtie: RGB_BOWTIE,
+      bowtieKnot: RGB_BOWTIE_KNOT,
       // Top-tech board, and a seed that's constant across the RGB colour steps so the
       // layout holds steady while only the colour shimmers.
       back: rgbDeck(deckRgb, `rgb${step}`, 1, RGB_DEALER * 2654435761),

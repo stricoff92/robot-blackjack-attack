@@ -62,7 +62,7 @@ interface TrackDef {
 const TRACKS: Record<TrackName, TrackDef> = {
   cannery: { url: canneryUrl, baseVolume: 0.45 ,},
   serpentine: { url: serpentineUrl, baseVolume: 1, },
-  maestro: { url: maestroUrl, baseVolume: 0.6, },
+  maestro: { url: maestroUrl, baseVolume: 0.4, force:true },
   machinations: { url: machinationsUrl, baseVolume: 1, },
   getaway: { url: getawayUrl, baseVolume: 1.5,},
   bust: { url: bustUrl, baseVolume: 2.6, },

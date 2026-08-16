@@ -15,6 +15,9 @@
 //   ?dealer=6          — start the run at this dealer (1..TOTAL_DEALERS), to jump straight
 //                        to a dealer's colour: 1 blue, 2 purple, 3 green, 4 yellow, 5 red,
 //                        6 the RGB-cycling final dealer
+//   ?handhistory=11001 — replay a win(1)/loss(0) history for the opening dealer, one char per prior
+//                        hand: '11001' = win, win, loss, loss, win → loads on hand 6 with 3 wins
+//                        scored, the dealer damaged, and 2 hearts spent. Pairs with ?dealer=N
 //   ?sabotageUpgrade=3 — start with the Sabotage (anti-dealer) path unlocked through this tier (0-3)
 //   ?chipUpgrade=2     — start with the Payout (chip) path unlocked through this tier (0-3)
 //   ?tokenUpgrades=1   — start with the Tokens path unlocked through this tier (0-3)
@@ -27,6 +30,8 @@
 //                        screen regardless of the low-energy threshold + per-dealer/per-run caps, so
 //                        the rewarded-ad flow can be tested on demand (grants immediately in dev,
 //                        since no real ad serves off-platform)
+//   ?suppressads       — skip EVERY ad surface: no between-dealers/New-run interstitial, no rewarded-
+//                        ad button, no score-screen banner. For recording gameplay clips uninterrupted
 //
 // See docs/dev-params.md for the full reference (values, effects, examples). Handy
 // for exercising split without waiting for a pair, buying a pricey powerup off the
@@ -34,6 +39,7 @@
 // dealer-blackjack outcomes (loss/refund/void/hijack/push) on demand.
 
 import { RANKS, type Rank } from './deck'
+import { parseHandHistory } from './hand-history'
 import { MAX_HEARTS, TOTAL_DEALERS } from './run'
 import { MAX_UPGRADE_TIER } from './upgrades'
 
@@ -52,6 +58,8 @@ export interface DebugFlags {
   hearts: number | null
   /** Start the run at this dealer (1..TOTAL_DEALERS); null = the first dealer. */
   startDealer: number | null
+  /** Replay this win(true)/loss(false) history into the opening dealer's fight; null = none. */
+  handHistory: boolean[] | null
   /** Start with the Sabotage (anti-dealer) path unlocked through this tier (0-3); null = none. */
   sabotageUpgrade: number | null
   /** Start with the Payout (chip) path unlocked through this tier (0-3); null = none. */
@@ -64,6 +72,8 @@ export interface DebugFlags {
   playerBlackjack: boolean
   /** Force the rewarded-ad button visible regardless of the low-energy threshold + caps. */
   rewardAd: boolean
+  /** Skip ALL ad surfaces — interstitials, the rewarded-ad button, and the score banner. */
+  suppressAds: boolean
 }
 
 const OFF: DebugFlags = {
@@ -74,12 +84,14 @@ const OFF: DebugFlags = {
   dealerHealth: null,
   hearts: null,
   startDealer: null,
+  handHistory: null,
   sabotageUpgrade: null,
   chipUpgrade: null,
   tokenUpgrades: null,
   dealerBlackjack: false,
   playerBlackjack: false,
   rewardAd: false,
+  suppressAds: false,
 }
 
 export function readDebugFlags(): DebugFlags {
@@ -98,12 +110,14 @@ export function readDebugFlags(): DebugFlags {
     dealerHealth: parseDealerHealth(params.get('dealerHealth')),
     hearts: parseStartHearts(params.get('hearts')),
     startDealer: parseStartDealer(params.get('dealer')),
+    handHistory: parseHandHistory(params.get('handhistory')),
     sabotageUpgrade: parseUpgradeTier(params.get('sabotageUpgrade')),
     chipUpgrade: parseUpgradeTier(params.get('chipUpgrade')),
     tokenUpgrades: parseUpgradeTier(params.get('tokenUpgrades')),
     dealerBlackjack: params.has('dealerBlackjack'),
     playerBlackjack: params.has('playerBlackjack'),
     rewardAd: params.has('rewardad'),
+    suppressAds: params.has('suppressads'),
   }
 }
 

@@ -932,7 +932,9 @@
   min-height: 48px;
   cursor: pointer;
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
-  transition: transform 0.05s ease, box-shadow 0.05s ease;
+  /* opacity is transitioned so a one-shot ability EASES to its dimmed :disabled state on use instead
+   * of snapping — otherwise the instant drop to 40% swallows the press-pop (see .is-press). */
+  transition: transform 0.05s ease, box-shadow 0.05s ease, opacity 0.18s ease;
 }
 
 .hud-powerups button:hover {
@@ -968,6 +970,8 @@
   min-height: 48px;
   cursor: pointer;
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
+  /* Ease the dim on use, matching the main powerup column (see its transition note). */
+  transition: opacity 0.18s ease;
 }
 
 .hud-coda-powers button:hover {
@@ -1142,6 +1146,65 @@
 .hud-powerups button:active {
   transform: translateY(2px);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* One-shot press-pop, fired on pointerdown via restartAnimation(el, 'is-press') — NOT :active.
+ * :active is hold-coupled, so a quick gameplay tap flashes it for 1-2 frames; the CrazyGames
+ * preview video then auto-speeds up and swallows even that. This plays fully (~190ms) regardless
+ * of hold/tap speed, so every interaction reads on video (cursor + captions are banned there) and
+ * on mobile (no hover state). filter:brightness is family-agnostic — it flashes the gold, teal and
+ * glass buttons alike without fighting each family's own box-shadow. Starts/ends at scale(1) so it
+ * settles back to baseline with no fill needed (mirrors the points-delta punch). */
+/* Down-and-back only — deliberately NO overshoot above scale(1). The pop fires on pointerdown, but
+ * the click handler that hides a button (Hit resolving a hand, Deal, an ability being consumed, the
+ * Next-hand gate, coda choices) runs a beat later. An overshoot peak is the worst moment to be cut
+ * to display:none — a big bright button snapping to nothing. Down-and-back means a mid-animation
+ * hide is caught at/below baseline size, so it reads as the button being consumed, not popping-then-
+ * vanishing. Front-loaded + short (170ms) so the punch is mostly done before the hide lands. */
+.is-press {
+  animation: btn-press 170ms ease-out;
+}
+
+@keyframes btn-press {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  35% {
+    transform: scale(0.9);
+    filter: brightness(1.6);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Ability (teal) buttons get an extra teal energy-bloom layered on the press-pop, so activating an
+ * ability reads as a pulse of spent energy even as the button eases to its used/dimmed state. The
+ * bloom starts and ends at the button's own resting box-shadow, so it blooms and settles with no
+ * jump. Excluded while armed (.is-active runs its own continuous powerup-glow — don't fight it). */
+.hud-powerups button.is-press:not(.is-active),
+.hud-coda-powers button.is-press:not(.is-active) {
+  animation: btn-press 170ms ease-out, ability-zap 260ms ease-out;
+}
+
+@keyframes ability-zap {
+  0%,
+  100% {
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
+  }
+  35% {
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-bright-rgb), 0.85), 0 0 24px 7px rgba(var(--teal-bright-rgb), 0.75), inset 0 0 16px rgba(var(--teal-bright-rgb), 0.14);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-press,
+  .hud-powerups button.is-press:not(.is-active),
+  .hud-coda-powers button.is-press:not(.is-active) {
+    animation: none;
+  }
 }
 
 .hud-actions button:disabled,

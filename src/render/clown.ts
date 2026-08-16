@@ -4,13 +4,12 @@
 // pairs with the dealer animator. Drawn on its own 'clown' layer, right beside the 'dealer'
 // layer and below the table/rail, so its lower body tucks behind the rail like the dealer's.
 //
-// It wears the SAME RGB bowtie the dealer 6 kit cycles through, but at FULL colour intensity
-// (render/palette.ts rgbFullColor — the dealer's is desaturated to a pastel), plus a bright red
-// clown wig and a red ball nose. When the dealer laughs, the clown laughs too (its grin opens
-// and glows) — the animator mirrors the dealer's emote onto its mouth on a slight delay.
+// Down its torso runs a column of three fuzzy pom-pom buttons alternating fixed circus green and
+// purple. It also sports a bright red clown wig and a red ball nose. When the dealer laughs, the
+// clown laughs too (its grin opens and glows) — the animator mirrors the dealer's emote onto its
+// mouth on a slight delay.
 
 import { smoothEnd2, smoothEnd3, smoothStart3 } from './easing'
-import { rgbFullColor } from './palette'
 import { dealerBox, type Layout } from './scene'
 import { drawVoiceMouth, type VoiceEmote } from './dealer'
 
@@ -26,6 +25,11 @@ const NOSE_HI = 'rgba(255, 190, 190, 0.9)'
 // Wide clown eyes: flat bright whites with dark pupils (goggling, not the dealer's menacing red slits).
 const EYE_WHITE = '#f6f8ff'
 const PUPIL = '#0b0d13'
+// The pom-pom buttons: fixed circus green + purple, alternating down the torso (they used to ride
+// the dealer's RGB cycle, but that was distracting and froze on a colour whenever the render loop
+// parked in battery-saver).
+const BUTTON_GREEN = '#37c46a'
+const BUTTON_PURPLE = '#a24bd6'
 
 // Same three-step walk as the dealer (render/dealer.ts): WALK_STEPS bob dips over the slide.
 const WALK_STEPS = 3
@@ -103,16 +107,13 @@ export function drawClown(ctx: CanvasRenderingContext2D, layout: Layout, view: C
     ctx.translate(travel * slide, bob)
   }
 
-  const colors = rgbFullColor(now)
-  drawFigure(ctx, c, colors.color, colors.dark, view.voice(now), now)
+  drawFigure(ctx, c, view.voice(now), now)
   ctx.restore()
 }
 
 function drawFigure(
   ctx: CanvasRenderingContext2D,
   c: ClownBox,
-  bowtie: string,
-  bowtieKnot: string,
   voice: VoiceEmote | null,
   now: number,
 ): void {
@@ -124,6 +125,14 @@ function drawFigure(
   ctx.roundRect(c.bodyLeft, c.bodyTop, c.bodyRight - c.bodyLeft, c.baseY - c.bodyTop, r * 0.22)
   ctx.fill()
 
+  // A column of three fuzzy pom-pom buttons down the torso front, alternating green and purple.
+  const torsoH = c.baseY - c.bodyTop
+  const btnR = r * 0.18
+  for (let i = 0; i < 3; i++) {
+    const by = c.bodyTop + torsoH * (0.22 + 0.27 * i)
+    drawPom(ctx, c.cx, by, btnR, i % 2 === 0 ? BUTTON_GREEN : BUTTON_PURPLE)
+  }
+
   // Red clown wig — drawn BEFORE the head so the tufts frame it: a puffy arc of overlapping
   // circles hugging the head's top + sides. A darker back layer gives the frizz some depth.
   drawWig(ctx, c, WIG_DARK, 1.04, r * 0.06)
@@ -134,8 +143,6 @@ function drawFigure(
   ctx.beginPath()
   ctx.roundRect(c.cx - r, c.headCenterY - r, r * 2, r * 2, r * 0.45)
   ctx.fill()
-
-  drawBowtie(ctx, c, bowtie, bowtieKnot)
 
   // Wide goggling eyes, set a touch high on the face: a flat white disc with a small dark pupil.
   const eyeY = c.headCenterY - r * 0.18
@@ -155,19 +162,14 @@ function drawFigure(
   // Eyebrows: a short, flat red bar over each eye. Drawn over the eyes so they read as brows.
   drawBrows(ctx, c, eyeY, eyeR)
 
-  // Mouth: the SAME vocoder panel the dealers use (lights up + waves flow when it laughs), framed
-  // by a red clown lip ring. Sits below the nose line.
+  // Mouth: the SAME vocoder panel the dealers use (lights up + waves flow when it laughs). Sits
+  // below the nose line. No lip ring — the bare panel reads cleaner against the face.
   const mouthW = r * 1.0
   const mouthH = r * 0.32
   const mouthTop = c.headCenterY + r * 0.62 - mouthH / 2
   const mouthR = r * 0.14
   const mouthX = c.cx - mouthW / 2
   drawVoiceMouth(ctx, mouthX, mouthTop, mouthW, mouthH, mouthR, voice, now)
-  ctx.strokeStyle = NOSE
-  ctx.lineWidth = Math.max(2, r * 0.09)
-  ctx.beginPath()
-  ctx.roundRect(mouthX, mouthTop, mouthW, mouthH, mouthR)
-  ctx.stroke()
 
   // Red ball nose, at the centre of the face between eyes and mouth — drawn last so it sits proud
   // of everything, with a small highlight for a glossy ball read.
@@ -218,27 +220,23 @@ function drawWig(ctx: CanvasRenderingContext2D, c: ClownBox, color: string, spre
   }
 }
 
-// An oversized clown bowtie (bigger than the dealer's), in the full-intensity RGB colour.
-function drawBowtie(ctx: CanvasRenderingContext2D, c: ClownBox, bowtie: string, bowtieKnot: string): void {
-  const cy = c.headCenterY + c.headR * 1.5
-  const wingW = c.headR * 0.78
-  const wingH = c.headR * 0.58
-  const knot = c.headR * 0.18
-
-  ctx.save()
-  ctx.fillStyle = bowtie
-  for (const sx of [-1, 1]) {
+// A fuzzy pom-pom button: a soft disc ringed by small tufts so its edge reads fluffy rather than
+// hard-edged, topped with a glossy highlight. `color` rides the RGB cycle (see the caller).
+function drawPom(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string): void {
+  ctx.fillStyle = color
+  const tufts = 8
+  for (let i = 0; i < tufts; i++) {
+    const a = (i / tufts) * Math.PI * 2
     ctx.beginPath()
-    ctx.moveTo(c.cx, cy)
-    ctx.lineTo(c.cx + sx * wingW, cy - wingH / 2)
-    ctx.lineTo(c.cx + sx * wingW, cy + wingH / 2)
-    ctx.closePath()
+    ctx.arc(x + Math.cos(a) * radius * 0.68, y + Math.sin(a) * radius * 0.68, radius * 0.5, 0, Math.PI * 2)
     ctx.fill()
   }
-  ctx.fillStyle = bowtieKnot
   ctx.beginPath()
-  ctx.roundRect(c.cx - knot, cy - knot, knot * 2, knot * 2, knot * 0.4)
+  ctx.arc(x, y, radius * 0.86, 0, Math.PI * 2)
   ctx.fill()
-  ctx.restore()
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.28)'
+  ctx.beginPath()
+  ctx.arc(x - radius * 0.28, y - radius * 0.3, radius * 0.3, 0, Math.PI * 2)
+  ctx.fill()
 }
 

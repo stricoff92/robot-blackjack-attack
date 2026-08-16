@@ -253,6 +253,10 @@ const SAVER_STATIC_NOW = 0
 // cheaper powerup costs (30–60) so it surfaces when a top-up is genuinely useful.
 const REWARDED_LOW_ENERGY_THRESHOLD = 50
 const REWARDED_ADS_PER_RUN = 3
+// The rewarded top-up is only offered on the real mid-run dealers — shift 2 through 6 (TOTAL_DEALERS).
+// Never on Dealer 1 (the intro dealer) and never during the Banker coda (shift BANKER_SHIFT).
+const REWARDED_AD_MIN_SHIFT = 2
+const REWARDED_AD_MAX_SHIFT = TOTAL_DEALERS
 // After the player is OFFERED the rewarded top-up and proceeds (Next hand) without taking it, treat
 // the ignore as a "no" and keep the offer down for this many hands — don't nag every hand.
 const AD_OFFER_COOLDOWN_HANDS = 3
@@ -700,10 +704,13 @@ class GameView {
   // "pause"). `scoreBannerEl_` is the score-screen display-banner container; `scoreBannerAt_` stamps
   // the last request so the SDK's 30s per-container cooldown isn't tripped by a fast New-run loop.
   // `forceRewardAd_` (?rewardad) forces the rewarded-ad button visible past its gates, for testing.
+  // `suppressAds_` (?suppressads) is the opposite umbrella — it skips ALL ad surfaces (interstitials,
+  // the rewarded-ad button, the score banner) so a gameplay recording is never interrupted by one.
   private adPausing_ = false
   private scoreBannerEl_!: HTMLElement
   private scoreBannerAt_ = 0
   private forceRewardAd_ = false
+  private suppressAds_ = false
   // Rewarded-ad "ignore = no" cadence: `adWasOffered_` latches true while the top-up button is being
   // shown on a resolved screen; if the player advances without taking it, run_ stamps
   // `adDeclinedAtHand_` (a handsPlayed value) so the offer stays down for AD_OFFER_COOLDOWN_HANDS
@@ -726,6 +733,7 @@ class GameView {
       dealerHealth: debug.dealerHealth,
       hearts: debug.hearts,
       startDealer: debug.startDealer,
+      handHistory: debug.handHistory,
       startUpgrades,
       forceDealerNatural: debug.dealerBlackjack,
       forcePlayerNatural: debug.playerBlackjack,
@@ -735,11 +743,13 @@ class GameView {
     const hasRunOverride =
       startUpgrades !== null ||
       debug.startDealer !== null ||
+      debug.handHistory !== null ||
       debug.startScore !== null ||
       debug.startTokens !== null ||
       debug.dealerHealth !== null ||
       debug.hearts !== null
     this.forceRewardAd_ = debug.rewardAd
+    this.suppressAds_ = debug.suppressAds
     this.resumableRun_ = hasRunOverride ? null : loadSession()
     // Seed the opening balances + dealer/deck identity from the run so the first paint is correct.
     this.seedVisualsFromState_()
@@ -872,6 +882,8 @@ class GameView {
     fresh.type = 'button'
     fresh.textContent = 'New game'
     fresh.addEventListener('click', () => this.beginFromTitle_('new'))
+    pressPop(cont)
+    pressPop(fresh)
     const row = element('div', 'title-menu-row')
     row.append(cont, fresh)
     // The battery-saver toggle sits ABOVE the Continue / New game buttons — the menu is a bottom-anchored
@@ -3020,13 +3032,16 @@ class GameView {
         group: 'action',
         act: () => this.watchRewardedAd_(),
         visible: (s) =>
+          !this.suppressAds_ && // ?suppressads hides the rewarded-ad button outright (overrides ?rewardad)
           s.phase === 'resolved' &&
           this.started_ &&
           !this.dealRevealPending_() &&
           rewardedAdsSupported() &&
-          // The caps are ALWAYS enforced (once per dealer + REWARDED_ADS_PER_RUN per run); ?rewardad
-          // only bypasses the low-energy threshold so the button can be seen/tested without grinding
-          // energy down — it must NOT let a tester farm past the real caps.
+          // The caps are ALWAYS enforced (dealers 2–6 only, once per dealer + REWARDED_ADS_PER_RUN per
+          // run); ?rewardad only bypasses the low-energy threshold so the button can be seen/tested
+          // without grinding energy down — it must NOT let a tester farm past the real caps.
+          s.run.shiftIndex >= REWARDED_AD_MIN_SHIFT &&
+          s.run.shiftIndex <= REWARDED_AD_MAX_SHIFT &&
           s.run.rewardedAdShiftIndex !== s.run.shiftIndex &&
           s.run.rewardedAdsThisRun < REWARDED_ADS_PER_RUN &&
           (this.forceRewardAd_ ||
@@ -3229,6 +3244,12 @@ class GameView {
           this.run_(def.act)
         }
       })
+      // Punchy press feedback on every action/powerup/coda button (see pressPop). Skip watch-ad:
+      // it's centered via transform: translate(-50%, …), and the pop's scale() would drop that
+      // translate and jerk it sideways.
+      if (def.key !== 'watch-ad') {
+        pressPop(button)
+      }
       this.buttons_[def.key] = button
       const column = def.group === 'power' ? powers : def.group === 'coda-power' ? codaPowers : actions
       column.appendChild(button)
@@ -3275,6 +3296,7 @@ class GameView {
     btn.title = 'Show the table rules'
     btn.setAttribute('aria-label', 'Show the table rules')
     btn.addEventListener('click', () => this.openRules_())
+    pressPop(btn)
     return btn
   }
 
@@ -3295,6 +3317,7 @@ class GameView {
       this.setBatterySaver_(!this.batterySaver_)
       this.showBatteryToast_(this.batterySaver_) // flash the new state above the toggle
     })
+    pressPop(btn)
     return btn
   }
 
@@ -3315,6 +3338,7 @@ class GameView {
     btn.addEventListener('click', () => {
       this.setMusicMuted_(!this.musicMuted_)
     })
+    pressPop(btn)
     return btn
   }
 
@@ -3472,6 +3496,7 @@ class GameView {
     btn.title = 'What each ability does'
     btn.setAttribute('aria-label', 'Show what each ability does')
     btn.addEventListener('click', () => this.openHelp_())
+    pressPop(btn)
     return btn
   }
 
@@ -3610,6 +3635,7 @@ class GameView {
     for (const btn of [prev, next]) {
       // Keep a page tap from bubbling to the stage's pointerdown (which dismisses the spec sheet).
       btn.addEventListener('pointerdown', (e) => e.stopPropagation())
+      pressPop(btn)
     }
     prev.addEventListener('click', () => this.flipScorePage_(-1))
     next.addEventListener('click', () => this.flipScorePage_(1))
@@ -4382,7 +4408,7 @@ class GameView {
   // auto-deal + collectRound clear so no hand deals behind it. Off-platform the ad is a no-op and the
   // callback fires synchronously, so the walk-in is unaffected in dev/tests.
   private arriveMaybeWithAd_(incomingShift: number, run: () => void): void {
-    if (incomingShift !== AD_BREAK_INCOMING_SHIFT) {
+    if (incomingShift !== AD_BREAK_INCOMING_SHIFT || this.suppressAds_) {
       run()
       return
     }
@@ -4399,7 +4425,7 @@ class GameView {
   // banner size fits the current viewport, or within the SDK's 30s per-container cooldown. In dev a
   // placeholder paints instead of a real ad (requestScoreBanner); on a no-fill the box is hidden.
   private showScoreBanner_(timestamp: number): void {
-    if (isCrazyGamesApp() || this.viewportGuard_?.isBlocking()) {
+    if (this.suppressAds_ || isCrazyGamesApp() || this.viewportGuard_?.isBlocking()) {
       return
     }
     const size = pickBannerSize(this.stage_.canvas.width, this.stage_.canvas.height)
@@ -4430,10 +4456,16 @@ class GameView {
   // records usage so a mid-run reload can't farm.
   private watchRewardedAd_(): void {
     // Belt-and-suspenders cap check at click time: the visibility gate already enforces the caps, but
-    // re-checking here stops a stale-visible button or a fast double-click from granting beyond
-    // once-per-dealer / REWARDED_ADS_PER_RUN — and it holds even under the ?rewardad force-show.
+    // re-checking here stops a stale-visible button or a fast double-click from granting beyond the
+    // dealers-2–6 window / once-per-dealer / REWARDED_ADS_PER_RUN — and it holds even under the
+    // ?rewardad force-show.
     const run = this.state_.run
-    if (run.rewardedAdShiftIndex === run.shiftIndex || run.rewardedAdsThisRun >= REWARDED_ADS_PER_RUN) {
+    if (
+      run.shiftIndex < REWARDED_AD_MIN_SHIFT ||
+      run.shiftIndex > REWARDED_AD_MAX_SHIFT ||
+      run.rewardedAdShiftIndex === run.shiftIndex ||
+      run.rewardedAdsThisRun >= REWARDED_ADS_PER_RUN
+    ) {
       return
     }
     requestRewardedAd({
@@ -4456,6 +4488,10 @@ class GameView {
   // ad is a no-op and restart runs immediately). The static 'over' screen has no auto-deal to guard,
   // and restart's music.resumeAfterEnd fires inside run_ so audio returns after the ad, not before.
   private requestNewRunWithAd_(): void {
+    if (this.suppressAds_) {
+      this.run_(() => this.session_.restart())
+      return
+    }
     requestMidgameAd(() => this.run_(() => this.session_.restart()))
   }
 
@@ -5093,6 +5129,15 @@ function restartAnimation(el: HTMLElement, className: string): void {
   el.classList.remove(className)
   void el.offsetWidth
   el.classList.add(className)
+}
+
+// Fire the one-shot press-pop (the `.is-press` keyframe) on pointerdown. pointerdown, not :active,
+// so the flash plays fully regardless of how long the button is held or how fast it's tapped —
+// which is what makes every interaction legible in the cursor-less, auto-sped-up CrazyGames
+// preview video (and on mobile, which has no hover state). Safe to stack alongside a button's
+// existing click/pointerdown listeners.
+function pressPop(btn: HTMLElement): void {
+  btn.addEventListener('pointerdown', () => restartAnimation(btn, 'is-press'))
 }
 
 // A fresh <img> for the token icon. Every instance shares the one imported

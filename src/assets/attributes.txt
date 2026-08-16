@@ -29,3 +29,5 @@ SOUND EFFECTS: Helton Yan (fierydzn@gmail.com), Creative Commons By Attribution 
 TODO: verify license + attribution for these before submission:
   - Sound effects: oxidvideos-* and freesound_community-* (likely Pixabay / Freesound).
   - Font: Sixtyfour (Google Fonts, SIL Open Font License).
+
+<a href="https://www.flaticon.com/free-icons/spade" title="spade icons">Spade icons created by Md Tanvirul Haque - Flaticon</a>

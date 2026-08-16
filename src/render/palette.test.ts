@@ -18,11 +18,15 @@ describe('dealerColors', () => {
     expect(dealerColors(2, 0)).toEqual(dealerColors(2, 9999))
   })
 
-  it('marks the final dealer as RGB, cycling its bowtie hue over time', () => {
+  it('marks the final dealer as RGB, cycling its deck over time but holding a fixed bowtie', () => {
     expect(isRgbDealer(TOTAL_DEALERS)).toBe(true)
-    const a = dealerColors(TOTAL_DEALERS, 0).bowtie
-    const b = dealerColors(TOTAL_DEALERS, 2000).bowtie
-    expect(a).not.toBe(b)
+    const a = dealerColors(TOTAL_DEALERS, 0)
+    const b = dealerColors(TOTAL_DEALERS, 2000)
+    // The deck backs still sweep the RGB cycle over time...
+    expect(a.back.outer).not.toBe(b.back.outer)
+    // ...but the bowtie is now a fixed light grey (it used to cycle, which froze on a colour
+    // whenever the render loop parked in battery-saver).
+    expect(a.bowtie).toBe(b.bowtie)
   })
 
   it('buckets the RGB dealer deck colour so the sprite cache stays bounded', () => {
