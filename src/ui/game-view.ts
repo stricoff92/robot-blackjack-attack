@@ -4176,38 +4176,31 @@ class GameView {
       // On resolve, freeze the bankroll at its pre-settle *available* value (the
       // live bet is on the table); it releases to the new total once the payout
       // chips land on the next hand.
+      // The Sabotage T1 dealer-21 burst, when this settle paid one — fired in the branches below and
+      // read back out as a FLOOR (see awardDealer21Energy_), so the nexus strike / heart-pop / Banker
+      // ceremony all wait for the +20 to land. Declared out here because the CODA entry needs it too.
+      let energyFloor = 0
       if (this.syncChips_(prevPhase, t)) {
         // Award the win reward the moment the won chips finish sliding into place
         // beside the bet (chips.animEnd) — no longer deferred to the Next-hand click.
         // Only a normal resolve pays the counter; a final blow ('over') ends the run.
         if (this.state_.phase === 'resolved' && this.state_.round) {
           const tokensEnd = this.awardWinTokens_(this.state_.round, this.chips_.animEnd + TOKEN_SPAWN_DELAY)
-          // Sabotage T1: the dealer reaching 21 paid flat energy (already credited in Session.settle_).
-          // Fly it up as its own burst — anchored, like every reward, at the nexus vent — so even a
-          // LOSING hand (or a voided 21) shows a clear "the dealer's 21 fuelled you" beat instead of a
-          // silent counter tick. Unlike the win tokens, this DOES gate the attack below: `attackFloor`
-          // holds the nexus strike until the burst has fully landed (liftoff + FLY_MS) plus a beat, so
-          // the +20 completes cleanly before the laser hits (see ENERGY_ATTACK_GAP).
-          let attackFloor = 0
-          if (this.state_.round.rules.dealer21Energy && dealerSettleTotal(this.state_.round) === 21) {
-            const layout = computeLayout(this.stage_.canvas.width, this.stage_.canvas.height)
-            const liftoff = tokensEnd + TOKEN_HAND_STAGGER
-            this.tokens_.emit(nexusUtilityLight(layout, liftoff), SABOTAGE_DEALER21_ENERGY, liftoff)
-            this.nexus_.pulseYellow(liftoff)
-            attackFloor = liftoff + FLY_MS + ENERGY_ATTACK_GAP
-          }
+          // Staggered one slot past the last win burst, so a winning dealer-21 hand reads as a
+          // cascade rather than two bursts leaving the vent together.
+          energyFloor = this.awardDealer21Energy_(this.state_.round, tokensEnd + TOKEN_HAND_STAGGER)
           // The nexus laser now AUTO-FIRES here — no longer deferred to the Next-hand click. The
           // reward tokens land, THEN the utility light charges red (anticipate), THEN the beam
           // strikes: tokens → points → laser, in step. A `damage` hit drops the dealer's health;
           // a `kill` SHATTERS it on impact (playDeath fires the +40 bounty with the death, and the
           // replacement's walk-in / upgrade pick wait for the click). A `windowOut` fires NO laser
           // — the survivor simply strides off on the click. The summary then eases in behind the
-          // attack (appearAt), and its reveal sets the Next-hand consent gate. `attackFloor` pushes the
+          // attack (appearAt), and its reveal sets the Next-hand consent gate. `energyFloor` pushes the
           // strike (and its charge-up) past the Sabotage energy burst when there is one.
           const pa = this.pendingAttack_
           let appearAt = tokensEnd
           if (pa && pa.kind !== 'windowOut') {
-            const laserStart = Math.max(tokensEnd + LASER_GAP, attackFloor)
+            const laserStart = Math.max(tokensEnd + LASER_GAP, energyFloor)
             this.nexus_.anticipate(laserStart - LASER_GAP)
             const kill = pa.kind === 'kill'
             appearAt = kill
@@ -4229,9 +4222,18 @@ class GameView {
           }
           // Player hearts: a lost round pops the last chip, a qualifying win heals the first empty
           // one — fired after the summary's mark (resolveAttackEnd_, computed just above) is in, and
-          // never before the Sabotage energy burst has landed (attackFloor), so on a dealer-21 loss
+          // never before the Sabotage energy burst has landed (energyFloor), so on a dealer-21 loss
           // the +20 completes cleanly before the heart-pop laser strikes.
-          this.syncHearts_(prevRun.hitPoints, Math.max(this.resolveAttackEnd_, attackFloor))
+          this.syncHearts_(prevRun.hitPoints, Math.max(this.resolveAttackEnd_, energyFloor))
+        } else if (enteringCoda && this.state_.round) {
+          // A CODA-ENTRY hand can pay the +20 too — Dealer 6 makes 21 and outlasts its window, or its
+          // 21 pops the player's last heart, or a Sabotage-T3 hijack turns the 21 into the 6th kill.
+          // The phase lands on 'coda', not 'resolved', so the branch above never sees it; without this
+          // the energy was credited but flew nothing (a silent counter tick). It still BUYS things —
+          // Analyze / Mulligan in the double-or-nothing — so it flies like any other reward. Timed to
+          // the chips settling, same as a normal resolve; there are no win tokens ahead of it here, so
+          // no stagger. The returned floor holds the Banker's ceremony back until it lands.
+          energyFloor = this.awardDealer21Energy_(this.state_.round, this.chips_.animEnd + TOKEN_SPAWN_DELAY)
         }
       }
       // Game over: once the ending hand's cards settle, the dealer sucks them up + shreds
@@ -4241,10 +4243,10 @@ class GameView {
         if (this.state_.run.hitPoints <= 0 && this.state_.run.kills.length < TOTAL_DEALERS) {
           // HEART-DEATH: the player bled out before Dealer 6. Play the losing summary + final heart
           // pop first, THEN let the dealer walk off and the coda begin (deferred to the frame loop).
-          this.beginHeartDeathCoda_(prevScore, prevIntegrity, prevShift, integrity, t)
+          this.beginHeartDeathCoda_(prevScore, prevIntegrity, prevShift, integrity, t, energyFloor)
         } else {
           // The 6th dealer fell (or outlasted its window) → the Banker walks in and the coda begins.
-          this.beginCoda_(prevScore, prevIntegrity, prevShift, integrity, t)
+          this.beginCoda_(prevScore, prevIntegrity, prevShift, integrity, t, energyFloor)
         }
       } else if (enteringOver) {
         this.beginEndGame_(prevScore, prevIntegrity, prevShift, integrity, shiftIndex, t)
@@ -4315,9 +4317,13 @@ class GameView {
     // simply dropped when it resets — never flown to the counter. On a WIN that includes the
     // +40 kill bounty (already in run.tokens), so withhold it too — otherwise the top-left
     // count ticks up by 40 during the draw-out, spoiling the win.
+    // A Sabotage dealer-21 on that last hand is withheld with them: 'over' never reaches the resolve
+    // branch that flies the +20, so leaving it out would tick the counter up by 20 on its own — a
+    // stray, unexplained climb during the draw-out. The run is ending; the energy buys nothing.
     if (phase === 'over' && prevPhase !== 'over') {
       const killBounty = this.state_.run.won ? Math.round(DESTROY_TOKEN * tokenMultiplier(this.state_.run)) : 0
-      this.heldTokens_ = winTokensTotal(round) + killBounty
+      const dealer21 = round.rules.dealer21Energy && dealerSettleTotal(round) === 21 ? SABOTAGE_DEALER21_ENERGY : 0
+      this.heldTokens_ = winTokensTotal(round) + killBounty + dealer21
     }
   }
 
@@ -4343,6 +4349,24 @@ class GameView {
       }
     })
     return end
+  }
+
+  // Sabotage T1: the dealer reaching 21 paid flat energy (already credited in Session.settle_).
+  // Fly it up as its own burst — anchored, like every reward, at the nexus vent — so even a LOSING
+  // hand (or a voided 21) shows a clear "the dealer's 21 fuelled you" beat instead of a silent
+  // counter tick. Returns the moment the burst has fully LANDED plus a beat (ENERGY_ATTACK_GAP), or
+  // 0 when this hand paid no 21 — a FLOOR the caller holds whatever comes next behind (the nexus
+  // strike, the heart-pop, the Banker's ceremony), so the +20 completes cleanly first.
+  private awardDealer21Energy_(round: Round, startAfter: number): number {
+    if (!round.rules.dealer21Energy || dealerSettleTotal(round) !== 21) {
+      return 0
+    }
+    const canvas = this.stage_.canvas
+    const layout = computeLayout(canvas.width, canvas.height)
+    // From where the vent floats at liftoff (the device bobs continuously).
+    this.tokens_.emit(nexusUtilityLight(layout, startAfter), SABOTAGE_DEALER21_ENERGY, startAfter)
+    this.nexus_.pulseYellow(startAfter)
+    return startAfter + FLY_MS + ENERGY_ATTACK_GAP
   }
 
   // Kick off the dealer-spawn ceremony: shred `prevRound`'s table cards into the new
@@ -4527,13 +4551,23 @@ class GameView {
     }
     requestRewardedAd({
       onReward: () => {
+        const t = now()
         this.session_.grantRewardedEnergy()
         this.adWasOffered_ = false // TAKEN, not declined — don't let the later advance stamp a cooldown
         this.state_ = this.session_.snapshot()
         // Re-sync the overlay NOW (this bypasses run_, which is what normally drives it): the grant
         // stamped this dealer's cap, so the button's visibility predicate now fails and it hides.
-        this.syncOverlay_(now())
-        this.ensureLoop_() // roll the token counter up to the new balance
+        this.syncOverlay_(t)
+        // Pay it out like every other reward — a burst out of the nexus vent flying up to the counter,
+        // with the vent's yellow pulse and the launch/land tones — rather than silently rolling the
+        // number. The player just sat through a video for this; it should land as the loudest payout
+        // in the game, not the quietest. tokens.pending() withholds the +100 until the burst arrives,
+        // so the count climbs with it. Fires between hands, where nothing else is competing.
+        const layout = computeLayout(this.stage_.canvas.width, this.stage_.canvas.height)
+        const liftoff = t + TOKEN_SPAWN_DELAY
+        this.tokens_.emit(nexusUtilityLight(layout, liftoff), REWARDED_AD_ENERGY, liftoff)
+        this.nexus_.pulseYellow(liftoff)
+        this.ensureLoop_() // wake the loop (battery saver may have parked it) to fly the burst
       },
       onFail: () => {
         // No ad available (no-fill / error) — nothing granted; the button stays up for a retry.
@@ -4664,7 +4698,10 @@ class GameView {
   // and pop the final heart-chip FIRST; the frame loop (at heartDeathAt_) then fires beginCoda_ so the
   // dealer walks off and the Banker's double-or-nothing begins — the red X + last pop read before the
   // table clears. No score penalty: the coda opens on the current total (the loss scored nothing).
-  private beginHeartDeathCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
+  // `energyFloor` (0 when there's none) holds the final pop back until a Sabotage dealer-21 burst has
+  // landed — the same gate the normal resolve puts on its heart-pop, so a 21 that kills the player
+  // pays its +20 cleanly before the last chip goes.
+  private beginHeartDeathCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number, energyFloor = 0): void {
     this.heartDeathPending_ = true
     this.heartDeathEntry_ = { prevScore, prevIntegrity, prevShift, integrity }
     // Ease the losing summary in once the cards settle (no laser on a loss), like any other loss —
@@ -4672,12 +4709,15 @@ class GameView {
     const appearAt = Math.max(this.anim_.animEnd, t)
     this.summaryAppear_(appearAt)
     // Then the final chip pops (after the red X), and the deferred coda entry waits for it to finish.
-    const startAt = this.resolveAttackEnd_
+    const startAt = Math.max(this.resolveAttackEnd_, energyFloor)
     this.schedulePop_(startAt)
     this.heartDeathAt_ = this.hearts_.animEndAfter(startAt) + SUMMARY_MIN_HOLD
   }
 
-  private beginCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number): void {
+  // `energyFloor` (0 when there's none, and always 0 on the deferred heart-death entry — that burst
+  // has long since landed) holds the boss's exit back until a Sabotage dealer-21 burst has arrived,
+  // mirroring the floor a normal resolve puts on its laser. The chips still settle underneath it.
+  private beginCoda_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, t: number, energyFloor = 0): void {
     const round = this.state_.round
     if (!round) {
       return
@@ -4712,7 +4752,7 @@ class GameView {
       // Dealer 6 outlasted its window (it wasn't killed): it strides OFF (no laser/death), and the
       // Banker walks in behind it to run the double-or-nothing. The last window hand's cards stay
       // resting (collectRound, above) for the Banker to shred on arrival, exactly like a 6th-kill entry.
-      const walkStart = this.chips_.animEnd + LASER_GAP
+      const walkStart = Math.max(this.chips_.animEnd + LASER_GAP, energyFloor)
       this.dealer_.walkOff(walkStart)
       this.codaArrivalAt_ = walkStart + KILL_ARRIVE_MS + CODA_WALKIN_DELAY
       return
@@ -4720,7 +4760,7 @@ class GameView {
 
     // The boss breaks apart — DEATH ONLY, no walk-in (walkIn=false). The Banker arrives a beat
     // later (playCodaArrival, scheduled here) so there's a clear pause before he appears.
-    const attackStart = this.chips_.animEnd + LASER_GAP
+    const attackStart = Math.max(this.chips_.animEnd + LASER_GAP, energyFloor)
     this.dealer_.sync(prevIntegrity, prevShift, integrity, BANKER_SHIFT, attackStart, false, false)
     this.fireLaser_(t, attackStart, true)
     this.codaArrivalAt_ = attackStart + KILL_DEATH_MS + CODA_WALKIN_DELAY

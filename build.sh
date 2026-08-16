@@ -14,24 +14,38 @@ set -euo pipefail
 # npm scripts resolve regardless of where it was invoked from.
 cd "$(dirname "$0")"
 
+# Run a gate quietly: swallow its output on success (printing only the lines matched by $2, if any)
+# and dump the whole log to stderr on failure before aborting. Both gates below are pass/fail — a
+# green run has nothing to say, and vitest's interactive reporter listing all 47 test files would
+# otherwise scroll the packaging checks that actually matter off the screen. Nothing is lost: a
+# failure prints byte-for-byte what the bare command would have.
+run_gate() {
+  local cmd="$1" summary="${2:-}" log status
+  log="$(mktemp -t rba-build-XXXXXX.log)"
+  if $cmd >"$log" 2>&1; then
+    [[ -n $summary ]] && grep -E "$summary" "$log" || true
+    rm -f "$log"
+  else
+    status=$?
+    cat "$log" >&2
+    rm -f "$log"
+    exit $status
+  fi
+}
+
 echo "==> Typecheck"
-npm run typecheck
+run_gate "npm run typecheck"
 
 echo "==> Tests"
-npm test
+# Keep vitest's own tally (files / tests / duration) — the one part of its output worth seeing.
+run_gate "npm test" '^ +(Test Files|Tests|Duration) '
 
 echo "==> Production bundle (vite build -> dest/)"
 # `npm run typecheck` already ran tsc, so build with vite directly to avoid a second typecheck
 # pass. This is the same bundler step `npm run build` performs (terser property-mangling and all).
 npx vite build
 
-# Zip the CONTENTS of dest/ (note the `cd dest`) so index.html sits at the archive ROOT —
-# CrazyGames requires the entry HTML at the top level of the uploaded zip, not nested in a folder.
-# Stamp the name with date-time + short git SHA so every build is a distinct, traceable artifact.
-stamp="$(date +%Y%m%d-%H%M%S)"
-sha="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
-zip_name="rba-${stamp}-${sha}.zip"
-rm -f "$zip_name"
-( cd dest && zip -qr "../${zip_name}" . )
-
-echo "==> Done: ${zip_name} ($(du -h "$zip_name" | cut -f1)) — upload this to CrazyGames"
+# Verify + zip. package.sh is the single zipper (it can also be run on its own to re-package an
+# existing dest/ without rebuilding), so the release archive gets the same pre-upload checks —
+# prod build, current, clean, sitelock + leaderboard key present — however it was produced.
+./package.sh
