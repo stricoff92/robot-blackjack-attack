@@ -36,8 +36,10 @@ function declarePlaybackSession(): void {
   }
   audioSessionDeclared = true
   // ?npb (no playback) disables the hint so device testing can A/B whether the
-  // playback session itself is implicated in a background/return glitch.
-  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('npb')) {
+  // playback session itself is implicated in a background/return glitch. DEV-gated:
+  // in production this folds to false, so a player can never append the param and
+  // silence themselves with a flipped iOS mute switch.
+  if (import.meta.env.DEV && typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('npb')) {
     return
   }
   const nav = navigator as Navigator & AudioSessionNavigator
@@ -62,8 +64,10 @@ const HEARTBEAT_MS = 500
 
 // ---- On-device diagnostics (?audiodebug) --------------------------------------
 // iOS has no visible console, so we keep a tiny in-memory event log + a snapshot
-// the overlay in main.ts renders. Guarded so it costs ~nothing when the flag is off.
+// the overlay in main.ts renders. DEV-gated, so in production this folds to a
+// constant false and every dlog body below dead-code-eliminates with it.
 const AUDIO_DEBUG =
+  import.meta.env.DEV &&
   typeof window !== 'undefined' &&
   typeof window.location !== 'undefined' &&
   new URLSearchParams(window.location.search).has('audiodebug')

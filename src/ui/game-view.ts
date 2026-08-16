@@ -258,8 +258,12 @@ const REWARDED_ADS_PER_RUN = 3
 const REWARDED_AD_MIN_SHIFT = 2
 const REWARDED_AD_MAX_SHIFT = TOTAL_DEALERS
 // After the player is OFFERED the rewarded top-up and proceeds (Next hand) without taking it, treat
-// the ignore as a "no" and keep the offer down for this many hands — don't nag every hand.
+// the ignore as a "no" and keep the offer down for this many hands — don't nag every hand. A request
+// that comes back UNFILLED spends the same cooldown, so a build that can't serve ads yet retires the
+// button for a few hands instead of leaving it up to be tapped again for nothing.
 const AD_OFFER_COOLDOWN_HANDS = 3
+// How long the "No ad available" flash holds before fading (the 200ms fade is CSS).
+const AD_TOAST_HOLD_MS = 1400
 // The incoming dealer shift that triggers the mid-run interstitial — advancing INTO dealer 4 means
 // the player just finished dealer 3 (by kill or window-out). One ad per run at this single break.
 const AD_BREAK_INCOMING_SHIFT = 4
@@ -722,6 +726,16 @@ class GameView {
   // hands. Not persisted (a pure cadence nicety); reset on New run. The hard caps are separate.
   private adWasOffered_ = false
   private adDeclinedAtHand_ = Number.NEGATIVE_INFINITY
+  // A rewarded-ad request is in flight. The SDK can take until AD_FALLBACK_MS to answer, so without
+  // this a second tap would stack an independent request (and its own fallback timer) behind the
+  // first; the button greys out for the duration instead.
+  private adRequestPending_ = false
+  // The "No ad available" flash, shown where the top-up button was when a request comes back
+  // unfilled — CrazyGames only switches ad serving on at Full Launch, so until then EVERY request
+  // no-fills, and a silent failure reads as a dead button. adToastTimer_ holds its hold-then-fade
+  // timer, like the battery toast's.
+  private adToastEl_!: HTMLDivElement
+  private adToastTimer_ = 0
 
   constructor(root: HTMLElement) {
     const debug = readDebugFlags()
@@ -3074,7 +3088,7 @@ class GameView {
           (this.forceRewardAd_ ||
             (s.run.tokens < REWARDED_LOW_ENERGY_THRESHOLD &&
               s.run.handsPlayed - this.adDeclinedAtHand_ >= AD_OFFER_COOLDOWN_HANDS)),
-        enabled: yes,
+        enabled: () => !this.adRequestPending_,
       },
       {
         key: 'analyze',
@@ -3282,6 +3296,11 @@ class GameView {
       column.appendChild(button)
     }
 
+    // The no-fill flash goes INTO the actions row so it inherits the same positioning context as the
+    // rewarded-ad button and lands exactly where that button was — which has just hidden itself.
+    this.adToastEl_ = this.buildAdToast_()
+    actions.appendChild(this.adToastEl_)
+
     // The info button sits in the bottom-left corner (fixed via CSS); pressing it opens
     // the full-screen TABLE RULES takeover.
     this.infoBtnEl_ = this.buildInfoButton_()
@@ -3391,6 +3410,31 @@ class GameView {
       el.classList.remove('is-visible')
       el.classList.add('is-fading') // opacity -> 0 over 200ms
     }, 800)
+  }
+
+  // The rewarded-ad no-fill flash, sitting in the slot the top-up button occupies (showAdToast_
+  // drives the timing). Same click-through, hidden-from-assistive-tech treatment as the battery
+  // toast — but aria-live, since unlike that one it isn't echoing a control the player just read.
+  private buildAdToast_(): HTMLDivElement {
+    const el = document.createElement('div')
+    el.className = 'hud-ad-toast'
+    el.setAttribute('role', 'status')
+    return el
+  }
+
+  // Flash the no-fill message where the top-up button was: snap in, hold, then fade (the fade is the
+  // CSS transition on .is-fading). Mirrors showBatteryToast_'s timing, held a beat longer because
+  // this one carries information the player hasn't already seen on a button face.
+  private showAdToast_(text: string): void {
+    const el = this.adToastEl_
+    el.textContent = text
+    window.clearTimeout(this.adToastTimer_)
+    el.classList.remove('is-fading') // cancel any in-progress fade
+    el.classList.add('is-visible') // instant show (no fade-in)
+    this.adToastTimer_ = window.setTimeout(() => {
+      el.classList.remove('is-visible')
+      el.classList.add('is-fading') // opacity -> 0 over 200ms
+    }, AD_TOAST_HOLD_MS)
   }
 
   // The battery-saver toggle shown on the title / tap-to-start screen (the in-game HUD uses the round
@@ -4532,9 +4576,9 @@ class GameView {
 
   // Optional rewarded-ad energy top-up (between hands). Requests a CrazyGames rewarded video; on a
   // COMPLETED ad it grants REWARDED_AD_ENERGY (energy buys help/info, not damage — never pay-to-win)
-  // and rolls the counter up. A failed/unfilled ad grants nothing and leaves the button up to retry.
-  // The once-per-dealer / per-run caps live in the button's visibility gate; grantRewardedEnergy just
-  // records usage so a mid-run reload can't farm.
+  // and rolls the counter up. A failed/unfilled ad grants nothing, says so, and retires the offer for
+  // AD_OFFER_COOLDOWN_HANDS hands. The once-per-dealer / per-run caps live in the button's visibility
+  // gate; grantRewardedEnergy just records usage so a mid-run reload can't farm.
   private watchRewardedAd_(): void {
     // Belt-and-suspenders cap check at click time: the visibility gate already enforces the caps, but
     // re-checking here stops a stale-visible button or a fast double-click from granting beyond the
@@ -4542,6 +4586,7 @@ class GameView {
     // ?rewardad force-show.
     const run = this.state_.run
     if (
+      this.adRequestPending_ ||
       run.shiftIndex < REWARDED_AD_MIN_SHIFT ||
       run.shiftIndex > REWARDED_AD_MAX_SHIFT ||
       run.rewardedAdShiftIndex === run.shiftIndex ||
@@ -4549,9 +4594,12 @@ class GameView {
     ) {
       return
     }
+    this.adRequestPending_ = true
+    this.syncOverlay_(now()) // grey the button for the request (the SDK may take AD_FALLBACK_MS to answer)
     requestRewardedAd({
       onReward: () => {
         const t = now()
+        this.adRequestPending_ = false
         this.session_.grantRewardedEnergy()
         this.adWasOffered_ = false // TAKEN, not declined — don't let the later advance stamp a cooldown
         this.state_ = this.session_.snapshot()
@@ -4570,7 +4618,17 @@ class GameView {
         this.ensureLoop_() // wake the loop (battery saver may have parked it) to fly the burst
       },
       onFail: () => {
-        // No ad available (no-fill / error) — nothing granted; the button stays up for a retry.
+        // No ad available (no-fill / error) — nothing granted. Say so and spend the ignore-cooldown so
+        // the offer comes down for a few hands: CrazyGames doesn't switch ad serving on until Full
+        // Launch, so until then EVERY request lands here, and a button that silently does nothing on
+        // tap after tap reads as broken (to a player and to a platform reviewer alike). The hard caps
+        // are deliberately NOT spent — an unfilled request cost the player nothing.
+        this.adRequestPending_ = false
+        this.adDeclinedAtHand_ = this.state_.run.handsPlayed
+        this.adWasOffered_ = false // already cooled down here — don't let the later advance re-stamp it
+        this.showAdToast_('No ad available')
+        this.syncOverlay_(now())
+        this.ensureLoop_() // the failure may have landed async — wake a parked loop to paint the flash
       },
     })
   }

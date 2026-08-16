@@ -83,11 +83,13 @@ lines="$(wc -l < "$entry_js")"
 ok "bundle is minified ($(du -h "$entry_js" | cut -f1), $(wc -c < "$entry_js") bytes on one line)"
 
 # Dev-only code is stripped by the `import.meta.env.DEV` constant folding at build time. If any of
-# these survive, the bundle was produced in dev mode or with the wrong mode flag.
-for token in 'import.meta.env' 'vite/client' '__vite' 'SCORE: win' '[crazygames]'; do
+# these survive, the bundle was produced in dev mode or with the wrong mode flag — or a new dev
+# affordance was written UNGATED (which is how ?audiodebug and ?npb once shipped: they read the URL
+# at runtime, so no mode flag was wrong and nothing else here caught them).
+for token in 'import.meta.env' 'vite/client' '__vite' 'SCORE: win' '[crazygames]' 'audiodebug' 'audio-debug-overlay' 'DEV PLACEHOLDER'; do
   grep -qF "$token" "$entry_js" && fail "dev-only marker present in the bundle: ${token}"
 done
-ok "no dev-only markers (import.meta.env, vite client, dev score/SDK logs)"
+ok "no dev-only markers (import.meta.env, vite client, dev score/SDK logs, debug overlays)"
 
 # The sitelock's masked host label (src/platform/sitelock.ts MASKED). Present = the real host check
 # survived into the bundle; absent = built with VITE_UNLOCK, which would let anyone re-host the game.

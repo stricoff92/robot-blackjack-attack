@@ -49,9 +49,9 @@ if (import.meta.env.DEV) {
 // raf (requestAnimationFrame) vs int (setInterval) — after backgrounding and returning,
 // whichever one KEEPS ADVANCING is the timer that recovers on this device. `hb` is the
 // audio module's own setInterval heartbeat; if it stalls on return while `raf` climbs,
-// the poll cadence is the bug. The event log shows the resume/suspend outcomes. Works in
-// prod builds too (gated on the URL param, not DEV), for testing the deployed bundle.
-if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('audiodebug')) {
+// the poll cadence is the bug. The event log shows the resume/suspend outcomes. Compiled
+// out of production (import.meta.env.DEV), so no debug surface ships with the release.
+if (import.meta.env.DEV && typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('audiodebug')) {
   const panel = document.createElement('div')
   panel.id = 'audio-debug-overlay'
   panel.setAttribute(

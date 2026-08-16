@@ -1114,6 +1114,37 @@
   transform: translate(-50%, 2px);
 }
 
+/* The "No ad available" flash, shown when a rewarded request comes back unfilled (showAdToast_ times
+ * it — held AD_TOAST_HOLD_MS, then the .is-fading transition fades it over 200ms). Deliberately
+ * placed in the SAME slot as the top-up button above the action row, since that button hides itself
+ * on the failure — the message lands exactly where the player just tapped. Muted (no teal fill) so it
+ * reads as an apology, not another offer. */
+.hud-ad-toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(6, 20, 24, 0.9);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  color: rgba(196, 246, 241, 0.98);
+  font: 700 13px var(--font-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none; /* purely informational — never blocks the Next hand button under it */
+  z-index: 7; /* above the HUD buttons (z-index 4), so it sits on top of the canvases */
+}
+.hud-ad-toast.is-visible {
+  opacity: 1; /* snap in instantly (no fade-in) */
+}
+.hud-ad-toast.is-fading {
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
 /* Let the JS `is-hidden` toggle actually hide it: the base rule's display:inline-flex (0,2,1) would
  * otherwise outrank the generic `button.is-hidden { display:none }` (0,1,1), leaving the button
  * visible in EVERY phase (it must only show on the between-hands resolved screen). Same fix as
@@ -1504,6 +1535,12 @@ button.is-hidden,
   .hud-battery-toast {
     right: max(10px, env(safe-area-inset-right, 0px)); /* track the compact toggle's right edge (.hud-battery right: 10px) */
     bottom: calc(90px + env(safe-area-inset-bottom, 0px)); /* clears both stacked compact toggles (battery 10+32+8, then music 32+8) */
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  /* Its slot (above the action row) is unchanged on a compact HUD — only the pill itself shrinks. */
+  .hud-ad-toast {
     padding: 4px 8px;
     font-size: 12px;
   }
