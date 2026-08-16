@@ -41,6 +41,7 @@ import {
   spendTokens,
   startRun,
   tallyPerformance,
+  tallyWash,
   type HandDecision,
   type RunState,
 } from './run'
@@ -752,6 +753,8 @@ export class Session {
     // no window slot and doesn't score. Leave the run untouched (phase 'resolved') and let the UI
     // redeal a fresh hand (it detects the wash via round.isRedealRound).
     if (isRedealRound(round)) {
+      // Still tally it for the score screen's push % — it's the only place a wash is ever recorded.
+      this.run_ = tallyWash(this.run_)
       this.phase_ = 'resolved'
       return
     }

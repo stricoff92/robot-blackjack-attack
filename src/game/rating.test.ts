@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from './deck'
 import { DEFAULT_ROUND_RULES, type HandOutcome, type PlayerHand, type Round } from './round'
-import { ratePlayerHand, startRun, tallyPerformance, type HandDecision } from './run'
+import { ratePlayerHand, startRun, tallyPerformance, tallyWash, type HandDecision } from './run'
 
 function card(rank: Rank, suit: Suit = 'spades'): Card {
   return { rank, suit }
@@ -129,5 +129,14 @@ describe('tallyPerformance', () => {
     const r2 = tallyPerformance(r1, roundOf([hand('lose')]), [decision('stand', 0.3, 0.8)]) // 1
     expect(r2.ratedHands).toBe(2)
     expect(r2.ratingSum).toBe(6)
+  })
+
+  it('leaves the wash tally alone — only tallyWash counts a push', () => {
+    const run = tallyPerformance(base, roundOf([hand('lose')]), [decision('stand', 0.3, 0.8)])
+    expect(run.pushes).toBe(0)
+    expect(tallyWash(tallyWash(run)).pushes).toBe(2)
+    // The score screen derives push % from this counter precisely because a SCORED round is always
+    // exactly one of won/lost — handsPlayed − handsWon − handsLost is a constant 0.
+    expect(run.handsPlayed - run.handsWon - run.handsLost).toBe(0)
   })
 })

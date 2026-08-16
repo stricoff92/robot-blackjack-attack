@@ -311,6 +311,18 @@ describe('Session', () => {
       expect(snap.run.tokens).toBe(STARTING_TOKENS + SABOTAGE_DEALER21_ENERGY)
     })
 
+    it('tallies the washed round as a push, without consuming a scored hand', () => {
+      const session = sabotaged(2)
+      session.deal()
+      const snap = session.snapshot()
+      // The wash short-circuits applyRound, so it's the pushes counter — not handsPlayed — that moves.
+      // Without it the score screen's PUSH % could only ever read 0%.
+      expect(snap.run.pushes).toBe(1)
+      expect(snap.run.handsPlayed).toBe(0)
+      expect(snap.run.handsWon).toBe(0)
+      expect(snap.run.handsLost).toBe(0)
+    })
+
     it('stacks on a T3 hijack — the blackjack reward plus the +20 energy', () => {
       const session = sabotaged(3)
       session.deal()

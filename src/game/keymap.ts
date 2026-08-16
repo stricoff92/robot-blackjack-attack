@@ -48,6 +48,7 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   freeDoubleWins: 'fw',
   busts: 'bu',
   blackjackWins: 'bj',
+  pushes: 'pu',
   ratingSum: 'rs',
   ratedHands: 'rh',
   over: 'ov',

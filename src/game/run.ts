@@ -171,6 +171,11 @@ export interface RunState {
   // Player-performance tallies for the score screen's "page 2" (tallyPerformance, display only).
   busts: number
   blackjackWins: number
+  // WASH rounds — every hand pushed/voided, so the round never reached applyRound and never bumped
+  // handsPlayed (see Session.settle_ / round.isRedealRound). Counted separately for the same reason:
+  // pushes can't be derived as handsPlayed − handsWon − handsLost, because a scored round is ALWAYS
+  // exactly one of won/lost, which made that difference a constant 0.
+  pushes: number
   ratingSum: number
   ratedHands: number
   over: boolean
@@ -227,6 +232,7 @@ export function startRun(seed: number): RunState {
     freeDoubleWins: 0,
     busts: 0,
     blackjackWins: 0,
+    pushes: 0,
     ratingSum: 0,
     ratedHands: 0,
     over: false,
@@ -374,6 +380,13 @@ export function tallyPerformance(run: RunState, round: Round, decisions: readonl
     ratingSum,
     ratedHands,
   }
+}
+
+// Count a WASH round (every hand pushed/voided) for the score screen's push %. The wash short-
+// circuits before applyRound/tallyPerformance — it consumes no window slot and scores nothing — so
+// this is the only tally it feeds. Display only, like the rest of tallyPerformance.
+export function tallyWash(run: RunState): RunState {
+  return { ...run, pushes: run.pushes + 1 }
 }
 
 // A resolved round's effect on the player's HEARTS (hit points) and the recent-win history that

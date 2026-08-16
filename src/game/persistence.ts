@@ -113,6 +113,12 @@ export function loadSession(): PersistedSession | null {
   if (typeof run.rewardedAdShiftIndex !== 'number' || !Number.isFinite(run.rewardedAdShiftIndex)) {
     run.rewardedAdShiftIndex = 0
   }
+  // Backfill the wash tally. Deliberately NOT a RULES_VERSION bump: it's a display-only score-screen
+  // counter, so an in-progress run resumes fine with it at 0 (under-reporting its push % by however
+  // many washes it already had) rather than being thrown away.
+  if (typeof run.pushes !== 'number' || !Number.isFinite(run.pushes)) {
+    run.pushes = 0
+  }
   return {
     run,
     phase,

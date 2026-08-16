@@ -264,7 +264,7 @@ const REWARDED_AD_MAX_SHIFT = TOTAL_DEALERS
 // the ignore as a "no" and keep the offer down for this many hands — don't nag every hand. A request
 // that comes back UNFILLED spends the same cooldown, so a build that can't serve ads yet retires the
 // button for a few hands instead of leaving it up to be tapped again for nothing.
-const AD_OFFER_COOLDOWN_HANDS = 3
+const AD_OFFER_COOLDOWN_HANDS = 8
 // How long the "No ad available" flash holds before fading, and how long that fade then takes.
 // AD_TOAST_FADE_MS must match the .hud-ad-toast.is-fading transition in game-view.css — it's what
 // keeps the ad band on screen until the flash has actually gone (see showAdToast_).
@@ -1731,23 +1731,24 @@ class GameView {
 
   // Page 1: how WELL the run was played — the share of hands that busted, the share won on a
   // blackjack (natural or hijacked), the share that pushed, and the averaged 1–5 star rating of
-  // each hand's terminal call (see run.ts tallyPerformance). Percentages are over handsPlayed
-  // (rounds, so a split counts once, matching the summary); the rating averages only the hands
+  // each hand's terminal call (see run.ts tallyPerformance). Percentages are over every round DEALT
+  // — handsPlayed (scored rounds) plus the washes (rounds, so a split counts once — one more than
+  // the summary's HANDS PLAYED whenever the run washed); the rating averages only the hands
   // that had a real decision to judge (a run that ended before any playable hand shows "—").
   private buildPerformance_(): ScoreReadout {
     const run = this.state_.run
-    const played = Math.max(run.handsPlayed, 1)
-    // Every round is exactly one of win / loss / push (see applyRound), so pushes need no stored
-    // tally — they're whatever's left once the wins and losses are removed.
-    const pushes = Math.max(0, run.handsPlayed - run.handsWon - run.handsLost)
+    // Every round that SCORES is exactly one of win / loss (see applyRound) — a wash never reaches
+    // it and so never bumps handsPlayed. Washes therefore carry their own tally (run.pushes), and
+    // the denominator is every round DEALT, so the three shares stay commensurable.
+    const dealt = Math.max(run.handsPlayed + run.pushes, 1)
     return {
       title: 'PERFORMANCE',
       // The star rating leads, centered label-less under the heading; the percentages follow.
       hero: run.ratedHands > 0 ? ratingStars(run.ratingSum / run.ratedHands) : '—',
       rows: [
-        { label: 'BUST %', value: `${Math.round((run.busts / played) * 100)}%` },
-        { label: 'BLACKJACK %', value: `${Math.round((run.blackjackWins / played) * 100)}%` },
-        { label: 'PUSH %', value: `${Math.round((pushes / played) * 100)}%` },
+        { label: 'BUST %', value: `${Math.round((run.busts / dealt) * 100)}%` },
+        { label: 'BLACKJACK %', value: `${Math.round((run.blackjackWins / dealt) * 100)}%` },
+        { label: 'PUSH %', value: `${Math.round((run.pushes / dealt) * 100)}%` },
       ],
     }
   }
