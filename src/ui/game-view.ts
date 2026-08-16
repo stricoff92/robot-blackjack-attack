@@ -69,6 +69,9 @@ import starUrl from '../assets/star.png'
 import greenUrl from '../assets/green.png'
 // The musical-note glyph on the music-mute toggle (bottom-right HUD button, above the battery one).
 import musicalNoteUrl from '../assets/musical-note.png'
+// The film-strip/play glyph on the rewarded-ad top-up button — this is the required "clear ad
+// indicator" (it replaced a text "AD" badge), so it must never be dropped from that button.
+import videoUrl from '../assets/video-marketing.png'
 
 // Path → icon: Sabotage a detective, Payout a chip, Tokens the token icon.
 const UPGRADE_ICONS: Record<UpgradePath, string> = {
@@ -262,8 +265,11 @@ const REWARDED_AD_MAX_SHIFT = TOTAL_DEALERS
 // that comes back UNFILLED spends the same cooldown, so a build that can't serve ads yet retires the
 // button for a few hands instead of leaving it up to be tapped again for nothing.
 const AD_OFFER_COOLDOWN_HANDS = 3
-// How long the "No ad available" flash holds before fading (the 200ms fade is CSS).
+// How long the "No ad available" flash holds before fading, and how long that fade then takes.
+// AD_TOAST_FADE_MS must match the .hud-ad-toast.is-fading transition in game-view.css — it's what
+// keeps the ad band on screen until the flash has actually gone (see showAdToast_).
 const AD_TOAST_HOLD_MS = 1400
+const AD_TOAST_FADE_MS = 200
 // The incoming dealer shift that triggers the mid-run interstitial — advancing INTO dealer 4 means
 // the player just finished dealer 3 (by kill or window-out). One ad per run at this single break.
 const AD_BREAK_INCOMING_SHIFT = 4
@@ -733,9 +739,17 @@ class GameView {
   // The "No ad available" flash, shown where the top-up button was when a request comes back
   // unfilled — CrazyGames only switches ad serving on at Full Launch, so until then EVERY request
   // no-fills, and a silent failure reads as a dead button. adToastTimer_ holds its hold-then-fade
-  // timer, like the battery toast's.
+  // timer, like the battery toast's; adToastActive_ keeps the band up for the whole flash, since the
+  // button that normally holds the band open has just hidden itself.
   private adToastEl_!: HTMLDivElement
   private adToastTimer_ = 0
+  private adToastActive_ = false
+  // The offer banner's backdrop: a strip pinned along the bottom of the screen, behind the action
+  // row, faded in whenever the row is carrying the rewarded offer. A separate element rather than a
+  // background on the row itself, because it has to reach the screen edge while the row stays put.
+  // `adOfferShown_` is the top-up button's own visibility, latched because the flash outlives it.
+  private adScrimEl_!: HTMLElement
+  private adOfferShown_ = false
 
   constructor(root: HTMLElement) {
     const debug = readDebugFlags()
@@ -3077,6 +3091,11 @@ class GameView {
           s.phase === 'resolved' &&
           this.started_ &&
           !this.dealRevealPending_() &&
+          // NB: deliberately the SAME trigger as the Next-hand button above — no extra gate. Both
+          // appear on the resolve, so the offer bar is laid out around Next hand from the start
+          // rather than arriving later and shoving it sideways. (An earlier revision held this until
+          // resolveAttackEnd_ so the bar couldn't cover the laser; that was for a mid-table bar. This
+          // one sits below the heart chips and covers none of the choreography.)
           rewardedAdsSupported() &&
           // The caps are ALWAYS enforced (dealers 2–6 only, once per dealer + REWARDED_ADS_PER_RUN per
           // run); ?rewardad only bypasses the low-energy threshold so the button can be seen/tested
@@ -3230,8 +3249,11 @@ class GameView {
     const powers = element('div', 'hud-powerups')
     const actions = element('div', 'hud-actions')
     const codaPowers = element('div', 'hud-coda-powers')
+    // The offer banner's backdrop, behind the action row. Always present, faded in by syncAdBar_.
+    const adScrim = element('div', 'hud-ad-scrim')
     this.powersEl_ = powers
     this.actionsEl_ = actions
+    this.adScrimEl_ = adScrim
 
     this.buttons_ = {}
     this.costPills_ = {}
@@ -3239,14 +3261,18 @@ class GameView {
       const button = document.createElement('button')
       button.classList.add(`hud-btn-${def.key}`) // per-button hook for CSS (e.g. a wide Next hand)
       if (def.key === 'watch-ad') {
-        // An "AD" badge + "+100" + the energy icon. CrazyGames requires a clear ad indicator, NOT the
-        // literal words "Watch ad" (a badge/video icon suffices); the aria-label carries the full
-        // description for screen readers, and the reward is made clear post-ad by the counter roll-up.
-        const badge = element('span', 'watch-ad__badge')
-        badge.textContent = 'AD'
+        // A video glyph + "+100" + the energy icon. CrazyGames requires a clear ad indicator, NOT the
+        // literal words "Watch ad" — a badge OR a video icon suffices, and the icon carries further at
+        // the size this button now runs at. The aria-label carries the full description for screen
+        // readers, and the reward is made clear post-ad by the counter roll-up.
+        const video = document.createElement('img')
+        video.src = videoUrl
+        video.className = 'watch-ad__video'
+        video.alt = ''
+        video.setAttribute('aria-hidden', 'true')
         const label = element('span', 'watch-ad__label')
         label.textContent = def.label
-        button.append(badge, label, powerIcon('watch-ad__icon'))
+        button.append(video, label, powerIcon('watch-ad__icon'))
         button.setAttribute('aria-label', `Watch ad for ${def.label} energy`)
       } else if (def.cost === undefined) {
         button.textContent = def.label
@@ -3285,19 +3311,15 @@ class GameView {
           this.run_(def.act)
         }
       })
-      // Punchy press feedback on every action/powerup/coda button (see pressPop). Skip watch-ad:
-      // it's centered via transform: translate(-50%, …), and the pop's scale() would drop that
-      // translate and jerk it sideways.
-      if (def.key !== 'watch-ad') {
-        pressPop(button)
-      }
+      // Punchy press feedback on every action/powerup/coda button (see pressPop).
+      pressPop(button)
       this.buttons_[def.key] = button
       const column = def.group === 'power' ? powers : def.group === 'coda-power' ? codaPowers : actions
       column.appendChild(button)
     }
 
-    // The no-fill flash goes INTO the actions row so it inherits the same positioning context as the
-    // rewarded-ad button and lands exactly where that button was — which has just hidden itself.
+    // The no-fill flash is a row member too, so it takes the slot the top-up button vacates on the
+    // failure — the message lands exactly where the player just tapped, beside the Next-hand button.
     this.adToastEl_ = this.buildAdToast_()
     actions.appendChild(this.adToastEl_)
 
@@ -3330,7 +3352,8 @@ class GameView {
 
     // The choose-upgrade card sits above the columns (appended last), shown only
     // during the choosing-upgrade phase once the dealer's death settles.
-    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.musicBtnEl_, this.batteryToastEl_, this.messageEl_, powers, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_, this.rulesPanelEl_)
+    // The scrim goes in BEFORE the action row so the buttons paint on top of it.
+    this.stage_.overlay.append(tokens, points, this.infoBtnEl_, this.batteryBtnEl_, this.musicBtnEl_, this.batteryToastEl_, this.messageEl_, powers, adScrim, actions, codaPowers, this.scoreBannerEl_, this.buildScorePager_(), this.buildUpgradePanel_(), this.helpPanelEl_, this.rulesPanelEl_)
   }
 
   // The info button: a small circular "i" pinned bottom-left. A click opens the full-screen
@@ -3431,10 +3454,39 @@ class GameView {
     window.clearTimeout(this.adToastTimer_)
     el.classList.remove('is-fading') // cancel any in-progress fade
     el.classList.add('is-visible') // instant show (no fade-in)
+    // Hold the banner up for the flash: the failed request has just hidden the button that was
+    // keeping it up, and without this the backdrop would drop out from under the message.
+    this.adToastActive_ = true
+    this.syncAdBar_()
     this.adToastTimer_ = window.setTimeout(() => {
       el.classList.remove('is-visible')
-      el.classList.add('is-fading') // opacity -> 0 over 200ms
+      el.classList.add('is-fading') // opacity -> 0 over AD_TOAST_FADE_MS
+      this.adToastTimer_ = window.setTimeout(() => {
+        el.classList.remove('is-fading') // back to display:none so it stops claiming a slot in the row
+        this.adToastActive_ = false
+        this.syncAdBar_() // the flash is gone — the row drops back to a plain action row
+      }, AD_TOAST_FADE_MS)
     }, AD_TOAST_HOLD_MS)
+  }
+
+  // Drop the no-fill flash immediately, cancelling whatever is left of its hold/fade, and let the
+  // banner come down with it. Called when the resolved screen it belongs to is left.
+  private hideAdToast_(): void {
+    window.clearTimeout(this.adToastTimer_)
+    this.adToastEl_.classList.remove('is-visible', 'is-fading')
+    this.adToastActive_ = false
+    this.syncAdBar_()
+  }
+
+  // Dress the action row as an offer banner while it has an offer in it — the top-up button, or the
+  // no-fill flash that outlives it. That's the whole mechanism: the top-up button is an ordinary
+  // member of the action row (it always was), so the "banner" is a class on that row plus a scrim
+  // strip behind it. Nothing is reparented and nothing is measured; the row simply lays out with one
+  // more button in it, exactly as it does for Hit/Stand/Double/Split.
+  private syncAdBar_(): void {
+    const shown = this.adOfferShown_ || this.adToastActive_
+    this.actionsEl_.classList.toggle('has-offer', shown)
+    this.adScrimEl_.classList.toggle('is-on', shown)
   }
 
   // The battery-saver toggle shown on the title / tap-to-start screen (the in-game HUD uses the round
@@ -3897,11 +3949,20 @@ class GameView {
     const prevAnalysis = this.state_.analysis
     mutate()
     this.state_ = this.session_.snapshot()
-    // An ad offer the player LEFT without taking (advanced past a resolved screen where it was
-    // showing) is as good as "no" — stamp the hand so it stays down for AD_OFFER_COOLDOWN_HANDS hands.
-    if (prevPhase === 'resolved' && this.state_.phase !== 'resolved' && this.adWasOffered_) {
-      this.adDeclinedAtHand_ = this.state_.run.handsPlayed
-      this.adWasOffered_ = false
+    if (prevPhase === 'resolved' && this.state_.phase !== 'resolved') {
+      // An ad offer the player LEFT without taking (advanced past a resolved screen where it was
+      // showing) is as good as "no" — stamp the hand so it stays down for AD_OFFER_COOLDOWN_HANDS hands.
+      if (this.adWasOffered_) {
+        this.adDeclinedAtHand_ = this.state_.run.handsPlayed
+        this.adWasOffered_ = false
+      }
+      // The no-fill flash belongs to the resolved screen it was raised on. It holds the offer banner
+      // up for AD_TOAST_HOLD_MS + the fade, and Next hand stays live throughout — so without this,
+      // tapping Next hand during the flash (every request no-fills until Full Launch, so this is the
+      // COMMON path) carries the banner into the next hand: a dark strip across the table, the
+      // Hit/Stand row displaced into it, and a stale "No ad available" chip sitting beside the play
+      // buttons for over a second.
+      this.hideAdToast_()
     }
     // Latch a deal-time natural: a hand that went straight from 'betting' to 'resolved' with no
     // player turn (a natural blackjack — the player's OR the dealer's). Its reveal is still to
@@ -5085,9 +5146,14 @@ class GameView {
       const visible = def.visible(s) && !(def.group === 'power' && s.run.coda)
       button.classList.toggle('is-hidden', !visible)
       // Latch that the rewarded top-up was OFFERED on this resolved screen; run_ reads it to treat a
-      // proceed-without-taking as a "no" and cool the offer down (see AD_OFFER_COOLDOWN_HANDS).
-      if (def.key === 'watch-ad' && visible) {
-        this.adWasOffered_ = true
+      // proceed-without-taking as a "no" and cool the offer down (see AD_OFFER_COOLDOWN_HANDS). Its
+      // visibility is also what raises/drops the band it sits in.
+      if (def.key === 'watch-ad') {
+        if (visible) {
+          this.adWasOffered_ = true
+        }
+        this.adOfferShown_ = visible
+        this.syncAdBar_()
       }
       // Armed powerups glow; using the shield clears the armed flag, which drops
       // the class here on the next sync and returns the button to normal.
@@ -5260,7 +5326,7 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
     lines: [
       'Poker chip icons by IconsNova (Flaticon)',
       'Battery icons by Prosymbols Premium (Flaticon)',
-      'Star and music icons by Magnific (Flaticon)',
+      'Star, music and video icons by Magnific (Flaticon)',
       'Green icons by Hilmy Abiyyu A. (Flaticon)',
       'Thief icons by Hight Quality Icons (Flaticon)',
       'Spade icons by Md Tanvirul Haque (Flaticon)',

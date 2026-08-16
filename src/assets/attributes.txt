@@ -19,8 +19,9 @@ ICONS: Flaticon Free License (attribution required)
   Green icons by Hilmy Abiyyu A.       https://www.flaticon.com/free-icons/green
   Thief icons by Hight Quality Icons   https://www.flaticon.com/free-icons/thief   (detective.png)
   Music icons by Magnific              https://www.flaticon.com/free-icons/music   (musical-note.png)
+  Video icons by Magnific              https://www.flaticon.com/free-icons/video   (video-marketing.png)
   Spade icons by Md Tanvirul Haque     https://www.flaticon.com/free-icons/spade
-  Note: the in-game Credits condense same-artist rows into one line (Magnific: star + music).
+  Note: the in-game Credits condense same-artist rows into one line (Magnific: star + music + video).
 
 SOUND EFFECTS: Helton Yan (fierydzn@gmail.com), Creative Commons By Attribution 4.0
   https://creativecommons.org/licenses/by/4.0/

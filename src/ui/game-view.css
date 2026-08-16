@@ -1054,9 +1054,13 @@
   justify-content: center;
   flex-wrap: wrap;
   padding: 0 12px;
-  transition: opacity 0.5s ease;
+  /* `bottom` eases so the row settles back down when the offer banner leaves (`has-offer` lifts it to
+   * centre in the scrim). Nothing to ease on the way IN — that class lands on the same sync that
+   * first shows these buttons, so the row is simply laid out there. */
+  transition: opacity 0.5s ease, bottom 240ms ease;
 }
 
+/* The gold action look, shared by every button in the bottom action row. */
 .hud-actions button {
   position: relative; /* anchors the absolutely-placed "not enough chips" badge */
   font: 700 16px var(--font-ui);
@@ -1077,90 +1081,136 @@
   box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
 }
 
-/* The Next hand button is shown on its own between hands — make it a wide, easy CTA. */
+/* The Next hand button is shown on its own between hands - make it a wide, easy CTA. */
 .hud-actions button.hud-btn-next {
   width: 50%;
   max-width: 325px;
 }
 
-/* The optional rewarded-ad energy top-up. Lifted OUT of the Next-hand flex row (absolute, centered
- * just above it) so it never collides with the bottom-right power-saver toggle and leaves Next hand a
- * clean solo CTA. Compact + teal so it reads as an optional extra, not the primary button. */
-.hud-actions button.hud-btn-watch-ad {
+/* --- The rewarded-offer banner ------------------------------------------------------------------
+ *
+ * There is no separate bar element. The top-up button is an ordinary member of the action row, and
+ * the "banner" is: this scrim strip behind the row, plus `.hud-actions.has-offer` centring the row
+ * inside it. So the offer arriving is just one more button laying out in a flex row - the same thing
+ * that happens every hand when Hit/Stand/Double/Split give way to Next hand. Nothing is reparented,
+ * nothing is measured, and the primary CTA never moves house.
+ *
+ * WHY A BANNER AT ALL: the button used to float loose ABOVE this row, where the heart chips live
+ * (render/hearts.ts anchors them between the player's cards and the action bar) - at 1280x800 the
+ * chips run y 692..730 and the button sat at 700..730, drawn straight onto them. Mid-table
+ * placements were tried too and rejected: anchored to cards.handBand it lines up EXACTLY with the
+ * nexus hand-summary projection (reads as a bug, not a takeover), and at bottom:33% it cut the
+ * player's cards in half.
+ *
+ * HEIGHT IS CONSTRAINED: the scrim must not reach above render/hearts.ts HEART_BUTTONS_CLEAR (66px,
+ * the gap the heart row always leaves above the screen bottom) or it tints the bottom of the chips.
+ * That 66 is the whole budget - it is what caps the top-up button at 44px and sets the row's offset
+ * so the buttons sit centred in the strip. */
+/* `.stage__overlay > .hud-ad-scrim`, not a bare class: stage.css's `.stage__overlay > *
+ * { pointer-events: auto }` is the same weight (0,1,0) and loads AFTER this file, so a bare
+ * `.hud-ad-scrim { pointer-events: none }` loses and this permanently-present strip silently claims
+ * every tap in the bottom 66px. */
+.stage__overlay > .hud-ad-scrim {
   position: absolute;
-  left: 50%;
-  bottom: calc(100% + 10px);
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 44px button + 11px above + the row's own bottom offset, so the button stays centred in the strip
+   * at any safe-area inset. A flat 66px (the budget at inset 0) would be overshot by the row on a
+   * notched device — `.has-offer` pushes it up by the inset — leaving the button poking out the top
+   * of its own banner. Keep the three terms in sync with `.hud-actions.has-offer` below. */
+  height: calc(55px + max(11px, env(safe-area-inset-bottom, 0px)));
+  box-sizing: border-box; /* the 1px hairline must come OUT of the height, not sit on top of it */
+  background: linear-gradient(rgba(6, 26, 30, 0.55), rgba(6, 26, 30, 0.88));
+  border-top: 1px solid rgba(var(--teal-rgb), 0.45);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  /* A transition, not keyframes: it runs both ways off one class toggle, with no JS timer to hold
+   * the element alive through its exit and no `forwards` to unwind afterwards. */
+  transition: opacity 240ms ease;
+}
+
+.hud-ad-scrim.is-on {
+  opacity: 1;
+}
+
+/* Centre the row in the 66px strip (44px tall row -> 11px either side) and reserve the bottom-right
+ * battery + music toggles so the wider row can't run under them.
+ *
+ * The `transition` override is load-bearing, not a tidy-up: a transition is taken from the state
+ * being moved TO, so listing `bottom` only on the base rule means the row SNAPS to this offset on the
+ * way in and EASES back on the way out. That asymmetry is the point — the offer appears on the same
+ * sync that first shows Next hand, so on the way in there is no previous position worth easing from
+ * and animating it just reintroduces the drift this layout exists to remove. */
+.hud-actions.has-offer {
+  bottom: max(11px, env(safe-area-inset-bottom, 0px));
+  align-items: center; /* keep Next hand at its own 40px rather than stretching to the taller sibling */
+  padding: 0 58px;
+  transition: opacity 0.5s ease;
+}
+
+/* The top-up button. Teal, so it never competes with the gold Next-hand CTA beside it, but taller
+ * and heavier than it - it is the thing the banner exists to make room for. 44px is the ceiling the
+ * scrim's height budget allows, not a design preference. */
+.hud-actions button.hud-btn-watch-ad {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 9px;
+  padding: 8px 20px;
   min-width: 0;
-  min-height: 0;
-  padding: 6px 12px;
-  font-size: 14px;
-  white-space: nowrap;
+  min-height: 44px;
+  border-radius: 13px;
+  font: 800 19px var(--font-ui);
+  line-height: 1;
   color: #062018;
-  background: linear-gradient(rgba(var(--teal-rgb), 0.95), rgba(var(--teal-rgb), 0.75));
-  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+  white-space: nowrap;
+  background: linear-gradient(rgba(var(--teal-rgb), 0.98), rgba(var(--teal-rgb), 0.78));
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4), 0 6px 14px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.28), 0 0 20px rgba(var(--teal-rgb), 0.28);
+  /* Fades up with the scrim. Plays off the display:none -> inline-flex flip that `is-hidden` drives,
+   * so it needs no JS. */
+  animation: ad-btn-in 240ms ease-out;
+}
+
+/* The press-pop, restated at this selector's weight. The shared `.is-press` rule is only (0,1,0) and
+ * loses to the (0,2,1) entrance rule above, so without this the class lands, `restartAnimation`
+ * restarts nothing, and the button is the one action button in the game with NO press feedback —
+ * which is exactly what the cursor-less CrazyGames preview video cannot afford. Same specificity trap
+ * as `.hud-btn-watch-ad.is-hidden` below. */
+.hud-actions button.hud-btn-watch-ad.is-press {
+  animation: btn-press 170ms ease-out;
+}
+
+@keyframes ad-btn-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .hud-actions button.hud-btn-watch-ad:hover {
-  background: linear-gradient(rgba(var(--teal-rgb), 1), rgba(var(--teal-rgb), 0.85));
-  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35), 0 4px 10px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+  background: linear-gradient(rgba(var(--teal-rgb), 1), rgba(var(--teal-rgb), 0.86));
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.42), 0 0 26px rgba(var(--teal-rgb), 0.4);
 }
 
-/* Keep it centered while pressed (override the shared button :active translateY, which drops the -50%). */
-.hud-actions button.hud-btn-watch-ad:active {
-  transform: translate(-50%, 2px);
-}
-
-/* The "No ad available" flash, shown when a rewarded request comes back unfilled (showAdToast_ times
- * it — held AD_TOAST_HOLD_MS, then the .is-fading transition fades it over 200ms). Deliberately
- * placed in the SAME slot as the top-up button above the action row, since that button hides itself
- * on the failure — the message lands exactly where the player just tapped. Muted (no teal fill) so it
- * reads as an apology, not another offer. */
-.hud-ad-toast {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 10px);
-  transform: translateX(-50%);
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(6, 20, 24, 0.9);
-  border: 1px solid rgba(var(--teal-rgb), 0.4);
-  color: rgba(196, 246, 241, 0.98);
-  font: 700 13px var(--font-ui);
-  line-height: 1;
-  white-space: nowrap;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  pointer-events: none; /* purely informational — never blocks the Next hand button under it */
-  z-index: 7; /* above the HUD buttons (z-index 4), so it sits on top of the canvases */
-}
-.hud-ad-toast.is-visible {
-  opacity: 1; /* snap in instantly (no fade-in) */
-}
-.hud-ad-toast.is-fading {
-  opacity: 0;
-  transition: opacity 200ms ease;
-}
-
-/* Let the JS `is-hidden` toggle actually hide it: the base rule's display:inline-flex (0,2,1) would
- * otherwise outrank the generic `button.is-hidden { display:none }` (0,1,1), leaving the button
- * visible in EVERY phase (it must only show on the between-hands resolved screen). Same fix as
- * .hud-powerups .hud-help.is-hidden above. */
+/* Let the JS `is-hidden` toggle actually hide it: the rule above sets display:inline-flex (0,2,1),
+ * which would otherwise outrank the generic `button.is-hidden { display:none }` (0,1,1) and leave the
+ * button visible in EVERY phase. Same fix as .hud-powerups .hud-help.is-hidden above. */
 .hud-actions button.hud-btn-watch-ad.is-hidden {
   display: none;
 }
 
-/* "AD" badge — the required clear ad indicator (CrazyGames doesn't mandate the words "Watch ad"). */
-.watch-ad__badge {
-  font: 800 10px var(--font-ui);
-  letter-spacing: 0.06em;
-  color: #fff;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 4px;
-  padding: 1px 5px;
+/* The film-strip/play glyph — the required clear ad indicator. CrazyGames doesn't mandate the words
+ * "Watch ad"; a badge or a video icon satisfies it, and at this size the icon reads from further
+ * away than the 10px "AD" badge it replaced. Must not be removed without putting a badge back. */
+.watch-ad__video {
+  height: 26px;
+  width: auto;
+  display: block;
 }
 
 .watch-ad__label {
@@ -1168,9 +1218,41 @@
 }
 
 .watch-ad__icon {
-  height: 18px;
+  height: 22px;
   width: auto;
   display: block;
+}
+
+/* The "No ad available" flash, shown when a rewarded request comes back unfilled (showAdToast_ times
+ * it — held AD_TOAST_HOLD_MS, then the .is-fading transition fades it over AD_TOAST_FADE_MS, which
+ * that timer must match). A FLEX CHILD of the band, not an absolute overlay: the failure hides the
+ * top-up button but Next hand is still sitting in that row, so the message takes the vacated slot
+ * beside it instead of covering it. display:none when idle so it claims no width; the fade runs
+ * between the two shown states, and showAdToast_'s timer strips BOTH classes at the end to release
+ * the slot. Muted (no teal fill) so it reads as an apology, not another offer. */
+.hud-ad-toast {
+  display: none;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(6, 20, 24, 0.9);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  color: rgba(196, 246, 241, 0.98);
+  font: 700 15px var(--font-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none; /* purely informational */
+}
+.hud-ad-toast.is-visible {
+  display: inline-flex;
+  opacity: 1; /* snap in instantly (no fade-in) */
+}
+.hud-ad-toast.is-fading {
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 200ms ease; /* keep in sync with AD_TOAST_FADE_MS */
 }
 
 .hud-actions button:active,
@@ -1234,6 +1316,24 @@
   .is-press,
   .hud-powerups button.is-press:not(.is-active),
   .hud-coda-powers button.is-press:not(.is-active) {
+    animation: none;
+  }
+
+  /* The offer banner snaps in and out instead of fading. `.hud-actions` itself has to be listed, not
+   * just its `.has-offer` state: the row's `bottom` eases on the way OUT, and a transition is taken
+   * from the state being moved TO — so the base rule is what governs the exit. Its opacity fade is
+   * kept (that one is a cross-fade, not motion). */
+  .hud-ad-scrim,
+  .hud-actions.has-offer {
+    transition: none;
+  }
+
+  .hud-actions {
+    transition: opacity 0.5s ease;
+  }
+
+  .hud-actions button.hud-btn-watch-ad,
+  .hud-actions button.hud-btn-watch-ad.is-press {
     animation: none;
   }
 }
@@ -1539,10 +1639,33 @@ button.is-hidden,
     font-size: 12px;
   }
 
-  /* Its slot (above the action row) is unchanged on a compact HUD — only the pill itself shrinks. */
+  /* The offer banner thins with the rest of the compact HUD: a 38px row centred in the same 66px
+   * strip -> 14px either side. Side padding tracks the compact corner toggles (32px at right:10px),
+   * which is what the wider row has to clear. */
+  .hud-actions.has-offer {
+    bottom: max(14px, env(safe-area-inset-bottom, 0px));
+    padding: 0 46px;
+  }
+
+  .hud-actions button.hud-btn-watch-ad {
+    gap: 7px;
+    padding: 7px 14px;
+    min-height: 38px;
+    border-radius: 11px;
+    font-size: 16px;
+  }
+
+  .watch-ad__video {
+    height: 22px;
+  }
+
+  .watch-ad__icon {
+    height: 19px;
+  }
+
   .hud-ad-toast {
-    padding: 4px 8px;
-    font-size: 12px;
+    padding: 5px 10px;
+    font-size: 13px;
   }
 
   .hud-powerups .hud-help {
@@ -1723,6 +1846,42 @@ button.is-hidden,
     right: 8px;
     width: 21px;
     height: 21px;
+    font-size: 12px;
+  }
+}
+
+/* Short screens (a phone held landscape): every px of felt counts, so the banner gets one more
+ * squeeze — a 52px strip with a 34px row centred in it (9px either side).
+ * MUST come after the compact block: same specificity, later wins. */
+@media (max-height: 430px) {
+  /* Matches the base rule's selector weight — a bare `.hud-ad-scrim` (0,1,0) would lose to it. */
+  .stage__overlay > .hud-ad-scrim {
+    height: calc(43px + max(9px, env(safe-area-inset-bottom, 0px))); /* 34px button + 9px above + the row's offset */
+  }
+
+  .hud-actions.has-offer {
+    bottom: max(9px, env(safe-area-inset-bottom, 0px));
+    padding: 0 42px;
+  }
+
+  .hud-actions button.hud-btn-watch-ad {
+    gap: 6px;
+    padding: 6px 12px;
+    min-height: 34px;
+    border-radius: 9px;
+    font-size: 15px;
+  }
+
+  .watch-ad__video {
+    height: 19px;
+  }
+
+  .watch-ad__icon {
+    height: 17px;
+  }
+
+  .hud-ad-toast {
+    padding: 4px 9px;
     font-size: 12px;
   }
 }
