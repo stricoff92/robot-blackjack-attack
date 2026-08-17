@@ -52,11 +52,14 @@ const KEY_CODES: Readonly<Record<string, string>> = {
   ratingSum: 'rs',
   ratedHands: 'rh',
   over: 'ov',
-  won: 'wn',
   coda: 'cd',
   cashedOut: 'co',
   rewardedAdsThisRun: 'ra',
   rewardedAdShiftIndex: 'rx',
+  // NB: 'wn' (the removed `won` flag) is deliberately NOT recycled here. A code must never be
+  // reassigned to a different field: a save written before the change would decode its old value
+  // into the new field's name and silently hand it a wrong-typed value.
+  adDeclinedAtHand: 'aq',
   upgrades: 'ug',
   // RunUpgrades
   antiDealer: 'ad',

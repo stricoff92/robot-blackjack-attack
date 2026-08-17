@@ -61,8 +61,15 @@ export function bootAllowed(): boolean {
 }
 
 // Blank the screen and give a disallowed host nothing — no branding, no link, no console noise.
+//
+// The boot splash is a SIBLING of #app (see index.html), not a child, so replaceChildren() below
+// does NOT reach it — and main.ts halts here on a never-resolving await, before the splash's normal
+// removal. Without the explicit remove it keeps pulsing the game's wordmark + spinner forever: the
+// exact branding this lock exists to withhold, and — if the lock ever misfired on a legitimate host
+// — a "hung game" signature with no console output (devLog is DEV-only) to diagnose it by.
 export function renderLock(root: HTMLElement): void {
   root.replaceChildren()
+  document.getElementById('boot-splash')?.remove()
   root.style.background = '#000'
   document.body.style.background = '#000'
 }

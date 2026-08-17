@@ -19,7 +19,7 @@ import { loadValue, removeValue, saveValue } from '../platform/crazygames'
 import { decodeSaveKeys, encodeSaveKeys } from './keymap'
 import { pack, unpack } from './obfuscate'
 import type { Round } from './round'
-import { MAX_HEARTS, RULES_VERSION, type RunState } from './run'
+import { AD_NEVER_DECLINED, MAX_HEARTS, RULES_VERSION, type RunState } from './run'
 import type { Phase } from './session'
 
 const RUN_KEY = 'rba.run'
@@ -112,6 +112,14 @@ export function loadSession(): PersistedSession | null {
   }
   if (typeof run.rewardedAdShiftIndex !== 'number' || !Number.isFinite(run.rewardedAdShiftIndex)) {
     run.rewardedAdShiftIndex = 0
+  }
+  // Backfill the rewarded-ad decline stamp (defensive — a pre-v34 save is already rejected on the
+  // version check above). The isFinite guard is the one that earns its keep here: the sentinel is a
+  // very negative NUMBER precisely because JSON cannot carry -Infinity, so a value that arrives
+  // non-finite means something upstream wrote one anyway, and treating it as "never declined" is
+  // the safe reading (it offers the ad rather than suppressing it forever).
+  if (typeof run.adDeclinedAtHand !== 'number' || !Number.isFinite(run.adDeclinedAtHand)) {
+    run.adDeclinedAtHand = AD_NEVER_DECLINED
   }
   // Backfill the wash tally. Deliberately NOT a RULES_VERSION bump: it's a display-only score-screen
   // counter, so an in-progress run resumes fine with it at 0 (under-reporting its push % by however

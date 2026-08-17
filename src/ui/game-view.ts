@@ -730,11 +730,12 @@ class GameView {
   private forceRewardAd_ = false
   private suppressAds_ = false
   // Rewarded-ad "ignore = no" cadence: `adWasOffered_` latches true while the top-up button is being
-  // shown on a resolved screen; if the player advances without taking it, run_ stamps
-  // `adDeclinedAtHand_` (a handsPlayed value) so the offer stays down for AD_OFFER_COOLDOWN_HANDS
-  // hands. Not persisted (a pure cadence nicety); reset on New run. The hard caps are separate.
+  // shown on a resolved screen; if the player advances without taking it, run_ calls
+  // session.declineRewardedAd(), which stamps run.adDeclinedAtHand so the offer stays down for
+  // AD_OFFER_COOLDOWN_HANDS hands. That stamp lives in RunState (persisted) — a reload used to wipe
+  // it and put the offer straight back up. This latch stays transient: syncOverlay_ re-derives it
+  // from the button's own visibility every sync, so there is nothing to restore.
   private adWasOffered_ = false
-  private adDeclinedAtHand_ = Number.NEGATIVE_INFINITY
   // A rewarded-ad request is in flight. The SDK can take until AD_FALLBACK_MS to answer, so without
   // this a second tap would stack an independent request (and its own fallback timer) behind the
   // first; the button greys out for the duration instead.
@@ -1717,8 +1718,8 @@ class GameView {
     // otherwise show the standing best (the target this run missed). A coda bust (0) never records.
     const isNewBest = this.state_.newPersonalBest
     return {
-      // `won` is never set (the run resolves through the coda): a cash-out banks the score, a coda
-      // bust zeroes it. Every run now reaches the coda, so 'BANKRUPT' is an unreachable fallback.
+      // Every run resolves through the coda: a cash-out banks the score, a coda bust zeroes it. So
+      // 'BANKRUPT' is an unreachable fallback, kept as a defensive third case.
       title: run.cashedOut ? 'CASHED OUT' : run.coda ? 'BUSTED' : 'BANKRUPT',
       rows: [
         // Player points are locale-grouped (thousands separators — "," or "." per the runtime
@@ -1876,14 +1877,14 @@ class GameView {
 
   // The result reaction on a card-settle. The per-hand win/loss STING no longer plays here — it's
   // timed to the hand-summary mark's fade-in (summaryAppear_) — so a normal resolve only triggers
-  // the dealer's VOICE. A finished run ('over') still plays its end sting off run.won/cashedOut (the
+  // the dealer's VOICE. A finished run ('over') still plays its end sting off run.cashedOut (the
   // final scoreboard has no hand-summary to key off).
   private playResultSting_(): void {
     const { phase, run, round } = this.state_
     if (phase === 'over') {
       // The run ended: a coda cash-out (banked the score) plays the win sting; a coda bust plays
       // the loss sting.
-      sfx.play(run.won || run.cashedOut ? 'player-won' : 'player-lost')
+      sfx.play(run.cashedOut ? 'player-won' : 'player-lost')
       return
     }
     if (phase === 'resolved' && round) {
@@ -3112,7 +3113,7 @@ class GameView {
           s.run.rewardedAdsThisRun < REWARDED_ADS_PER_RUN &&
           (this.forceRewardAd_ ||
             (s.run.tokens < REWARDED_LOW_ENERGY_THRESHOLD &&
-              s.run.handsPlayed - this.adDeclinedAtHand_ >= AD_OFFER_COOLDOWN_HANDS)),
+              s.run.handsPlayed - s.run.adDeclinedAtHand >= AD_OFFER_COOLDOWN_HANDS)),
         enabled: () => !this.adRequestPending_,
       },
       {
@@ -3971,9 +3972,12 @@ class GameView {
     this.state_ = this.session_.snapshot()
     if (prevPhase === 'resolved' && this.state_.phase !== 'resolved') {
       // An ad offer the player LEFT without taking (advanced past a resolved screen where it was
-      // showing) is as good as "no" — stamp the hand so it stays down for AD_OFFER_COOLDOWN_HANDS hands.
+      // showing) is as good as "no" — stamp the hand so it stays down for AD_OFFER_COOLDOWN_HANDS
+      // hands. Routed through the Session so the stamp is checkpointed with the run; re-snapshot
+      // so the state this pass goes on to read carries it.
       if (this.adWasOffered_) {
-        this.adDeclinedAtHand_ = this.state_.run.handsPlayed
+        this.session_.declineRewardedAd()
+        this.state_ = this.session_.snapshot()
         this.adWasOffered_ = false
       }
       // The no-fill flash belongs to the resolved screen it was raised on. It holds the offer banner
@@ -4182,7 +4186,7 @@ class GameView {
         this.scoreRevealAt_ = 0
         this.scoreRevealed_ = false
         this.hideScoreBanner_() // the score screen is gone — drop its display banner
-        this.adDeclinedAtHand_ = Number.NEGATIVE_INFINITY // fresh run — clear the ad-offer cooldown
+        // The ad-offer cooldown resets itself: the fresh RunState carries AD_NEVER_DECLINED.
         this.adWasOffered_ = false
         this.dealer_.setLevel(integrity, shiftIndex)
         this.dealer_.setShift(shiftIndex)
@@ -4374,7 +4378,7 @@ class GameView {
           this.beginCoda_(prevScore, prevIntegrity, prevShift, integrity, t, energyFloor)
         }
       } else if (enteringOver) {
-        this.beginEndGame_(prevScore, prevIntegrity, prevShift, integrity, shiftIndex, t)
+        this.beginEndGame_(prevScore)
       }
     }
 
@@ -4439,16 +4443,15 @@ class GameView {
     }
 
     // Final blow: the run is ending, so the last hand's reward is withheld from the count and
-    // simply dropped when it resets — never flown to the counter. On a WIN that includes the
-    // +40 kill bounty (already in run.tokens), so withhold it too — otherwise the top-left
-    // count ticks up by 40 during the draw-out, spoiling the win.
-    // A Sabotage dealer-21 on that last hand is withheld with them: 'over' never reaches the resolve
+    // simply dropped when it resets — never flown to the counter.
+    // A Sabotage dealer-21 on that last hand is withheld with it: 'over' never reaches the resolve
     // branch that flies the +20, so leaving it out would tick the counter up by 20 on its own — a
     // stray, unexplained climb during the draw-out. The run is ending; the energy buys nothing.
+    // (A +40 kill bounty was withheld here too, gated on the vestigial run.won — which no path ever
+    // set, so the term was always 0. A run cannot end on a kill now: every ending is a coda one.)
     if (phase === 'over' && prevPhase !== 'over') {
-      const killBounty = this.state_.run.won ? Math.round(DESTROY_TOKEN * tokenMultiplier(this.state_.run)) : 0
       const dealer21 = round.rules.dealer21Energy && dealerSettleTotal(round) === 21 ? SABOTAGE_DEALER21_ENERGY : 0
-      this.heldTokens_ = winTokensTotal(round) + killBounty + dealer21
+      this.heldTokens_ = winTokensTotal(round) + dealer21
     }
   }
 
@@ -4705,7 +4708,8 @@ class GameView {
         // tap after tap reads as broken (to a player and to a platform reviewer alike). The hard caps
         // are deliberately NOT spent — an unfilled request cost the player nothing.
         this.adRequestPending_ = false
-        this.adDeclinedAtHand_ = this.state_.run.handsPlayed
+        this.session_.declineRewardedAd()
+        this.state_ = this.session_.snapshot()
         this.adWasOffered_ = false // already cooled down here — don't let the later advance re-stamp it
         this.showAdToast_('No ad available')
         this.syncOverlay_(now())
@@ -4751,7 +4755,7 @@ class GameView {
   // the run is ending, so the bounty is withheld from the count (see scheduleTokens) and the
   // counter never shows it — flying it would double-count against that withholding.
   private playAttack_(fromI: number, fromS: number, toI: number, toS: number, startAfter: number, emitBounty = true): number {
-    const final = this.state_.run.won || toS > TOTAL_DEALERS
+    const final = toS > TOTAL_DEALERS
     this.dealer_.sync(fromI, fromS, toI, toS, startAfter, final)
     if (toS > fromS) {
       if (emitBounty) {
@@ -4777,7 +4781,9 @@ class GameView {
   // nexus laser fires and the final dealer breaks apart; a loss: the dealer strides off to the
   // right (footsteps). The instant everything is shredded the nexus starts projecting the final
   // scoreboard and the New-run button appears (scoreRevealAt / the frame loop's reveal edge).
-  private beginEndGame_(prevScore: number, prevIntegrity: number, prevShift: number, integrity: number, shiftIndex: number, t: number): void {
+  // Takes only prevScore: the dealer/laser arguments existed solely for the run.won branch removed
+  // above, which nothing could reach.
+  private beginEndGame_(prevScore: number): void {
     const round = this.state_.round
     if (!round) {
       return
@@ -4799,15 +4805,10 @@ class GameView {
     const gatherStart = this.chips_.animEnd + END_SHRED_GAP
     this.anim_.collect(round, gatherStart, false)
     const gatherEnd = this.anim_.animEnd
-    if (this.state_.run.won) {
-      // Dead path: run.won is never set now (the Banker coda replaced the boss-defeat ending).
-      // Kept so the death/laser wiring — and this method's integrity/shift params — stay used.
-      this.playAttack_(prevIntegrity, prevShift, integrity, shiftIndex, gatherEnd, false)
-      this.fireLaser_(t, gatherEnd, true)
-    } else {
-      // The house won: the dealer turns and strides off to the right once the cards are back.
-      this.dealer_.walkOff(gatherEnd)
-    }
+    // The house won: the dealer turns and strides off to the right once the cards are back. (There
+    // used to be a laser-death branch here for run.won, but no path ever set that flag — a run that
+    // reaches this method has always ended in a loss.)
+    this.dealer_.walkOff(gatherEnd)
     // Freeze the score counter until the score screen shows (gatherEnd) — letting the top-right
     // counter roll up during the gather/walk-off would spoil the run's final beat.
     const gained = this.state_.run.score - prevScore
@@ -5319,14 +5320,17 @@ const ABILITY_HELP: readonly { name: string; desc: string }[] = [
 
 // The Credits modal's contents: third-party assets that require attribution, grouped by kind. URLs
 // are plain text on purpose (rendered via textContent, never as <a> links) so nothing navigates out
-// of the CrazyGames iframe. Kevin MacLeod's music is CC BY 4.0 (incompetech.com); the icons are the
-// Flaticon Free License. Keep in sync with src/assets/attributes.txt. No em dashes in these strings.
+// of the CrazyGames iframe. Kevin MacLeod's music is CC BY Attribution 4.0 (incompetech.com, whose
+// FAQ specifies that exact wording); the icons are the Flaticon Free License; the Sixtyfour title
+// face is SIL OFL 1.1, whose full text ships at the archive root as OFL.txt (public/OFL.txt, copied
+// verbatim from upstream) because the OFL requires the license accompany any redistributed font.
+// Keep in sync with docs/asset-attributions.txt. No em dashes in these strings.
 const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
   {
     heading: 'Music',
     lines: [
       'Kevin MacLeod (incompetech.com)',
-      'Licensed under Creative Commons: By 4.0',
+      'Licensed under Creative Commons: By Attribution 4.0',
       'creativecommons.org/licenses/by/4.0/',
       'Decisions, Enigma, Machinations, Mistake the Getaway,',
       'One-eyed Maestro, Serpentine Trek, The Cannery,',
@@ -5337,7 +5341,7 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
     heading: 'Sound effects',
     lines: [
       'Helton Yan',
-      'Licensed under Creative Commons: By 4.0',
+      'Licensed under Creative Commons: By Attribution 4.0',
       'creativecommons.org/licenses/by/4.0/',
     ],
   },
@@ -5350,6 +5354,15 @@ const CREDITS: readonly { heading: string; lines: readonly string[] }[] = [
       'Green icons by Hilmy Abiyyu A. (Flaticon)',
       'Thief icons by Hight Quality Icons (Flaticon)',
       'Spade icons by Md Tanvirul Haque (Flaticon)',
+    ],
+  },
+  {
+    heading: 'Font',
+    lines: [
+      'Sixtyfour by The Sixtyfour Project Authors',
+      'Copyright 2021, github.com/jenskutilek/homecomputer-fonts',
+      'Licensed under the SIL Open Font License 1.1',
+      'Full license: OFL.txt, included with this game',
     ],
   },
   {

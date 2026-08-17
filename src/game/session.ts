@@ -675,6 +675,16 @@ export class Session {
     this.checkpoint_()
   }
 
+  // Record that the player passed on an OFFERED rewarded ad — they advanced past it without taking
+  // it, or the request came back unfilled. Stamps the current handsPlayed so the offer stays down
+  // for AD_OFFER_COOLDOWN_HANDS hands, and checkpoints so a reload can't wipe the "no" and put the
+  // offer straight back up. Unlike grantRewardedEnergy this spends no cap: passing on an ad (or an
+  // ad that never filled) costs the player nothing, so only the cadence moves.
+  declineRewardedAd(): void {
+    this.run_ = { ...this.run_, adDeclinedAtHand: this.run_.handsPlayed }
+    this.checkpoint_()
+  }
+
   // Resume a saved in-progress session (the title "Continue"). Restores the EXACT phase + in-progress
   // round + flags — not just the RunState — so a refresh resumes precisely where the player was: a
   // mid-hand reload shows the same cards on the same turn, a coda reload lands back in the coda. This

@@ -722,7 +722,6 @@ describe('Session Banker coda', () => {
     expect(entry.round!.hands[0].bet).toBeGreaterThan(0)
     expect(entry.run.coda).toBe(true)
     expect(entry.run.over).toBe(false)
-    expect(entry.run.won).toBe(false)
     expect(entry.run.score).toBeGreaterThan(0)
     const score = entry.run.score
 

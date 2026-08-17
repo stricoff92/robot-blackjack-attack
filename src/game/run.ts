@@ -38,7 +38,13 @@ import {
 // v33: rewarded-ad usage counters (rewardedAdsThisRun / rewardedAdShiftIndex) added to RunState so
 //      the once-per-dealer + 3-per-run rewarded-ad caps survive a mid-run reload (anti-farm). New
 //      fields change the save shape, so v32 saves are discarded.
-export const RULES_VERSION = 33
+// v34: the rewarded-ad "ignore = no" cooldown (adDeclinedAtHand) moved from a view field into
+//      RunState, so declining an offer survives a reload instead of letting the nag come straight
+//      back. The vestigial `won` flag is gone with it — it was initialised false and never set
+//      true by any path (the Banker coda replaced the boss-defeat ending), so it only ever
+//      serialised dead weight and read as if it meant something. Both change the save shape, so
+//      v33 saves are discarded.
+export const RULES_VERSION = 34
 
 // Tokens the player opens a run with — a small buffer so the early powerups
 // (Peek/Bust Block/Mulligan) are reachable before token income ramps up.
@@ -60,6 +66,12 @@ export const HEART_HEAL_LOOKBACK = 2
 export const HEART_KILL_HEAL = 2
 
 export const DESTROY_TOKEN = 40
+
+// RunState.adDeclinedAtHand when the player has never passed on a rewarded-ad offer: far enough
+// below any real handsPlayed that the cooldown subtraction always clears. Deliberately FINITE —
+// the natural choice here is -Infinity, but this value is JSON.stringify'd into the save, and
+// JSON has no infinity: it would round-trip as `null` and poison the arithmetic on the far side.
+export const AD_NEVER_DECLINED = Number.MIN_SAFE_INTEGER
 
 // Sabotage T1 (any Sabotage tier): a flat ENERGY bonus paid whenever the dealer reaches 21 — a dealt
 // natural OR a hit-to-21 — regardless of the hand's outcome (a loss, a T2 void/redeal, a T3 hijack
@@ -179,7 +191,6 @@ export interface RunState {
   ratingSum: number
   ratedHands: number
   over: boolean
-  won: boolean
   // The Banker coda: set true when Dealer 6 is finished (killed OR its window runs out), so the run
   // enters the double-or-nothing endgame instead of ending. Stays true through the coda.
   coda: boolean
@@ -191,6 +202,13 @@ export interface RunState {
   // per-shift reset. Persisted so a mid-run reload can't reset the caps and farm energy.
   rewardedAdsThisRun: number
   rewardedAdShiftIndex: number
+  // The handsPlayed at which the player last passed on an OFFERED rewarded ad — advanced without
+  // taking it, or had the request come back unfilled. The offer then stays down until handsPlayed
+  // has moved on far enough (AD_OFFER_COOLDOWN_HANDS, ui/game-view). It sits in RunState beside the
+  // hard caps above so a reload can't wipe the "no" and put the offer straight back up; unlike them
+  // this is cadence, not anti-farm, so losing it was a nag rather than an exploit.
+  // AD_NEVER_DECLINED until the player passes on one.
+  adDeclinedAtHand: number
   // Roguelite upgrades unlocked so far this run (see game/upgrades.ts).
   upgrades: RunUpgrades
 }
@@ -236,11 +254,11 @@ export function startRun(seed: number): RunState {
     ratingSum: 0,
     ratedHands: 0,
     over: false,
-    won: false,
     coda: false,
     cashedOut: false,
     rewardedAdsThisRun: 0,
     rewardedAdShiftIndex: 0,
+    adDeclinedAtHand: AD_NEVER_DECLINED,
     upgrades: emptyUpgrades(),
   }
 }

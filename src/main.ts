@@ -14,6 +14,16 @@ if (!root) {
   throw new Error('missing #app mount element')
 }
 
+// Boot failsafe. The splash (index.html) is removed on the normal path once the game view mounts,
+// and by renderLock on a sitelocked host — but nothing covers a boot that never finishes: a throw
+// anywhere in this module, a hung SDK, or an exception inside mountGameView all leave it pulsing
+// forever. In production there is no error overlay, so an endless spinner is indistinguishable from
+// a slow load and reads as "still loading" rather than "broken". Armed FIRST, before any await, so
+// it survives a failure at any point below; the normal removal beats it by seconds, making this a
+// no-op in every healthy boot. Deliberately generous — it must never cut a slow-but-working load.
+const BOOT_SPLASH_FAILSAFE_MS = 12000
+window.setTimeout(() => document.getElementById('boot-splash')?.remove(), BOOT_SPLASH_FAILSAFE_MS)
+
 // DEV-only on-screen error overlay. iOS Safari has no visible console, and an uncaught error inside
 // the requestAnimationFrame loop silently kills it — the game just freezes mid-cinematic with no
 // clue why. This surfaces any uncaught error / promise rejection ON SCREEN (message + stack) so a

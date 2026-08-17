@@ -5,7 +5,7 @@ import { encodeSaveKeys } from './keymap'
 import { pack } from './obfuscate'
 import { createRng } from './random'
 import { startRound, type Round } from './round'
-import { RULES_VERSION, startRun } from './run'
+import { AD_NEVER_DECLINED, RULES_VERSION, startRun } from './run'
 
 // Mirror what saveSession writes: fields coded (keymap) before the pack() envelope. Used by the
 // setup that seeds the store directly instead of going through saveSession.
@@ -69,6 +69,34 @@ describe('persistence', () => {
     const session = sampleSession({ run: { ...startRun(7), deckState: 0xabcdef12 } })
     saveSession(session)
     expect(loadSession()!.run.deckState).toBe(0xabcdef12)
+  })
+
+  it('round-trips the rewarded-ad decline stamp, so a reload cannot revive a declined offer', () => {
+    const session = sampleSession({ run: { ...startRun(7), handsPlayed: 12, adDeclinedAtHand: 11 } })
+    saveSession(session)
+    expect(loadSession()!.run.adDeclinedAtHand).toBe(11)
+  })
+
+  it('carries AD_NEVER_DECLINED through JSON as a FINITE number (-Infinity would arrive as null)', () => {
+    // The sentinel is Number.MIN_SAFE_INTEGER rather than -Infinity precisely because the save is
+    // JSON, which has no infinity: -Infinity serialises to null, and `handsPlayed - null` is
+    // `handsPlayed`, which would suppress the offer for the run's first AD_OFFER_COOLDOWN_HANDS
+    // hands instead of allowing it. Pin the round-trip so a future "tidy up" cannot reintroduce it.
+    const session = sampleSession({ run: startRun(7) })
+    expect(session.run.adDeclinedAtHand).toBe(AD_NEVER_DECLINED)
+    saveSession(session)
+    const loaded = loadSession()!.run.adDeclinedAtHand
+    expect(Number.isFinite(loaded)).toBe(true)
+    expect(loaded).toBe(AD_NEVER_DECLINED)
+    // ...and the whole point: a brand-new run is eligible for the offer from hand 0.
+    expect(0 - loaded).toBeGreaterThanOrEqual(8)
+  })
+
+  it('backfills a non-finite / missing decline stamp to AD_NEVER_DECLINED (offers, never suppresses)', () => {
+    const run = { ...startRun(7) } as Record<string, unknown>
+    run.adDeclinedAtHand = null // what a serialised -Infinity would arrive as
+    store.set(RUN_KEY, packed({ version: RULES_VERSION, run, phase: 'betting', round: null }))
+    expect(loadSession()!.run.adDeclinedAtHand).toBe(AD_NEVER_DECLINED)
   })
 
   it('backfills deckState from the seed for a save missing it', () => {

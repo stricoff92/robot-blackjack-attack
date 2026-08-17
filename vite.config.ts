@@ -1,7 +1,33 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, type Plugin } from 'vitest/config'
+
+// Explicit .ts extension: Vite's forthcoming native config loader does not resolve extensionless
+// imports in the config file itself (it warns today, and is planned to become the default).
+import { stripIndexHtmlComments } from './scripts/strip-html-comments.ts'
+
+// Strip comments from the SHIPPED index.html. The source file is heavily commented on purpose (why
+// the SDK script is deferred, why touch-action is set on every element, why the splash is inline)
+// and that stays — this only cleans the build output, which is read by players and reviewers, not
+// by us. `apply: 'build'` leaves `vite dev` untouched; `order: 'post'` runs AFTER Vite has rewritten
+// the asset URLs (the preload href + the @font-face url() both get hashed paths), so this never
+// interferes with that pass.
+//
+// The transform itself is a context-aware scanner, NOT a regex sweep over the document — see the
+// header of scripts/strip-html-comments.ts for why that distinction matters. It self-verifies and
+// THROWS (failing the build) rather than ever writing a damaged entry point.
+function stripHtmlComments(): Plugin {
+  return {
+    name: 'strip-html-comments',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler: stripIndexHtmlComments,
+    },
+  }
+}
 
 export default defineConfig({
   base: './',
+  plugins: [stripHtmlComments()],
   // Expose the dev server on the LAN so a phone on the same Wi-Fi can reach it.
   // Pinned to 5173 (with strictPort) so it stays in step with the firewall rule
   // opened for that port — if 5173 is taken it errors loudly instead of silently
