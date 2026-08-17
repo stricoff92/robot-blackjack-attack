@@ -1,0 +1,62 @@
+Robot Blackjack Attack: asset attributions
+===========================================
+Master reference for third-party assets. This file is NOT shipped and NOT read by the game.
+The in-game Credits screen is defined in src/ui/game-view.ts (const CREDITS); keep the two in
+sync. The in-game copy shows URLs as plain text (no <a> links) because the game runs inside the
+CrazyGames iframe, which restricts outbound navigation, and CC BY needs no hyperlink.
+
+It lives in docs/, NOT in src/assets/, on purpose. Vite emits a file from src/ only when something
+imports it, so sitting in the asset folder it was kept out of the bundle by nothing more than "no
+module happens to import it" — one import.meta.glob('../assets/*') away from being published. From
+docs/ it is structurally unshippable. That matters because this file is internal notes: it carries
+TODO reasoning, packaging internals, and a third party's personal email address, none of which
+belong on a public CDN. (public/ is the ONLY directory copied verbatim into the bundle; that is
+where OFL.txt lives, because the OFL requires it be distributed.)
+
+MUSIC: Kevin MacLeod (incompetech.com), Creative Commons By Attribution 4.0
+  https://creativecommons.org/licenses/by/4.0/
+  Tracks: Decisions, Enigma, Machinations, Mistake the Getaway, One-eyed Maestro,
+          Serpentine Trek, The Cannery, Trio for Piano, Violin and Viola
+  VERIFIED 2026-08-16 against https://incompetech.com/music/royalty-free/faq.html: the library
+  is licensed uniformly as "Creative Commons: By Attribution 4.0" and the FAQ gives that exact
+  attribution wording, which the in-game Credits now match verbatim. (The earlier note here that
+  "a few older tracks are CC BY 3.0" was stale: 3.0 is what incompetech used HISTORICALLY, and
+  third-party pages still quote it, but the site itself now states 4.0 for the whole library with
+  no per-track variation.) Re-check only if incompetech changes its terms.
+
+ICONS: Flaticon Free License (attribution required)
+  Poker chip icons by IconsNova        https://www.flaticon.com/free-icons/poker-chip
+  Battery icons by Prosymbols Premium  https://www.flaticon.com/free-icons/battery
+  Star icons by Magnific               https://www.flaticon.com/free-icons/star
+  Green icons by Hilmy Abiyyu A.       https://www.flaticon.com/free-icons/green
+  Thief icons by Hight Quality Icons   https://www.flaticon.com/free-icons/thief   (detective.png)
+  Music icons by Magnific              https://www.flaticon.com/free-icons/music   (musical-note.png)
+  Video icons by Magnific              https://www.flaticon.com/free-icons/video   (video-marketing.png)
+  Spade icons by Md Tanvirul Haque     https://www.flaticon.com/free-icons/spade
+  Note: the in-game Credits condense same-artist rows into one line (Magnific: star + music + video).
+
+SOUND EFFECTS: Helton Yan (fierydzn@gmail.com), Creative Commons By Attribution 4.0
+  https://creativecommons.org/licenses/by/4.0/
+  Files (the *_HY_PC-* pack): DSGNMisc_SKILL IMPACT-Whimsimpact_HY_PC-005,
+    DSGNSynth_CAST-Mecha Laser Prepare_HY_PC-005, FEETMisc_STEP-Boots on Concrete Dungeon_HY_PC-002,
+    FGHTImpt_HIT-Strong Punch_HY_PC-004
+
+FONT: Sixtyfour, SIL Open Font License Version 1.1 (attribution + license text required)
+  Copyright 2021 The Sixtyfour Project Authors
+  https://github.com/jenskutilek/homecomputer-fonts
+  https://scripts.sil.org/OFL
+  The OFL requires the license accompany any redistribution of the font, and the .ttf ships in
+  the bundle, so the upstream license text is vendored at public/OFL.txt (copied verbatim from
+  google/fonts ofl/sixtyfour/OFL.txt). Vite's publicDir copies it to the ARCHIVE ROOT as OFL.txt
+  on every build, which is what satisfies the clause. Do not move it into src/assets: package.sh
+  fails any file in dest/assets that nothing references, and a license file references nothing.
+  There is no Reserved Font Name, so the family may keep the name "Sixtyfour" as-is.
+
+SOUND EFFECTS, no attribution required (confirmed by the author, 2026-08-16):
+  oxidvideos-shuffling-deck-of-cards-522518, oxidvideos-taking-playing-card-3-522513,
+  freesound_community-hand-clap-106596, edr-paper-shredder-02-421981
+  Recorded here only so a future audit does not re-flag them as unattributed.
+
+  The remaining files (ability, packaging-opening, packaging-rustling, player-lost, player-won,
+  upgrade-menu-open, upgrade-selected) are part of the Helton Yan pack credited above; they simply
+  do not carry the _HY_PC-* naming the four listed files do.

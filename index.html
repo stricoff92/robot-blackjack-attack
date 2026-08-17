@@ -7,6 +7,28 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Robot Blackjack Attack</title>
+    <!-- Warm the Sixtyfour pixel title face on the FIRST frame so the boot splash's wordmark can
+         swap from the system fallback to the real face while it's still on screen (font-display:
+         swap below). Vite fingerprints this path to the exact same hashed .ttf the runtime loader
+         (src/render/title-font.ts) imports — content-hash dedup means ONE download, and this
+         preload warms both the @font-face fetch here and that later FontFace().load(). `crossorigin`
+         is required even same-origin: fonts fetch in CORS mode, so without it the preload wouldn't
+         match the real request and would double-fetch. -->
+    <link
+      rel="preload"
+      href="/src/assets/Sixtyfour-Regular-VariableFont_BLED,SCAN.ttf"
+      as="font"
+      type="font/ttf"
+      crossorigin
+    />
+    <!-- CrazyGames SDK v3 (ads, gameplay events, leaderboard submit, iframe-safe storage). Loaded
+         from their CDN — not npm — and exposed as window.CrazyGames.SDK. It is absent off-platform
+         (and may fail to load if blocked); the game degrades gracefully, see
+         src/platform/crazygames.ts. `defer` so it does NOT block HTML parsing / first paint (a
+         plain <script> in <head> stalls <body> — and the boot splash — until it downloads, which
+         is slow on mobile). defer still runs it BEFORE the deferred module (document order), so
+         window.CrazyGames.SDK is present when main.ts calls initCrazyGames(). -->
+    <script defer src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
     <style>
       html,
       body {
@@ -14,19 +36,139 @@
         height: 100%;
         overflow: hidden;
         background: #0b0b12;
+        /* CrazyGames-recommended: block accidental selection of game elements.
+           On mobile/tablets a double-tap or press-and-hold would otherwise raise
+           the magnifier or select the whole game and pop a contextual menu. */
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+        /* Suppress the iOS long-press callout menu (Copy/Share/Look Up) — user-select
+           alone does not stop it. Belt-and-braces with the selection blocks above. */
+        -webkit-touch-callout: none;
+        /* Suppress the tap-highlight flash on touch interactions. */
+        -webkit-tap-highlight-color: transparent;
       }
       #app {
         position: fixed;
         inset: 0;
       }
+      /* Kill the mobile double-tap-to-zoom gesture across the WHOLE document. iOS
+         Safari ignores the viewport `user-scalable=no` above, so this is what
+         actually stops a double-tap from zooming the page. It is deliberately set on
+         EVERY element, not just an ancestor like #app: iOS does not reliably honor a
+         touch-action that lives only on an ancestor of the tapped node — a double-tap
+         on a button whose own touch-action is still `auto` can zoom anyway — so each
+         control must carry `manipulation` directly. `manipulation` keeps normal taps,
+         fast repeated taps (e.g. tapping Hit several times), scrolling and pinch; it
+         removes only the non-standard double-tap-zoom. The universal selector also
+         reaches the body-level overlays that live OUTSIDE #app (boot splash,
+         CrazyGames ad container, dev error box). The canvas is excluded and narrowed
+         to `none` below so in-world drags never scroll or select. */
+      *:not(canvas) {
+        touch-action: manipulation;
+      }
       canvas {
         display: block;
         touch-action: none;
+      }
+      /* The Sixtyfour pixel title face for the splash wordmark below. Preloaded in <head> so its
+         bytes are in flight from the first frame; `font-display: swap` means the wordmark paints
+         immediately in the system fallback and swaps to Sixtyfour the moment the face arrives —
+         no invisible-text (FOIT) gap. Same family name the canvas loader registers, same hashed
+         file (Vite dedups), so nothing double-loads. */
+      @font-face {
+        font-family: 'Sixtyfour';
+        src: url('/src/assets/Sixtyfour-Regular-VariableFont_BLED,SCAN.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+        font-display: swap;
+      }
+      /* Instant boot splash — pure static HTML/CSS so it paints on the FIRST frame, before the
+         JS bundle + CrazyGames SDK init resolve (that gap was a dark screen for 1-2s on mobile).
+         main.ts fades + removes #boot-splash once the game view has mounted. The only web font is
+         the preloaded pixel title face (swaps in when ready); everything else is the game palette. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        /* Above every in-game layer (game-view.css tops out around z-index 40) so nothing —
+           the title-screen battery pill, tap catcher, etc. — pokes through during the fade. */
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: #0b0b12;
+        opacity: 1;
+        transition: opacity 0.35s ease;
+      }
+      #boot-splash.is-hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #boot-splash .boot-wordmark {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        /* Sixtyfour once it swaps in, bold system fallback until then. Sixtyfour ships a single
+           Regular master (no weight axis), so `font-synthesis: none` stops the browser faux-bolding
+           it into a smear at 900 — the pixel glyphs render at their natural weight, matching the
+           canvas title. The 900 still drives the fallback (Helvetica has real heavy weights). */
+        font-family: 'Sixtyfour', "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+        font-weight: 900;
+        font-synthesis: none;
+        letter-spacing: 0.14em;
+        line-height: 1;
+        font-size: clamp(20px, 6vw, 40px);
+        color: rgba(226, 26, 26, 0.95);
+        text-shadow: 0 0 18px rgba(226, 26, 26, 0.45);
+        animation: boot-pulse 1.4s ease-in-out infinite;
+      }
+      #boot-splash .boot-spinner {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 3px solid rgba(64, 224, 208, 0.18);
+        border-top-color: rgba(64, 224, 208, 0.9);
+        animation: boot-spin 0.8s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes boot-pulse {
+        0%,
+        100% {
+          opacity: 0.55;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #boot-splash .boot-wordmark {
+          animation: none;
+          opacity: 0.9;
+        }
+        #boot-splash .boot-spinner {
+          animation-duration: 1.6s;
+        }
       }
     </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="boot-splash" aria-hidden="true">
+      <div class="boot-wordmark">
+        <span>ROBOT</span>
+        <span>BLACKJACK</span>
+        <span>ATTACK</span>
+      </div>
+      <div class="boot-spinner"></div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

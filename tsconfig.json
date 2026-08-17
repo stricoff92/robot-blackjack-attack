@@ -14,7 +14,10 @@
     "isolatedModules": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    // vite.config.ts imports scripts/strip-html-comments.ts by its real extension (Vite's native
+    // config loader needs it). Safe with noEmit: nothing here is compiled to JS by tsc.
+    "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "scripts", "vite.config.ts"]
 }

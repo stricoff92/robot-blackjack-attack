@@ -9,7 +9,7 @@ export interface Card {
 }
 
 const SUITS: readonly Suit[] = ['hearts', 'diamonds', 'clubs', 'spades']
-const RANKS: readonly Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+export const RANKS: readonly Rank[] = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
 
 export function createDeck(): Card[] {
   const deck: Card[] = []

@@ -1,4 +1,12 @@
-export type PowerupId = 'peek' | 'late-double' | 'foresight' | 'second-chance'
+export type PowerupId =
+  | 'peek'
+  | 'late-double'
+  | 'forced-split'
+  | 'second-chance'
+  | 'freeze'
+  | 'mulligan'
+  | 'analyze'
+  | 'return'
 
 export interface Powerup {
   id: PowerupId
@@ -10,8 +18,8 @@ export interface Powerup {
 export const POWERUPS: Record<PowerupId, Powerup> = {
   peek: {
     id: 'peek',
-    name: 'Peek',
-    cost: 10,
+    name: 'Peek Dealer',
+    cost: 60,
     description: "Reveal the dealer's hole card.",
   },
   'late-double': {
@@ -20,16 +28,40 @@ export const POWERUPS: Record<PowerupId, Powerup> = {
     cost: 30,
     description: "Double down after you've already taken hits.",
   },
-  foresight: {
-    id: 'foresight',
-    name: 'Foresight',
-    cost: 150,
-    description: 'See the next card in the shoe.',
+  'forced-split': {
+    id: 'forced-split',
+    name: 'Forced split',
+    cost: 30,
+    description: 'Split your opening two cards even when they are not a matching pair.',
   },
   'second-chance': {
     id: 'second-chance',
-    name: 'Second chance',
-    cost: 90,
+    name: 'Bust Block',
+    cost: 60,
     description: 'One expendable shield against busting.',
+  },
+  freeze: {
+    id: 'freeze',
+    name: 'Freeze Dealer',
+    cost: 50,
+    description: 'Force the dealer to stand on its current total.',
+  },
+  mulligan: {
+    id: 'mulligan',
+    name: 'Mulligan',
+    cost: 60,
+    description: 'Discard your opening hand and redeal once.',
+  },
+  analyze: {
+    id: 'analyze',
+    name: 'Analyze',
+    cost: 4,
+    description: 'Read your bust-on-hit odds and the dealer-win odds. Folds in any peeked cards. Clears the moment you act.',
+  },
+  return: {
+    id: 'return',
+    name: 'Return',
+    cost: 40,
+    description: 'Push your most recent card back onto the shoe for the dealer to draw, then stand.',
   },
 }

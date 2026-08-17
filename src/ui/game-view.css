@@ -1,0 +1,2078 @@
+/* HUD overlay layout:
+ *   - token counter: top-left corner (icon + count)
+ *   - powerups: vertical stack in the top-left, below the token counter (hint as
+ *     its header)
+ *   - primary actions (Hit/Stand/Double/Split/Deal/…): bottom-center row
+ *   - message line: centered, just above the action bar
+ *
+ * Text layers are click-through; only buttons take input. */
+
+/* Design tokens — the overlay's single source of colour + type, sourced from the CANVAS world so
+ * the HTML chrome reads as one system with the game behind it (not an off-the-shelf palette). The
+ * teal triple is the SAME value as the nexus's ALIEN_ENERGY (src/render/nexus.ts), so overlay and
+ * canvas share one accent. Colours that repeat verbatim across rules live here once; the composite
+ * surfaces (glass/rim/glow) capture the teal-holo "nexus" signature so any element can join it. */
+:root {
+  /* Palette (from the canvas): teal-holo accent, warm chip gold, LED/laser red, count-holo cream. */
+  --teal-rgb: 116, 236, 224;          /* == nexus.ts ALIEN_ENERGY */
+  --teal-bright-rgb: 150, 246, 236;   /* lit / active teal */
+  --cream-rgb: 255, 236, 196;         /* warm count-holo (cards.ts COUNT_HOLO) */
+  --gold-hi: #dab55e;                 /* casino action gradient — top */
+  --gold-lo: #c9a24b;                 /*   … bottom */
+  --gold-lip: #8a6b32;                /* the juicy offset "lip" shadow */
+  --gold-rgb: 255, 226, 150;          /* chip foil glow (card-sprite GOLD_GLOW) */
+  --red-rgb: 255, 59, 59;             /* neon LED red (dealer.ts EYE) */
+  --price-red: #d23a3a;               /* cost / lock pill (original) */
+  --price-red-deep: #b3242b;          /* cost / lock pill — deeper, with an inner neon-red glow */
+  --bg-room: #0b0b12;                 /* page base (mirrors index.html) */
+
+  /* Composite surfaces / effects — the repeated teal-holo "nexus" signature. */
+  --glass: linear-gradient(rgba(14, 30, 34, 0.66), rgba(8, 18, 22, 0.66));
+  --rim-teal: 1.5px solid rgba(var(--teal-rgb), 0.55);
+  --glow-teal: 0 0 26px rgba(var(--teal-rgb), 0.28), inset 0 0 18px rgba(var(--teal-rgb), 0.08);
+  --glow-teal-sm: 0 0 8px rgba(var(--teal-rgb), 0.35), inset 0 0 6px rgba(var(--teal-rgb), 0.2);
+
+  /* Type: system sans for all body/label text; the Sixtyfour CRT display face for TITLES ONLY
+   * (registered on document.fonts by src/render/title-font.ts — falls back to system until it loads). */
+  --font-ui: system-ui, -apple-system, sans-serif;
+  --font-display: 'Sixtyfour', system-ui, sans-serif;
+  --title-glow: 0 0 12px rgba(var(--teal-rgb), 0.55);
+}
+
+/* Token bankroll counter: icon + count on a white pill, pinned to the very
+ * top-left corner. */
+.hud-tokens {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 16px 2px 11px;
+  border-radius: 9px;
+  background: #fff7e6;
+  font: 800 32px var(--font-ui);
+  color: #1a1206;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(var(--gold-rgb), 0.5);
+  pointer-events: none;
+}
+
+.hud-tokens__icon {
+  height: 40px;
+  width: auto; /* preserve the icon's portrait aspect ratio */
+  display: block;
+}
+
+/* Arcade points counter, pinned top-right. The number rolls + swells as it ticks
+ * (updatePointsCounter); the "+N" reward delta flashes just beneath it. */
+.hud-points {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  right: max(14px, env(safe-area-inset-right, 0px));
+  text-align: right;
+  pointer-events: none;
+}
+
+/* CrazyGames display-banner container, pinned top-left on the score screen (that corner is vacant
+ * then — .hud-points/.hud-tokens are both hidden). Sized in CSS px by showScoreBanner_; the SDK
+ * injects an iframe into it. Transparent by default so an unfilled/absent banner shows nothing. */
+.hud-score-banner {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: auto; /* the ad iframe needs clicks (already auto via .stage__overlay > *) */
+}
+
+.hud-score-banner.is-hidden {
+  display: none;
+}
+
+/* Dev-only placeholder (off the real CrazyGames host) so the reserved slot is visible while
+ * developing — a plain white box with its size label. Production paints a real banner instead. */
+.hud-score-banner.is-dev-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+  color: #222;
+  font: 700 13px var(--font-ui);
+  letter-spacing: 0.08em;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* The star icon + number, right-aligned on one row. The swell transform rides THIS row
+ * (see updatePointsCounter) so the star pumps with the count as a unit — pinned to the
+ * right edge so a big swell never pushes off-screen. */
+.hud-points__row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  transform-origin: 100% 50%;
+}
+
+/* The yellow points star, sized to sit just under the number's cap height. */
+.hud-points__star {
+  height: 30px;
+  width: auto; /* square asset — keep it square */
+  display: block;
+  flex: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.6));
+}
+
+.hud-points__count {
+  display: inline-block;
+  font: 800 34px var(--font-ui);
+  color: #ffffff;
+  /* No pill any more — a strong dark shadow keeps the white legible over any felt. */
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.7), 0 0 3px rgba(0, 0, 0, 0.85);
+}
+
+/* High scores shrink by digit count (data-len set in updatePointsCounter) so the
+ * double-or-nothing coda's big totals never crowd the corner. Only 7+ digits are touched, so
+ * normal scores keep the responsive up-scaling below; these deliberately override it for long
+ * numbers (a 10-digit total shouldn't render at 56px even on a wide monitor). */
+.hud-points__count[data-len='7'] { font-size: 30px; }
+.hud-points__count[data-len='8'] { font-size: 27px; }
+.hud-points__count[data-len='9'] { font-size: 24px; }
+.hud-points__count[data-len='10'] { font-size: 21px; }
+.hud-points__count[data-len='11'] { font-size: 19px; }
+.hud-points__count[data-len='12'] { font-size: 17px; }
+
+/* The "+N" reward delta under the counter, then a caption under that. Both sit in normal
+ * flow below the count (right-aligned) so they stack; both are invisible at rest and play
+ * a one-shot keyframe on .is-flashing. The count's swell is a transform, so it never
+ * nudges these. */
+.hud-points__delta {
+  margin-top: 5px;
+  font: 800 28px var(--font-ui);
+  color: #ffffff;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.75), 0 0 3px rgba(0, 0, 0, 0.8);
+  opacity: 0;
+  transform-origin: 100% 50%;
+  white-space: nowrap;
+}
+
+/* The combo "×M.MM" rides the white "+base" delta in yellow (a gold glow to pop it off the
+ * white number). Inherits the delta's size/weight and its fade/scale (it's a child). */
+.hud-points__mult {
+  color: #ffd633;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 8px rgba(255, 190, 60, 0.55);
+}
+
+.hud-points__delta.is-flashing {
+  /* Fade + scale IN, then HOLD (forwards) — the reward stays up until the next hand clears
+   * it (game-view drops .is-flashing on the next-hand transition), so it never fades early. */
+  animation: points-delta 320ms ease-out forwards;
+}
+
+.hud-points__delta.is-flashing-coda {
+  /* The Banker coda has no next-hand click to clear the delta, so it SELF-FADES: flash in,
+   * hold ~3s, then fade out. Same 2 -> 1 scale-in as .is-flashing. */
+  animation: points-delta-coda 3600ms ease-out forwards;
+}
+
+/* Flash in (~325ms), hold until ~3s, then fade out over the last ~600ms. */
+@keyframes points-delta-coda {
+  0% { opacity: 0; transform: scale(2); }
+  9% { opacity: 1; transform: scale(1); }
+  83% { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+/* Fade + big scale-in (2 → 1) over 320ms, ending at full opacity; `forwards` holds it there
+ * indefinitely. No fade-out keyframe — the JS removes the class to hide it. */
+@keyframes points-delta {
+  0% {
+    opacity: 0;
+    transform: scale(2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Info button pinned bottom-left: a small teal "glass" disc with an italic-serif "i". Opens
+ * the full-screen TABLE RULES takeover (.rules-panel — the dealer's ruleset + energy inflation).
+ * Matches the nexus's alien-teal energy. */
+.hud-info {
+  position: absolute;
+  bottom: max(14px, env(safe-area-inset-bottom, 0px));
+  left: max(14px, env(safe-area-inset-left, 0px));
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  color: rgba(196, 246, 241, 0.96);
+  font: italic 700 21px ui-serif, Georgia, "Times New Roman", serif;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--glow-teal-sm);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
+  z-index: 4;
+}
+
+.hud-info:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+
+.hud-info:active {
+  transform: scale(0.92);
+}
+
+/* Battery-saver toggle: a round twin of the info "i", pinned to the bottom-RIGHT corner (mirroring
+ * the info button in the bottom-left). Pinned (position:absolute) so it's out of every layout flow;
+ * on the right it no longer sits above the left-side powerup column, so it needs no column reserve.
+ * Holds a green-leaf <img> (.hud-battery__icon); on/off is shown by the border + glow + desaturate. */
+.hud-battery {
+  position: absolute;
+  bottom: max(14px, env(safe-area-inset-bottom, 0px)); /* bottom-right corner, mirroring .hud-info at bottom-left */
+  right: max(14px, env(safe-area-inset-right, 0px));
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  line-height: 1;
+  cursor: pointer;
+  filter: saturate(0.6) opacity(0.75); /* muted when OFF */
+  box-shadow: var(--glow-teal-sm);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
+  /* Stays above the panels that appear BETWEEN hands / rounds — the post-kill upgrade picker
+   * (.upgrade-panel z5) and the help / rules modals (z6), both full-screen dims — so this global
+   * control is never covered. It's a device preference, not a gameplay choice, so it must remain
+   * visible + tappable while those are up. Still below the intro title chrome (z20+) and the
+   * viewport guard (z40), under which it's hidden by .opening-hidden / .hud-hidden anyway. */
+  z-index: 8;
+}
+.hud-battery:hover {
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+.hud-battery:active {
+  transform: scale(0.92);
+}
+/* Saver ON: brighten the leaf and ring it with a green power-glow. */
+.hud-battery.is-active {
+  filter: none;
+  border-color: rgba(120, 240, 170, 0.85);
+  box-shadow: 0 0 14px rgba(120, 240, 170, 0.55), inset 0 0 6px rgba(120, 240, 170, 0.25);
+}
+
+/* The green-leaf glyph inside the toggle. Sized to sit centred inside the 38px disc with a little
+ * air; the button's own filter (desaturate when OFF, none when ON) does the on/off dimming. */
+.hud-battery__icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+  pointer-events: none; /* clicks belong to the button, not the image */
+}
+
+/* The music-mute toggle: a round twin of the battery button, stacked directly above it (same
+ * bottom-right corner, one button-height + gap higher). Base state = MUTED: a flat gray note struck
+ * by a diagonal slash, no glow. The .is-active state (music playing) lights the note white and rings
+ * it with the SAME green power-glow the battery ON state uses. */
+.hud-music {
+  position: absolute;
+  bottom: calc(max(14px, env(safe-area-inset-bottom, 0px)) + 46px); /* clears the 38px battery button below + 8px gap */
+  right: max(14px, env(safe-area-inset-right, 0px));
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none; /* muted = no glow */
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, filter 0.12s ease, border-color 0.12s ease, opacity 0.5s ease;
+  /* Twin of the battery toggle: kept above the between-hands / round panels (upgrade picker z5,
+   * help / rules z6) so this global music control is never covered. See .hud-battery. */
+  z-index: 8;
+}
+.hud-music:hover {
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+.hud-music:active {
+  transform: scale(0.92);
+}
+/* Music playing: ring the note with the same green power-glow the battery ON state uses. */
+.hud-music.is-active {
+  border-color: rgba(120, 240, 170, 0.85);
+  box-shadow: 0 0 14px rgba(120, 240, 170, 0.55), inset 0 0 6px rgba(120, 240, 170, 0.25);
+}
+
+/* The note glyph: black-on-transparent art. Muted → invert to a flat gray (invisible black on the
+ * dark disc otherwise); playing (.is-active) → invert fully to bright white. */
+.hud-music__icon {
+  width: 18px; /* a touch smaller than the battery leaf so the note has breathing room inside the disc */
+  height: 18px;
+  display: block;
+  pointer-events: none; /* clicks belong to the button, not the image */
+  filter: invert(0.6); /* muted: flat gray note */
+}
+.hud-music.is-active .hud-music__icon {
+  filter: invert(1); /* playing: bright white note */
+}
+
+/* The muted-state diagonal slash struck across the disc (a "no music" mark), shown only when muted;
+ * hidden while playing. Purely decorative, so it never eats a tap. Inset from the rim so its ends
+ * stay inside the circle. */
+.hud-music::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  top: 50%;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(190, 198, 200, 0.92);
+  transform: translateY(-50%) rotate(45deg);
+  transform-origin: center;
+  pointer-events: none;
+}
+.hud-music.is-active::after {
+  display: none;
+}
+
+/* The "Battery Saver ON/OFF" toast: flashes just above the toggle when it's pressed, then fades
+ * (showBatteryToast_ times it — held 800ms, then the .is-fading transition fades it over 200ms).
+ * Right edge pinned to the toggle's right edge (same `right` inset); it grows leftward. Dark teal-
+ * tinted pill so the text stays legible over any felt/canvas behind it. Click-through + z-index
+ * above the HUD buttons so it always reads on top of the canvases. */
+.hud-battery-toast {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right, 0px)); /* right-aligned with the toggle's right edge (.hud-battery right: 14px) */
+  bottom: calc(106px + env(safe-area-inset-bottom, 0px)); /* clears both stacked toggles above it (battery 14+38+8, then music 38+8) */
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(6, 20, 24, 0.9);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  color: rgba(196, 246, 241, 0.98);
+  font: 700 13px var(--font-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none; /* purely informational — never blocks taps on the toggle or canvas */
+  z-index: 7; /* above the HUD buttons (z-index 4), so it sits on top of the canvases */
+}
+.hud-battery-toast.is-visible {
+  opacity: 1; /* snap in instantly (no fade-in) */
+}
+.hud-battery-toast.is-fading {
+  opacity: 0;
+  transition: opacity 200ms ease; /* fade out over 200ms after the 800ms hold */
+}
+
+/* The help button: a "?" twin of the info button, but it rides at the BOTTOM of the powerup
+ * column as its last child, so it always sits right under the lowest visible ability button no
+ * matter how many are showing. Scoped under .hud-powerups so it overrides the generic ability-
+ * button chrome (.hud-powerups button); align-self keeps it a left-aligned circle instead of
+ * stretching to the column width. Same teal-energy chrome as the info button; upright bold sans
+ * so the "?" reads as a label, not the serif "i". Opens the ability guide (.help-panel). */
+.hud-powerups .hud-help {
+  position: relative;
+  align-self: flex-start;
+  margin-top: 2px; /* a touch of air below the stack, on top of the column's own row gap */
+  width: 38px;
+  height: 38px;
+  min-height: 0; /* clears the ability button's 48px floor */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.92), rgba(12, 26, 30, 0.92));
+  color: rgba(196, 246, 241, 0.96);
+  font: 800 18px var(--font-ui);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--glow-teal-sm);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.5s ease;
+}
+
+/* Let the JS `is-hidden` toggle actually hide the help button. The base rule above is
+ * `.hud-powerups .hud-help` (specificity 0,2,0), which OUTRANKS the generic
+ * `button.is-hidden { display: none }` (0,1,1) — so without this the button's display:flex
+ * always won and is-hidden was a no-op, leaving it visible in the coda (over the banker's
+ * ability column) and other non-play contexts. This scoped rule (0,3,0) restores the hide. */
+.hud-powerups .hud-help.is-hidden {
+  display: none;
+}
+
+.hud-powerups .hud-help:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+
+.hud-powerups .hud-help:active {
+  transform: scale(0.92);
+}
+
+/* Ability guide: a full-screen modal that lists every ability with a terse one-liner. Same
+ * teal-holo language as the nexus readouts. Sized to fit all eight rows on one screen even on
+ * mobile (compact card, small type). A tap anywhere on the panel closes it (buildHelpPanel_). */
+.help-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6; /* above the HUD + the choose-upgrade card */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  /* The whole panel is a tap-to-close target. cursor:pointer also makes iOS Safari treat
+     this non-interactive <div> as clickable so its `click` handler fires reliably (the
+     click, not pointerdown, is what dismisses it — see buildHelpPanel_). */
+  cursor: pointer;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+
+.help-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.help-panel__card {
+  width: min(560px, 92vw);
+  max-height: 92vh;
+  overflow: hidden; /* everything is sized to fit — no scroll */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 22px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
+}
+
+.help-panel__title {
+  text-align: center;
+  font: 800 22px var(--font-ui);
+  font-family: var(--font-display);
+  font-weight: 400; /* Sixtyfour ships one Regular master; faux-bold smears its pixel glyphs */
+  letter-spacing: 0.14em;
+  color: rgba(196, 246, 241, 0.98);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55);
+}
+
+.help-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.help-panel__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.25;
+}
+
+.help-panel__name {
+  flex: 0 0 40%;
+  max-width: 40%;
+  font: 700 15px var(--font-ui);
+  color: rgba(var(--teal-bright-rgb), 0.98);
+}
+
+.help-panel__desc {
+  flex: 1 1 auto;
+  font: 500 14px var(--font-ui);
+  color: rgba(224, 244, 242, 0.9);
+}
+
+.help-panel__hint {
+  text-align: center;
+  font: 600 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
+/* TABLE RULES takeover: the full-screen ruleset modal the info "i" opens (replacing the old
+ * cramped nexus projection). Same teal-holo scrim + card + tap-anywhere-to-close as the ability
+ * guide (.help-panel); each row is a single plain-language rule with a colour-coded dot — teal for
+ * house rules, green for the player's roguelite mods, amber for the energy-inflation line. The row
+ * list is rebuilt from the live ruleset on every open (openRules_). */
+.rules-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6; /* above the HUD + the choose-upgrade card, matching .help-panel */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  /* Whole panel is a tap-to-close target; cursor:pointer also makes iOS reliably fire the
+     `click` on this non-interactive div (dismissal is on click, not pointerdown — buildRulesPanel_). */
+  cursor: pointer;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+
+.rules-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.rules-panel__card {
+  width: min(520px, 92vw);
+  max-height: 92vh;
+  overflow-y: auto; /* the ruleset can grow with roguelite mods — scroll if it ever exceeds a screen */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
+}
+
+.rules-panel__title {
+  text-align: center;
+  font-family: var(--font-display);
+  font-weight: 400; /* Sixtyfour ships one Regular master; faux-bold smears its pixel glyphs */
+  font-size: 22px;
+  letter-spacing: 0.14em;
+  color: rgba(196, 246, 241, 0.98);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55);
+}
+
+.rules-panel__sub {
+  text-align: center;
+  margin-top: -4px;
+  font: 500 14px var(--font-ui);
+  color: rgba(224, 244, 242, 0.72);
+}
+
+.rules-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.rules-panel__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.3;
+}
+
+.rules-panel__dot {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.rules-panel__text {
+  flex: 1 1 auto;
+  font: 500 15px var(--font-ui);
+  color: rgba(224, 244, 242, 0.92);
+}
+
+/* House rule (the dealer's edge) — teal. */
+.rules-panel__row--house .rules-panel__dot {
+  background: rgba(var(--teal-bright-rgb), 0.95);
+  box-shadow: 0 0 7px rgba(var(--teal-rgb), 0.7);
+}
+
+/* Player roguelite mod (in your favour) — green, text brightens to green too. */
+.rules-panel__row--player .rules-panel__dot {
+  background: rgba(140, 246, 165, 0.95);
+  box-shadow: 0 0 7px rgba(120, 240, 150, 0.7);
+}
+.rules-panel__row--player .rules-panel__text {
+  color: rgba(198, 250, 210, 0.94);
+}
+
+/* Energy inflation (the economy tax that raises ability costs) — amber. */
+.rules-panel__row--econ .rules-panel__dot {
+  background: rgba(255, 206, 125, 0.95);
+  box-shadow: 0 0 7px rgba(255, 198, 110, 0.7);
+}
+.rules-panel__row--econ .rules-panel__text {
+  color: rgba(255, 235, 190, 0.92);
+}
+
+.rules-panel__hint {
+  text-align: center;
+  margin-top: 2px;
+  font: 600 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
+/* The Credits modal (attribution for third-party assets). Same full-screen tap-to-close scrim as the
+ * ability guide (.help-panel), but its card SCROLLS — credits can exceed one screen — so the card
+ * stops its own clicks and only the scrim closes. Parented to the stage container (not the HUD
+ * overlay, which is opacity:0 during the intro), hence z-index 30 to clear the intro chrome. */
+.credits-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  pointer-events: auto;
+  cursor: pointer;
+  background: radial-gradient(ellipse at center, rgba(6, 12, 16, 0.86), rgba(3, 6, 9, 0.94));
+  opacity: 1;
+  transition: opacity 200ms ease;
+}
+.credits-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.credits-panel__card {
+  width: min(520px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  cursor: pointer; /* tap-anywhere-to-close; iOS only fires click on a non-interactive div when it's pointer */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: var(--glass);
+  box-shadow: var(--glow-teal);
+}
+.credits-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.credits-panel__heading {
+  font: 700 15px var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(var(--teal-bright-rgb), 0.98);
+}
+.credits-panel__line {
+  font: 500 13px var(--font-ui);
+  line-height: 1.4;
+  color: rgba(224, 244, 242, 0.9);
+  word-break: break-word;
+}
+.credits-panel__hint {
+  text-align: center;
+  margin-top: 4px;
+  font: 600 12px var(--font-ui);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(150, 236, 226, 0.6);
+}
+
+/* Viewport guard: a full-screen blocker shown when the screen is too SHORT to fit the control
+ * layout (the ability column + its "?" help button + the "i" info button). Sits above EVERYTHING —
+ * the title menu (z 20), the upgrade card (5), the help panel (6) — and eats all pointer input so
+ * play can't continue behind a clipped UI. Two states (rotate / too-small) share this shell; the
+ * JS swaps the glyph + text. See src/ui/viewport-guard.ts. */
+.viewport-guard {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto; /* block the canvas + HUD underneath */
+  /* Opaque: a solid base under a teal-tinted vignette, so the (bright) canvas world it's covering is
+     fully hidden — a blocker that let the broken UI show through would defeat its own purpose. Kept
+     as separate color + image (not the `<gradient>, <color>` shorthand, which some engines drop). */
+  background-color: #05080c;
+  background-image: radial-gradient(ellipse at center, rgba(9, 18, 24, 0.7), rgba(3, 6, 9, 0.85));
+  opacity: 1;
+  transition: opacity 220ms ease;
+}
+
+.viewport-guard.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.viewport-guard__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: min(420px, 88vw);
+  padding: 30px 26px;
+  text-align: center;
+  border-radius: 16px;
+  border: 1.5px solid rgba(var(--teal-rgb), 0.4);
+  background: linear-gradient(rgba(16, 34, 39, 0.94), rgba(9, 20, 25, 0.94));
+  box-shadow: 0 0 30px rgba(var(--teal-rgb), 0.3), inset 0 0 20px rgba(var(--teal-rgb), 0.08);
+}
+
+.viewport-guard__glyph {
+  width: 72px;
+  height: 72px;
+  color: rgba(var(--teal-bright-rgb), 0.95);
+  filter: drop-shadow(0 0 10px rgba(var(--teal-rgb), 0.5));
+}
+
+.viewport-guard__glyph svg {
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-guard__title {
+  font: 800 22px var(--font-ui);
+  letter-spacing: 0.08em;
+  color: rgba(200, 248, 243, 0.98);
+  text-shadow: 0 0 12px rgba(var(--teal-rgb), 0.5);
+}
+
+.viewport-guard__body {
+  font: 500 15px var(--font-ui);
+  line-height: 1.45;
+  color: rgba(214, 240, 238, 0.86);
+}
+
+/* Escape hatch: intentionally muted (a small underlined link) so it reads as a last resort, not the
+ * primary action — but always present so a guard misfire / rotation-locked device can never lock a
+ * player out entirely. */
+.viewport-guard__dismiss {
+  margin-top: 2px;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: rgba(150, 236, 226, 0.55);
+  font: 600 12.5px var(--font-ui);
+  letter-spacing: 0.03em;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 0.12s ease;
+}
+
+.viewport-guard__dismiss:hover {
+  color: rgba(184, 246, 238, 0.92);
+}
+
+/* Short screens (the very case this modal exists for): shrink so the card itself never overflows. */
+@media (max-height: 430px) {
+  .viewport-guard__card {
+    gap: 10px;
+    padding: 18px 22px;
+  }
+
+  .viewport-guard__glyph {
+    width: 48px;
+    height: 48px;
+  }
+
+  .viewport-guard__title {
+    font-size: 18px;
+  }
+
+  .viewport-guard__body {
+    font-size: 13px;
+  }
+
+  .viewport-guard__dismiss {
+    font-size: 12px;
+    padding: 4px 12px;
+  }
+}
+
+/* The final scoreboard's page pager (‹ • • ›): a holo-cyan control row, its left/top set inline
+ * from the band coords (syncScorePager) and centred on that anchor. Fixed just below the summary
+ * band, so it holds still as the two pages' differing heights change the board above it. */
+.hud-score-pager {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none; /* only the arrows capture taps */
+  z-index: 4;
+}
+
+.hud-score-pager.is-hidden {
+  display: none;
+}
+
+.hud-score-pager__btn {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: var(--rim-teal);
+  background: radial-gradient(circle at 35% 30%, rgba(30, 60, 66, 0.9), rgba(12, 26, 30, 0.9));
+  color: rgba(196, 246, 241, 0.96);
+  font: 700 22px ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--glow-teal-sm);
+  pointer-events: auto;
+  transition: transform 0.08s ease, box-shadow 0.12s ease, background 0.12s ease, opacity 0.12s ease;
+}
+
+.hud-score-pager__btn:hover {
+  background: radial-gradient(circle at 35% 30%, rgba(44, 84, 90, 0.95), rgba(18, 36, 40, 0.95));
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.55), inset 0 0 8px rgba(var(--teal-rgb), 0.3);
+}
+
+.hud-score-pager__btn:active {
+  transform: scale(0.92);
+}
+
+.hud-score-pager__btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  box-shadow: none;
+}
+
+.hud-score-pager__dots {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.hud-score-pager__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(var(--teal-rgb), 0.28);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.hud-score-pager__dot.is-active {
+  background: rgba(var(--teal-bright-rgb), 0.95);
+  box-shadow: 0 0 8px rgba(var(--teal-rgb), 0.7);
+}
+
+/* Only the game-over banner uses this now (the win/loss/push result is drawn on
+ * the canvas beside the winning count). Centered so it reads as a headline. */
+.hud-message {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46%;
+  transform: translateY(-50%);
+  text-align: center;
+  font: 700 24px var(--font-ui);
+  color: #ffffff;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
+  pointer-events: none;
+}
+
+/* Powerups: top-left vertical column, below the token counter (the felt's upper-left is
+ * empty now the house chip pile is gone). On desktop there's ample vertical room, so `top`
+ * leaves a comfortable gap under the counter; the mobile override compresses it (screens
+ * short on height need the felt back). */
+.hud-powerups {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left, 0px));
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 44vw;
+  pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+
+.hud-powerups button {
+  position: relative; /* anchors the absolutely-placed cost pill */
+  pointer-events: auto;
+  text-align: left;
+  font: 600 15px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.96);
+  background: var(--glass);
+  border: none;
+  border-radius: 10px; /* the cost pill's bottom-right radius matches this */
+  /* Tight top/side padding; the bottom reserves space for the cost pill tucked
+   * flush into the bottom-right corner so it never overlaps the label. */
+  padding: 7px 11px 23px;
+  min-height: 48px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
+  /* opacity is transitioned so a one-shot ability EASES to its dimmed :disabled state on use instead
+   * of snapping — otherwise the instant drop to 40% swallows the press-pop (see .is-press). */
+  transition: transform 0.05s ease, box-shadow 0.05s ease, opacity 0.18s ease;
+}
+
+.hud-powerups button:hover {
+  background: linear-gradient(rgba(22, 44, 50, 0.78), rgba(12, 26, 32, 0.78));
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.55), 0 0 14px rgba(var(--teal-rgb), 0.28), inset 0 0 12px rgba(var(--teal-rgb), 0.09);
+}
+
+/* The Banker coda's ability column — pinned top-LEFT, where the powerups sit in the main game
+ * (they're hidden during the coda). Reuses the powerup button look + its cost pill. */
+.hud-coda-powers {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left, 0px));
+  top: 84px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 44vw;
+  pointer-events: none;
+}
+
+.hud-coda-powers button {
+  position: relative; /* anchors the absolutely-placed cost pill */
+  pointer-events: auto;
+  text-align: left;
+  font: 600 15px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.96);
+  background: var(--glass);
+  border: none;
+  border-radius: 10px;
+  padding: 7px 11px 23px;
+  min-width: 128px;
+  min-height: 48px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
+  /* Ease the dim on use, matching the main powerup column (see its transition note). */
+  transition: opacity 0.18s ease;
+}
+
+.hud-coda-powers button:hover {
+  background: linear-gradient(rgba(22, 44, 50, 0.78), rgba(12, 26, 32, 0.78));
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.55), 0 0 14px rgba(var(--teal-rgb), 0.28), inset 0 0 12px rgba(var(--teal-rgb), 0.09);
+}
+
+.hud-coda-powers button.is-hidden {
+  display: none;
+}
+
+.hud-coda-powers button.is-active {
+  box-shadow: 0 0 0 2px #ffd34d, 0 2px 0 rgba(0, 0, 0, 0.35), 0 3px 10px rgba(255, 200, 70, 0.5);
+}
+
+.power-label {
+  display: block;
+  line-height: 1.05; /* keep the label tight so the bigger font adds no leading */
+}
+
+/* Cost pill: token price ("<cost> <icon>") pinned to the button's bottom-right. */
+.cost-pill {
+  position: absolute;
+  right: 0; /* flush into the button's bottom-right corner */
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  /* Bottom-right corner matches the button's radius so the pill nests into it;
+   * the two edges meeting the button's sides stay square for a flush tuck. */
+  border-radius: 10px 0 10px 0;
+  background: var(--price-red-deep);
+  color: rgba(var(--cream-rgb), 0.98);
+  box-shadow: inset 0 0 6px rgba(var(--red-rgb), 0.35);
+  font: 700 13px var(--font-ui);
+  line-height: 1;
+}
+
+.cost-pill__icon {
+  height: 17px;
+  width: auto; /* preserve the icon's portrait aspect ratio */
+  display: block;
+}
+
+/* Lock pill: a red ✕ in the cost pill's corner, shown in place of the price while a
+ * powerup is locked (the Dealer 6 duel). Hidden until the button carries is-locked. */
+.lock-pill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  padding: 3px 7px;
+  border-radius: 10px 0 10px 0; /* match the cost pill's tuck */
+  background: var(--price-red-deep);
+  color: rgba(var(--cream-rgb), 0.98);
+  box-shadow: inset 0 0 6px rgba(var(--red-rgb), 0.35);
+  font: 800 15px var(--font-ui);
+  line-height: 1;
+}
+
+.hud-powerups button.is-locked .cost-pill {
+  display: none; /* the lock pill replaces the price */
+}
+
+.hud-powerups button.is-locked .lock-pill {
+  display: inline-flex;
+}
+
+.hud-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: max(20px, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 0 12px;
+  /* `bottom` eases so the row settles back down when the offer banner leaves (`has-offer` lifts it to
+   * centre in the scrim). Nothing to ease on the way IN — that class lands on the same sync that
+   * first shows these buttons, so the row is simply laid out there. */
+  transition: opacity 0.5s ease, bottom 240ms ease;
+}
+
+/* The gold action look, shared by every button in the bottom action row. */
+.hud-actions button {
+  position: relative; /* anchors the absolutely-placed "not enough chips" badge */
+  font: 700 16px var(--font-ui);
+  color: #2f2013;
+  background: linear-gradient(var(--gold-hi), var(--gold-lo));
+  border: none;
+  border-radius: 12px;
+  padding: 8px 20px;
+  min-width: 72px;
+  min-height: 40px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 14px rgba(var(--teal-rgb), 0.2);
+  transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.hud-actions button:hover {
+  background: linear-gradient(#e6c473, #d4ad57);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
+}
+
+/* The Next hand button is shown on its own between hands - make it a wide, easy CTA. */
+.hud-actions button.hud-btn-next {
+  width: 50%;
+  max-width: 325px;
+}
+
+/* --- The rewarded-offer banner ------------------------------------------------------------------
+ *
+ * There is no separate bar element. The top-up button is an ordinary member of the action row, and
+ * the "banner" is: this scrim strip behind the row, plus `.hud-actions.has-offer` centring the row
+ * inside it. So the offer arriving is just one more button laying out in a flex row - the same thing
+ * that happens every hand when Hit/Stand/Double/Split give way to Next hand. Nothing is reparented,
+ * nothing is measured, and the primary CTA never moves house.
+ *
+ * WHY A BANNER AT ALL: the button used to float loose ABOVE this row, where the heart chips live
+ * (render/hearts.ts anchors them between the player's cards and the action bar) - at 1280x800 the
+ * chips run y 692..730 and the button sat at 700..730, drawn straight onto them. Mid-table
+ * placements were tried too and rejected: anchored to cards.handBand it lines up EXACTLY with the
+ * nexus hand-summary projection (reads as a bug, not a takeover), and at bottom:33% it cut the
+ * player's cards in half.
+ *
+ * HEIGHT IS CONSTRAINED: the scrim must not reach above render/hearts.ts HEART_BUTTONS_CLEAR (66px,
+ * the gap the heart row always leaves above the screen bottom) or it tints the bottom of the chips.
+ * That 66 is the whole budget - it is what caps the top-up button at 44px and sets the row's offset
+ * so the buttons sit centred in the strip. */
+/* `.stage__overlay > .hud-ad-scrim`, not a bare class: stage.css's `.stage__overlay > *
+ * { pointer-events: auto }` is the same weight (0,1,0) and loads AFTER this file, so a bare
+ * `.hud-ad-scrim { pointer-events: none }` loses and this permanently-present strip silently claims
+ * every tap in the bottom 66px. */
+.stage__overlay > .hud-ad-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* 44px button + 11px above + the row's own bottom offset, so the button stays centred in the strip
+   * at any safe-area inset. A flat 66px (the budget at inset 0) would be overshot by the row on a
+   * notched device — `.has-offer` pushes it up by the inset — leaving the button poking out the top
+   * of its own banner. Keep the three terms in sync with `.hud-actions.has-offer` below. */
+  height: calc(55px + max(11px, env(safe-area-inset-bottom, 0px)));
+  box-sizing: border-box; /* the 1px hairline must come OUT of the height, not sit on top of it */
+  background: linear-gradient(rgba(6, 26, 30, 0.55), rgba(6, 26, 30, 0.88));
+  border-top: 1px solid rgba(var(--teal-rgb), 0.45);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  /* A transition, not keyframes: it runs both ways off one class toggle, with no JS timer to hold
+   * the element alive through its exit and no `forwards` to unwind afterwards. */
+  transition: opacity 240ms ease;
+}
+
+.hud-ad-scrim.is-on {
+  opacity: 1;
+}
+
+/* Centre the row in the 66px strip (44px tall row -> 11px either side) and reserve the bottom-right
+ * battery + music toggles so the wider row can't run under them.
+ *
+ * The `transition` override is load-bearing, not a tidy-up: a transition is taken from the state
+ * being moved TO, so listing `bottom` only on the base rule means the row SNAPS to this offset on the
+ * way in and EASES back on the way out. That asymmetry is the point — the offer appears on the same
+ * sync that first shows Next hand, so on the way in there is no previous position worth easing from
+ * and animating it just reintroduces the drift this layout exists to remove. */
+.hud-actions.has-offer {
+  bottom: max(11px, env(safe-area-inset-bottom, 0px));
+  align-items: center; /* keep Next hand at its own 40px rather than stretching to the taller sibling */
+  padding: 0 58px;
+  transition: opacity 0.5s ease;
+}
+
+/* The top-up button. Teal, so it never competes with the gold Next-hand CTA beside it, but taller
+ * and heavier than it - it is the thing the banner exists to make room for. 44px is the ceiling the
+ * scrim's height budget allows, not a design preference. */
+.hud-actions button.hud-btn-watch-ad {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 20px;
+  min-width: 0;
+  min-height: 44px;
+  border-radius: 13px;
+  font: 800 19px var(--font-ui);
+  line-height: 1;
+  color: #062018;
+  white-space: nowrap;
+  background: linear-gradient(rgba(var(--teal-rgb), 0.98), rgba(var(--teal-rgb), 0.78));
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4), 0 6px 14px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.28), 0 0 20px rgba(var(--teal-rgb), 0.28);
+  /* Fades up with the scrim. Plays off the display:none -> inline-flex flip that `is-hidden` drives,
+   * so it needs no JS. */
+  animation: ad-btn-in 240ms ease-out;
+}
+
+/* The press-pop, restated at this selector's weight. The shared `.is-press` rule is only (0,1,0) and
+ * loses to the (0,2,1) entrance rule above, so without this the class lands, `restartAnimation`
+ * restarts nothing, and the button is the one action button in the game with NO press feedback —
+ * which is exactly what the cursor-less CrazyGames preview video cannot afford. Same specificity trap
+ * as `.hud-btn-watch-ad.is-hidden` below. */
+.hud-actions button.hud-btn-watch-ad.is-press {
+  animation: btn-press 170ms ease-out;
+}
+
+@keyframes ad-btn-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.hud-actions button.hud-btn-watch-ad:hover {
+  background: linear-gradient(rgba(var(--teal-rgb), 1), rgba(var(--teal-rgb), 0.86));
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.42), 0 0 26px rgba(var(--teal-rgb), 0.4);
+}
+
+/* Let the JS `is-hidden` toggle actually hide it: the rule above sets display:inline-flex (0,2,1),
+ * which would otherwise outrank the generic `button.is-hidden { display:none }` (0,1,1) and leave the
+ * button visible in EVERY phase. Same fix as .hud-powerups .hud-help.is-hidden above. */
+.hud-actions button.hud-btn-watch-ad.is-hidden {
+  display: none;
+}
+
+/* The film-strip/play glyph — the required clear ad indicator. CrazyGames doesn't mandate the words
+ * "Watch ad"; a badge or a video icon satisfies it, and at this size the icon reads from further
+ * away than the 10px "AD" badge it replaced. Must not be removed without putting a badge back. */
+.watch-ad__video {
+  height: 26px;
+  width: auto;
+  display: block;
+}
+
+.watch-ad__label {
+  font-weight: 800;
+}
+
+.watch-ad__icon {
+  height: 22px;
+  width: auto;
+  display: block;
+}
+
+/* The "No ad available" flash, shown when a rewarded request comes back unfilled (showAdToast_ times
+ * it — held AD_TOAST_HOLD_MS, then the .is-fading transition fades it over AD_TOAST_FADE_MS, which
+ * that timer must match). A FLEX CHILD of the band, not an absolute overlay: the failure hides the
+ * top-up button but Next hand is still sitting in that row, so the message takes the vacated slot
+ * beside it instead of covering it. display:none when idle so it claims no width; the fade runs
+ * between the two shown states, and showAdToast_'s timer strips BOTH classes at the end to release
+ * the slot. Muted (no teal fill) so it reads as an apology, not another offer. */
+.hud-ad-toast {
+  display: none;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(6, 20, 24, 0.9);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  color: rgba(196, 246, 241, 0.98);
+  font: 700 15px var(--font-ui);
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none; /* purely informational */
+}
+.hud-ad-toast.is-visible {
+  display: inline-flex;
+  opacity: 1; /* snap in instantly (no fade-in) */
+}
+.hud-ad-toast.is-fading {
+  display: inline-flex;
+  opacity: 0;
+  transition: opacity 200ms ease; /* keep in sync with AD_TOAST_FADE_MS */
+}
+
+.hud-actions button:active,
+.hud-powerups button:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* One-shot press-pop, fired on pointerdown via restartAnimation(el, 'is-press') — NOT :active.
+ * :active is hold-coupled, so a quick gameplay tap flashes it for 1-2 frames; the CrazyGames
+ * preview video then auto-speeds up and swallows even that. This plays fully (~190ms) regardless
+ * of hold/tap speed, so every interaction reads on video (cursor + captions are banned there) and
+ * on mobile (no hover state). filter:brightness is family-agnostic — it flashes the gold, teal and
+ * glass buttons alike without fighting each family's own box-shadow. Starts/ends at scale(1) so it
+ * settles back to baseline with no fill needed (mirrors the points-delta punch). */
+/* Down-and-back only — deliberately NO overshoot above scale(1). The pop fires on pointerdown, but
+ * the click handler that hides a button (Hit resolving a hand, Deal, an ability being consumed, the
+ * Next-hand gate, coda choices) runs a beat later. An overshoot peak is the worst moment to be cut
+ * to display:none — a big bright button snapping to nothing. Down-and-back means a mid-animation
+ * hide is caught at/below baseline size, so it reads as the button being consumed, not popping-then-
+ * vanishing. Front-loaded + short (170ms) so the punch is mostly done before the hide lands. */
+.is-press {
+  animation: btn-press 170ms ease-out;
+}
+
+@keyframes btn-press {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  35% {
+    transform: scale(0.9);
+    filter: brightness(1.6);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
+/* Ability (teal) buttons get an extra teal energy-bloom layered on the press-pop, so activating an
+ * ability reads as a pulse of spent energy even as the button eases to its used/dimmed state. The
+ * bloom starts and ends at the button's own resting box-shadow, so it blooms and settles with no
+ * jump. Excluded while armed (.is-active runs its own continuous powerup-glow — don't fight it). */
+.hud-powerups button.is-press:not(.is-active),
+.hud-coda-powers button.is-press:not(.is-active) {
+  animation: btn-press 170ms ease-out, ability-zap 260ms ease-out;
+}
+
+@keyframes ability-zap {
+  0%,
+  100% {
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 10px rgba(var(--teal-rgb), 0.14), inset 0 0 10px rgba(var(--teal-rgb), 0.05);
+  }
+  35% {
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(var(--teal-bright-rgb), 0.85), 0 0 24px 7px rgba(var(--teal-bright-rgb), 0.75), inset 0 0 16px rgba(var(--teal-bright-rgb), 0.14);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-press,
+  .hud-powerups button.is-press:not(.is-active),
+  .hud-coda-powers button.is-press:not(.is-active) {
+    animation: none;
+  }
+
+  /* The offer banner snaps in and out instead of fading. `.hud-actions` itself has to be listed, not
+   * just its `.has-offer` state: the row's `bottom` eases on the way OUT, and a transition is taken
+   * from the state being moved TO — so the base rule is what governs the exit. Its opacity fade is
+   * kept (that one is a cross-fade, not motion). */
+  .hud-ad-scrim,
+  .hud-actions.has-offer {
+    transition: none;
+  }
+
+  .hud-actions {
+    transition: opacity 0.5s ease;
+  }
+
+  .hud-actions button.hud-btn-watch-ad,
+  .hud-actions button.hud-btn-watch-ad.is-press {
+    animation: none;
+  }
+}
+
+.hud-actions button:disabled,
+.hud-powerups button:disabled,
+.hud-coda-powers button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+button.is-hidden,
+.hud-powerups.is-hidden,
+.hud-actions.is-hidden,
+.hud-points.is-hidden,
+.hud-tokens.is-hidden {
+  display: none;
+}
+
+/* The initial tap-to-start opening only: the button groups (powerups, actions, info) stay
+ * hidden through the dealer walk-in + first deal, then fade in once that hand is fully dealt.
+ * Opacity (not display) so it eases in with the same 0.5s the groups transition; pointer-events
+ * off — including the child buttons, which re-enable themselves under a `pointer-events: none`
+ * parent — so the invisible buttons can't be hit. Added at construction, removed once (never
+ * re-added), so only the opening sequence is gated. The two corner toggles (battery + music) are
+ * released EARLIER than the rest — with the HUD on start, not after the deal — see
+ * revealCornerToggles; they're listed here purely so they can't be tapped through the intro. */
+.hud-powerups.opening-hidden,
+.hud-actions.opening-hidden,
+.hud-info.opening-hidden,
+.hud-battery.opening-hidden,
+.hud-music.opening-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.hud-powerups.opening-hidden button,
+.hud-actions.opening-hidden button {
+  pointer-events: none;
+}
+
+/* An armed powerup (e.g. Bust Block) pulses gold to show it's live. It overrides
+ * the dimmed :disabled look — armed reads as "on", not unavailable — and clears
+ * itself once the shield is spent and syncOverlay drops the class. */
+.hud-powerups button.is-active,
+.hud-powerups button.is-active:disabled,
+.hud-coda-powers button.is-active,
+.hud-coda-powers button.is-active:disabled {
+  opacity: 1;
+  cursor: default;
+  color: #2a1e04;
+  background: linear-gradient(#ffe08a, #f5c24b);
+  animation: powerup-glow 1.2s ease-in-out infinite;
+}
+
+@keyframes powerup-glow {
+  0%,
+  100% {
+    box-shadow: 0 2px 0 #a77c1e, 0 0 0 2px rgba(255, 214, 110, 0.45), 0 0 10px 2px rgba(255, 196, 74, 0.55);
+  }
+  50% {
+    box-shadow: 0 2px 0 #a77c1e, 0 0 0 2px rgba(255, 214, 110, 0.75), 0 0 22px 6px rgba(255, 196, 74, 0.95);
+  }
+}
+
+/* Choose-upgrade card: after a non-final kill, a translucent backdrop dims the
+ * table and presents three big path buttons (one per upgrade path). Each shows the
+ * effect it would unlock next; a maxed path's button is hidden (button.is-hidden).
+ * The path colour is passed per-button via the --upgrade-color custom property. */
+.upgrade-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 5; /* above the HUD columns + counter */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 20px;
+  pointer-events: auto;
+  /* The whole card (darkness + buttons) fades in when it opens, rather than
+   * popping. On a pick it's the per-element .is-dismissing animation that plays
+   * instead; a plain hide (no pick) just fades back out via this opacity. */
+  opacity: 1;
+  transition: opacity 300ms ease;
+}
+
+/* The darkness backdrop is its own layer so a pick can fade it out on its own
+ * timing while the chosen button fades + scales up independently (see below). */
+.upgrade-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(ellipse at center, rgba(6, 8, 16, 0.7), rgba(3, 4, 9, 0.9));
+  transition: opacity 350ms ease;
+}
+
+/* Hidden: transparent + inert, but still transitions its opacity so open/close
+ * fade rather than snap. visibility:hidden also drops it from hit-testing/a11y. */
+.upgrade-panel.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* A pick was made: for the 350ms the JS holds before committing, the darkness +
+ * title dissolve, the unselected buttons snap away, and the chosen button
+ * (.is-chosen) fades while scaling up. Kept in sync with UPGRADE_DISMISS_MS. */
+.upgrade-panel.is-dismissing {
+  pointer-events: none;
+}
+
+.upgrade-panel.is-dismissing::before {
+  opacity: 0;
+}
+
+.upgrade-panel.is-dismissing .upgrade-btn {
+  opacity: 0; /* unselected buttons snap out — opacity isn't in their transition */
+}
+
+.upgrade-panel.is-dismissing .upgrade-panel__title {
+  opacity: 0; /* fades with the backdrop over its own 350ms transition */
+}
+
+.upgrade-panel.is-dismissing .upgrade-btn.is-chosen {
+  opacity: 0;
+  transform: scale(1.3);
+  transition: opacity 350ms ease, transform 350ms cubic-bezier(0.2, 0.75, 0.35, 1);
+}
+
+.upgrade-panel__title {
+  font: 800 27px var(--font-ui);
+  font-family: var(--font-display);
+  font-weight: 400;
+  color: #ffffff;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
+  transition: opacity 350ms ease;
+}
+
+.upgrade-panel__row {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.upgrade-btn {
+  --upgrade-color: #888888;
+  --upgrade-glow: rgba(255, 255, 255, 0.15); /* per-path neon halo; set from JS (buildUpgradePanel_) */
+  position: relative; /* anchors the top-right tier badge */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  width: 224px;
+  min-height: 156px;
+  padding: 18px;
+  border: none;
+  border-radius: 16px;
+  cursor: pointer;
+  text-align: left;
+  color: #ffffff;
+  /* A light-to-dark sheen layered over the solid path colour gives depth without
+   * needing colour math — portable across the CrazyGames device range. */
+  background: linear-gradient(158deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.26)), var(--upgrade-color);
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.38), 0 9px 22px rgba(0, 0, 0, 0.5), 0 0 20px var(--upgrade-glow);
+  transition: transform 0.06s ease, box-shadow 0.06s ease;
+}
+
+.upgrade-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.38), 0 13px 28px rgba(0, 0, 0, 0.55), 0 0 30px var(--upgrade-glow);
+}
+
+.upgrade-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.38), 0 3px 10px rgba(0, 0, 0, 0.5);
+}
+
+/* The path icon (replaces the path name text). A fixed square box with contain
+ * keeps every icon the same slot regardless of its own aspect ratio, so the
+ * effect text lines up across the three buttons. */
+.upgrade-btn__icon {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+}
+
+.upgrade-btn__effect {
+  font: 600 15px var(--font-ui);
+  line-height: 1.32;
+  color: rgba(255, 255, 255, 0.97);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* The tier badge (1 / 2 / 3) pinned to the button's top-right corner: a small dark
+ * disc so the number reads clearly over any of the three path colours. */
+.upgrade-btn__tier {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  font: 800 14px var(--font-ui);
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Compact layout: smaller buttons + tighter padding. Applies when the viewport is NARROW (portrait
+ * phones) OR SHORT (a wide-but-short window / landscape phone). A short viewport can't fit the roomy
+ * desktop column; shrinking to this compact layout lets it play in that orientation without a
+ * rotate / too-small prompt. The 620px height is comfortably above the ~580px the desktop column
+ * needs, so the roomy layout is only used when it genuinely fits. The viewport guard measures the
+ * resulting column and mirrors this same breakpoint, so the two stay in sync. Keep the action bar to
+ * one row so it stays a thin strip below the raised powerup column. */
+@media (max-width: 560px), (max-height: 620px) {
+  .hud-tokens {
+    top: max(8px, env(safe-area-inset-top, 0px));
+    left: max(10px, env(safe-area-inset-left, 0px));
+    gap: 5px;
+    padding: 4px 12px 2px 9px;
+    border-radius: 8px;
+    font-size: 18px;
+  }
+
+  .hud-tokens__icon {
+    height: 22px;
+    width: auto;
+  }
+
+  .hud-points {
+    top: max(8px, env(safe-area-inset-top, 0px));
+    right: max(10px, env(safe-area-inset-right, 0px));
+  }
+
+  .hud-points__star {
+    height: 20px;
+  }
+
+  .hud-points__count {
+    font-size: 23px;
+  }
+
+  .hud-points__delta {
+    font-size: 20px;
+  }
+
+  .hud-info {
+    bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    left: max(10px, env(safe-area-inset-left, 0px));
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+
+  .hud-battery {
+    bottom: max(10px, env(safe-area-inset-bottom, 0px)); /* bottom-right corner, mirroring the compact .hud-info */
+    right: max(10px, env(safe-area-inset-right, 0px));
+    width: 32px;
+    height: 32px;
+  }
+
+  .hud-battery__icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .hud-music {
+    bottom: calc(max(10px, env(safe-area-inset-bottom, 0px)) + 40px); /* clears the 32px compact battery button + 8px gap */
+    right: max(10px, env(safe-area-inset-right, 0px));
+    width: 32px;
+    height: 32px;
+  }
+
+  .hud-music__icon {
+    width: 15px;
+    height: 15px;
+  }
+
+  .hud-music::after {
+    left: 6px;
+    right: 6px;
+  }
+
+  .hud-battery-toast {
+    right: max(10px, env(safe-area-inset-right, 0px)); /* track the compact toggle's right edge (.hud-battery right: 10px) */
+    bottom: calc(90px + env(safe-area-inset-bottom, 0px)); /* clears both stacked compact toggles (battery 10+32+8, then music 32+8) */
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  /* The offer banner thins with the rest of the compact HUD: a 38px row centred in the same 66px
+   * strip -> 14px either side. Side padding tracks the compact corner toggles (32px at right:10px),
+   * which is what the wider row has to clear. */
+  .hud-actions.has-offer {
+    bottom: max(14px, env(safe-area-inset-bottom, 0px));
+    padding: 0 46px;
+  }
+
+  .hud-actions button.hud-btn-watch-ad {
+    gap: 7px;
+    padding: 7px 14px;
+    min-height: 38px;
+    border-radius: 11px;
+    font-size: 16px;
+  }
+
+  .watch-ad__video {
+    height: 22px;
+  }
+
+  .watch-ad__icon {
+    height: 19px;
+  }
+
+  .hud-ad-toast {
+    padding: 5px 10px;
+    font-size: 13px;
+  }
+
+  .hud-powerups .hud-help {
+    width: 32px;
+    height: 32px;
+    font-size: 15px;
+  }
+
+  /* Compress the ability guide so all eight rows clear a short phone screen. */
+  .help-panel__card {
+    gap: 9px;
+    padding: 15px 16px;
+    border-radius: 12px;
+  }
+
+  .help-panel__title {
+    font-size: 18px;
+  }
+
+  .help-panel__list {
+    gap: 6px;
+  }
+
+  .help-panel__name {
+    flex-basis: 42%;
+    max-width: 42%;
+    font-size: 13px;
+  }
+
+  .help-panel__desc {
+    font-size: 12.5px;
+  }
+
+  .help-panel__hint {
+    font-size: 11px;
+  }
+
+  /* Compress the TABLE RULES takeover for a short phone screen. */
+  .rules-panel__card {
+    gap: 10px;
+    padding: 16px 18px;
+    border-radius: 12px;
+  }
+  .rules-panel__title {
+    font-size: 18px;
+  }
+  .rules-panel__sub {
+    font-size: 12.5px;
+  }
+  .rules-panel__list {
+    gap: 7px;
+  }
+  .rules-panel__text {
+    font-size: 13.5px;
+  }
+  .rules-panel__hint {
+    font-size: 11px;
+  }
+
+  .credits-panel__card {
+    gap: 13px;
+    padding: 16px 18px;
+  }
+  .credits-panel__heading {
+    font-size: 13px;
+  }
+  .credits-panel__line {
+    font-size: 12px;
+  }
+
+  .hud-message {
+    font-size: 19px;
+  }
+
+  .hud-powerups {
+    left: max(10px, env(safe-area-inset-left, 0px));
+    top: 50px;
+    gap: 6px;
+  }
+
+  .hud-powerups button {
+    font-size: 10.5px;
+    padding: 3px 5px 15px; /* tighter top/side; bottom still clears the corner pill */
+    min-height: 30px;
+    border-radius: 8px;
+  }
+
+  /* The coda ability column sits exactly where the powerups do (which are hidden during the
+   * coda), so it takes the SAME mobile shrink — otherwise the two coda buttons keep their full
+   * desktop size and read way too big on a phone. Mirrors the .hud-powerups shrink above, plus
+   * the coda button's own min-width floor. */
+  .hud-coda-powers {
+    left: max(10px, env(safe-area-inset-left, 0px));
+    top: 50px;
+    gap: 6px;
+  }
+
+  .hud-coda-powers button {
+    font-size: 10.5px;
+    padding: 3px 5px 15px;
+    min-width: 96px;
+    min-height: 30px;
+    border-radius: 8px;
+  }
+
+  .cost-pill {
+    right: 0;
+    bottom: 0;
+    padding: 1px 4px;
+    font-size: 10px;
+    border-radius: 8px 0 8px 0; /* match the mobile button's 8px corner */
+  }
+
+  .cost-pill__icon {
+    height: 12px;
+    width: auto;
+  }
+
+  .hud-actions {
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    gap: 6px;
+    padding: 0 8px;
+    flex-wrap: nowrap;
+  }
+
+  .hud-actions button {
+    font-size: 13px;
+    padding: 5px 12px;
+    min-width: 54px;
+    min-height: 32px;
+    border-radius: 9px;
+  }
+
+  /* Stack the three path buttons and lay each out as a compact name + effect row
+   * so all three (plus the title) fit a phone screen without scrolling. */
+  .upgrade-panel {
+    gap: 14px;
+    padding: 14px;
+  }
+
+  .upgrade-panel__title {
+    font-size: 20px;
+  }
+
+  /* A single-column grid with equal-height rows: grid-auto-rows: 1fr sizes all
+   * three rows to the tallest, so a longer effect line can't leave one button
+   * taller than the others (each stretches to fill its row by default). */
+  .upgrade-panel__row {
+    display: grid;
+    grid-auto-rows: 1fr;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .upgrade-btn {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    width: min(90vw, 360px);
+    min-height: 0;
+    padding: 12px 14px;
+    border-radius: 13px;
+  }
+
+  .upgrade-btn__icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .upgrade-btn__effect {
+    font-size: 13px;
+    padding-right: 22px; /* clear the top-right tier badge in the single-row layout */
+  }
+
+  .upgrade-btn__tier {
+    top: 6px;
+    right: 8px;
+    width: 21px;
+    height: 21px;
+    font-size: 12px;
+  }
+}
+
+/* Short screens (a phone held landscape): every px of felt counts, so the banner gets one more
+ * squeeze — a 52px strip with a 34px row centred in it (9px either side).
+ * MUST come after the compact block: same specificity, later wins. */
+@media (max-height: 430px) {
+  /* Matches the base rule's selector weight — a bare `.hud-ad-scrim` (0,1,0) would lose to it. */
+  .stage__overlay > .hud-ad-scrim {
+    height: calc(43px + max(9px, env(safe-area-inset-bottom, 0px))); /* 34px button + 9px above + the row's offset */
+  }
+
+  .hud-actions.has-offer {
+    bottom: max(9px, env(safe-area-inset-bottom, 0px));
+    padding: 0 42px;
+  }
+
+  .hud-actions button.hud-btn-watch-ad {
+    gap: 6px;
+    padding: 6px 12px;
+    min-height: 34px;
+    border-radius: 9px;
+    font-size: 15px;
+  }
+
+  .watch-ad__video {
+    height: 19px;
+  }
+
+  .watch-ad__icon {
+    height: 17px;
+  }
+
+  .hud-ad-toast {
+    padding: 4px 9px;
+    font-size: 12px;
+  }
+}
+
+/* Larger screens: scale the points counter + its "+N" delta up so the score reads big
+ * from across the room (the base sizes suit a laptop; a desktop monitor can take more). */
+@media (min-width: 1200px) {
+  .hud-points__star {
+    height: 38px;
+  }
+
+  .hud-points__count {
+    font-size: 44px;
+  }
+
+  .hud-points__delta {
+    font-size: 35px;
+  }
+}
+
+@media (min-width: 1700px) {
+  .hud-points__star {
+    height: 48px;
+  }
+
+  .hud-points__count {
+    font-size: 56px;
+  }
+
+  .hud-points__delta {
+    font-size: 42px;
+  }
+}
+
+/* Tap-to-play catcher: a TRANSPARENT full-screen layer that captures the opening tap so the
+ * full scene (and the nexus's projected "TAP TO START") shows through. Removed on first tap. */
+.intro-catch {
+  position: absolute;
+  inset: 0;
+  z-index: 20; /* above the canvas layers + button overlay, until the first tap removes it */
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The Continue / New game title menu (only when a saved run exists). Sits in the bottom strip —
+ * between the bottom of the screen and the player's bet circle (the same ~96px reserve the action
+ * buttons use) — as a centred horizontal row; the wordmark still projects above. Same z-index as
+ * the tap catcher (above the canvas + hidden HUD). */
+.title-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 26px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column; /* saver pill on top, the buttons row below */
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  -webkit-tap-highlight-color: transparent;
+}
+.title-menu-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch; /* both buttons take the taller one's height (Continue has a subtitle) */
+  justify-content: center;
+  gap: 12px;
+}
+.title-menu-row button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center; /* centre the label(s) within the shared height */
+  font: 700 16px var(--font-ui);
+  color: #2f2013;
+  background: linear-gradient(var(--gold-hi), var(--gold-lo));
+  border: none;
+  border-radius: 12px;
+  padding: 8px 22px;
+  min-width: 120px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.35), 0 0 14px rgba(var(--teal-rgb), 0.2);
+  transition: transform 0.05s ease, background 0.15s ease;
+}
+.title-menu-row button:hover {
+  background: linear-gradient(#e6c473, #d4ad57);
+  box-shadow: 0 3px 0 var(--gold-lip), 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.5), 0 0 18px rgba(var(--teal-rgb), 0.34);
+}
+.title-menu-row button:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4);
+}
+.title-menu-row .title-sub {
+  display: block;
+  font: 600 11px var(--font-ui);
+  opacity: 0.75;
+  margin-top: 2px;
+}
+/* New game is the quieter, secondary choice. */
+.title-menu-row .title-btn-new {
+  color: rgba(var(--cream-rgb), 0.92);
+  background: var(--glass);
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.4), 0 0 12px rgba(var(--teal-rgb), 0.18);
+}
+.title-menu-row .title-btn-new:hover {
+  background: linear-gradient(rgba(22, 44, 50, 0.72), rgba(12, 26, 32, 0.72));
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(var(--teal-rgb), 0.6), 0 0 16px rgba(var(--teal-rgb), 0.3);
+}
+
+/* Battery-saver toggle on the title / tap-to-start screen — a quiet pill pinned bottom-centre. On the
+ * plain tap-to-start screen it's a standalone overlay child (absolute, bottom-centre); inside the
+ * Continue / New game menu it becomes a flow item ABOVE the buttons (see .title-menu .title-saver).
+ * The in-game HUD has its own round button; this only shows before the run starts. */
+.title-saver {
+  position: absolute;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21; /* above the tap catcher / title menu (both z-index 20) */
+  font: 700 12px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.82);
+  background: var(--glass);
+  border: 1px solid rgba(var(--teal-rgb), 0.4);
+  border-radius: 999px;
+  padding: 7px 16px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: inset 0 0 0 1px rgba(var(--teal-rgb), 0.15);
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+.title-saver.is-on {
+  color: #06232a;
+  background: linear-gradient(rgba(var(--teal-bright-rgb), 0.95), rgba(96, 220, 210, 0.95));
+  border-color: rgba(184, 250, 244, 0.85);
+  box-shadow: 0 0 12px rgba(var(--teal-rgb), 0.5);
+}
+/* Inside the Continue / New game menu the pill is a flow item stacked above the buttons (the menu is a
+ * bottom-anchored column), not an absolutely-pinned overlay child. */
+.title-menu .title-saver {
+  position: static;
+  transform: none;
+}
+
+/* The Credits link on the title / tap-to-start screen (attribution for the CC music + Flaticon
+ * icons). A quiet pill pinned top-left, clear of the bottom-anchored Continue / New game menu (which
+ * overlapped it in the bottom-right on narrow screens) and the bottom-centre battery pill. z-index 21
+ * keeps it above the tap catcher / title menu (both z 20) so its own taps win. The safe-area insets
+ * keep it out from under a mobile notch / status bar. Intro only; removed on start. */
+.credits-link {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left, 0px));
+  top: max(14px, env(safe-area-inset-top, 0px));
+  z-index: 21;
+  font: 700 12px var(--font-ui);
+  color: rgba(var(--cream-rgb), 0.72);
+  background: var(--glass);
+  border: 1px solid rgba(var(--teal-rgb), 0.32);
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: inset 0 0 0 1px rgba(var(--teal-rgb), 0.12);
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.credits-link:hover {
+  color: rgba(var(--cream-rgb), 0.95);
+  border-color: rgba(var(--teal-rgb), 0.55);
+}
+
+/* The build version, pinned top-right opposite the Credits link (same insets + stacking). A plain
+ * dim label, not a pill — it's a stamp, not a control — and pointer-events:none so a press on it
+ * falls through to tap-to-start. Intro only; removed on start. */
+.version-tag {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right, 0px));
+  top: max(14px, env(safe-area-inset-top, 0px));
+  z-index: 21;
+  font: 700 12px var(--font-ui);
+  letter-spacing: 0.05em;
+  color: rgba(var(--cream-rgb), 0.5);
+  pointer-events: none;
+}
+
+/* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action
+ * buttons, info button) is hidden — only the table + the nexus's projected "TAP TO START" show.
+ * It fades in on the tap. */
+.stage__overlay {
+  transition: opacity 0.5s ease;
+}
+.stage__overlay.hud-hidden {
+  opacity: 0;
+}

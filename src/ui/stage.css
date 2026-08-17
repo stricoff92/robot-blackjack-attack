@@ -1,0 +1,28 @@
+/* Hybrid stage: a full-bleed canvas with an HTML overlay layer on top.
+ *
+ * The canvas renders the game world (table, cards, chips). The overlay hosts
+ * DOM controls (buttons, HUD text) positioned above it. The overlay itself is
+ * click-through — only the interactive elements inside it opt back in. */
+
+.stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.stage canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  touch-action: none;
+}
+
+.stage__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stage__overlay > * {
+  pointer-events: auto;
+}

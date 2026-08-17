@@ -2,128 +2,230 @@ import { describe, expect, it } from 'vitest'
 
 import type { Card, Rank, Suit } from './deck'
 import { hit, stand, startRound } from './round'
-import { applyRound, getShift, isLastCall, nextBet, startRun } from './run'
+import {
+  abilitiesLocked,
+  applyRound,
+  dealerHardHitCeiling,
+  dealerUpcardReshuffleChance,
+  getShift,
+  hitTokens,
+  powerupCost,
+  spendTokens,
+  startRun,
+} from './run'
+
+// The core NEW economy (weighted hits, the hand window, kill cash-in, the cumulative-win points
+// curve, heals, doubles/splits, pushes, the D6 coda) is covered exhaustively in economy.test.ts.
+// This file keeps the PERIPHERAL mechanics that survived the rework unchanged: the shift table, the
+// dealer-upcard reshuffle guard, hit-token pricing, the token economy (rewards + inflation), the
+// final-dealer desperation rules, and the cost/spend helpers.
 
 function card(rank: Rank, suit: Suit = 'spades'): Card {
   return { rank, suit }
 }
 
-function standWin(bet: number) {
-  return stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')], bet))
+// Player 20 over a standing dealer 17 — a plain beat-17 win (8 tokens).
+function standWin() {
+  return stand(startRound([card('K'), card('Q'), card('10', 'hearts'), card('7')]))
 }
 
-function hitThenWin(bet: number) {
-  return stand(hit(startRound([card('9'), card('2'), card('10', 'hearts'), card('7'), card('8')], bet)))
+// Player 9+2, hit an 8 → 19 over a standing dealer 17 — a beat-17 win reached via a hit.
+function hitThenWin() {
+  return stand(hit(startRound([card('9'), card('2'), card('10', 'hearts'), card('7'), card('8')])))
 }
 
-function natural(bet: number) {
-  return startRound([card('A'), card('K'), card('10', 'hearts'), card('7')], bet)
+// Player A+K — a natural blackjack (21 tokens).
+function natural() {
+  return startRound([card('A'), card('K'), card('10', 'hearts'), card('7')])
 }
 
-function dealerBustWin(bet: number) {
-  return stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('6'), card('10', 'hearts')], bet))
-}
-
-function pushHand(bet: number) {
-  return stand(startRound([card('K'), card('Q'), card('K', 'hearts'), card('Q', 'hearts')], bet))
-}
-
-function losingHand(bet: number) {
-  return stand(startRound([card('9'), card('7'), card('K'), card('Q')], bet))
+// Player 7+7, hit a 7 → a non-natural 21 over a standing dealer 20: the top token tier (22).
+function beatTwentyWin() {
+  return stand(hit(startRound([card('7'), card('7'), card('10'), card('10', 'hearts'), card('7', 'hearts')])))
 }
 
 describe('startRun', () => {
   it('opens with the documented starting resources', () => {
     const run = startRun(1)
 
-    expect(run.chips).toBe(300)
-    expect(run.tokens).toBe(0)
-    expect(run.integrity).toBe(100)
+    expect(run.tokens).toBe(100)
+    expect(run.score).toBe(0)
+    expect(run.wins).toBe(0)
+    expect(run.integrity).toBe(getShift(1).maxHits) // full health = the dealer's hit count
     expect(run.shiftIndex).toBe(1)
   })
 })
 
 describe('getShift', () => {
   it('reads the fixed ladder for early shifts', () => {
-    expect(getShift(4)).toMatchObject({ minBet: 150, maxBet: 1500, scoreMultiplier: 3 })
+    expect(getShift(4)).toMatchObject({ maxHits: 8, maxHands: 18, maxHeals: 0, dealerSoft17: 'hit' })
   })
 
   it('extrapolates prototype units beyond the table', () => {
-    expect(getShift(7)).toMatchObject({ minBet: 2500, maxBet: 25000, scoreMultiplier: 7 })
+    expect(getShift(7)).toMatchObject({ maxHits: 12, maxHands: 33, maxHeals: 3 })
+  })
+})
+
+describe('dealerUpcardReshuffleChance', () => {
+  it('suppresses the dealer 10/11 up-card only on the first three dealers', () => {
+    expect(dealerUpcardReshuffleChance(1)).toBe(1) // never shows a 10/11
+    expect(dealerUpcardReshuffleChance(2)).toBe(0.3)
+    expect(dealerUpcardReshuffleChance(3)).toBe(0.15)
+    expect(dealerUpcardReshuffleChance(4)).toBe(0) // fully unguarded from here on
+    expect(dealerUpcardReshuffleChance(5)).toBe(0)
+    expect(dealerUpcardReshuffleChance(6)).toBe(0)
+  })
+
+  it('keeps dev-jumped dealers past the table honest (never negative)', () => {
+    expect(dealerUpcardReshuffleChance(7)).toBe(0)
+    expect(dealerUpcardReshuffleChance(12)).toBe(0)
+  })
+})
+
+describe('hitTokens', () => {
+  it('pays the base for a risk-free hit and the max for a near-certain bust', () => {
+    expect(hitTokens(0)).toBe(1)
+    expect(hitTokens(1)).toBe(10)
+  })
+
+  it('scales up with the bust risk, monotonically', () => {
+    expect(hitTokens(0.5)).toBe(6)
+    expect(hitTokens(0.9)).toBe(9)
+    let prev = 0
+    for (let p = 0; p <= 1.0001; p += 0.05) {
+      const paid = hitTokens(p)
+      expect(paid).toBeGreaterThanOrEqual(prev)
+      prev = paid
+    }
+  })
+
+  it('clamps out-of-range odds', () => {
+    expect(hitTokens(-1)).toBe(1)
+    expect(hitTokens(2)).toBe(10)
   })
 })
 
 describe('applyRound token rewards', () => {
-  it('grants ten tokens for a plain win', () => {
-    expect(applyRound(startRun(1), standWin(10)).tokens).toBe(10)
+  // Isolate the REWARD from the run's starting token balance by baselining to 0 tokens.
+  const fromZero = () => ({ ...startRun(1), tokens: 0 })
+
+  it('pays the dealer-total tier for a win (here, a standing 17)', () => {
+    expect(applyRound(fromZero(), standWin()).tokens).toBe(8)
   })
 
   it('does not re-count hits at settle, since they are credited live', () => {
-    expect(applyRound(startRun(1), hitThenWin(10)).tokens).toBe(10)
+    expect(applyRound(fromZero(), hitThenWin()).tokens).toBe(8)
   })
 
   it('grants twenty-one tokens for a blackjack', () => {
-    expect(applyRound(startRun(1), natural(10)).tokens).toBe(21)
+    expect(applyRound(fromZero(), natural()).tokens).toBe(21)
   })
 })
 
-describe('applyRound advancement', () => {
-  it('only advances by destroying the dealer, and pays the destroy token', () => {
-    let run = startRun(1)
-    for (let hand = 0; hand < 4; hand += 1) {
-      run = applyRound(run, dealerBustWin(10))
-    }
-
-    expect(run.shiftIndex).toBe(2)
-    expect(run.integrity).toBe(100)
-    expect(run.kills).toEqual([1])
-    expect(run.tokens).toBe(4 * 10 + 40)
+describe('late-dealer house rules', () => {
+  it('sets the soft-17 rule per dealer: stand early, hit mid, smart on Dealer 6', () => {
+    expect(getShift(2).dealerSoft17).toBe('stand')
+    expect(getShift(3).dealerSoft17).toBe('hit')
+    expect(getShift(4).dealerSoft17).toBe('hit')
+    expect(getShift(5).dealerSoft17).toBe('hit')
+    expect(getShift(6).dealerSoft17).toBe('smart')
   })
 
-  it('never advances a dealer that is not destroyed, no matter how many hands pass', () => {
-    let run = startRun(1)
-    for (let hand = 0; hand < 15; hand += 1) {
-      run = applyRound(run, pushHand(10))
-    }
-
-    expect(run.shiftIndex).toBe(1)
-    expect(run.integrity).toBe(100)
-    expect(run.kills).toEqual([])
+  it('gives the late dealers a heal budget (maxHeals), none before dealer 5', () => {
+    expect(getShift(4).maxHeals).toBe(0)
+    expect(getShift(5).maxHeals).toBe(2)
+    expect(getShift(6).maxHeals).toBe(3)
   })
 })
 
-describe('nextBet', () => {
-  it('scales the fixed bet up as a dealer drags on', () => {
-    const run0 = startRun(1)
-    expect(nextBet(run0)).toBe(10)
+describe('Dealer 6 desperation', () => {
+  // maxHits(6) = 10, so integrity IS the tenths of health: 2 = 20%, 1 = 10%.
+  const d6 = (integrity: number) => ({ ...startRun(1), shiftIndex: 6, integrity })
 
-    const run1 = applyRound(run0, standWin(10))
-    expect(run1.handsThisDealer).toBe(1)
-    expect(nextBet(run1)).toBe(15)
+  it('raises the hard-hit ceiling as the final dealer nears death', () => {
+    expect(dealerHardHitCeiling(d6(10))).toBe(17) // full health
+    expect(dealerHardHitCeiling(d6(2))).toBe(18) // 20% → below the 30% threshold
+    expect(dealerHardHitCeiling(d6(1))).toBe(19) // 10% → below the 20% threshold
+    expect(dealerHardHitCeiling({ ...startRun(1), shiftIndex: 3, integrity: 1 })).toBe(17) // not the final dealer
   })
 
-  it('resets to the new dealer minimum after a destroy', () => {
-    let run = startRun(1)
-    for (let hand = 0; hand < 4; hand += 1) {
-      run = applyRound(run, dealerBustWin(10))
-    }
-
-    expect(run.shiftIndex).toBe(2)
-    expect(nextBet(run)).toBe(25)
+  it('locks token abilities below 20% health, final dealer only', () => {
+    expect(abilitiesLocked(d6(2))).toBe(false) // exactly 20% — not yet locked
+    expect(abilitiesLocked(d6(1))).toBe(true) // 10% < 20%
+    expect(abilitiesLocked({ ...startRun(1), shiftIndex: 5, integrity: 1 })).toBe(false) // not the final dealer
   })
 })
 
-describe('applyRound bust-out', () => {
-  it('ends the run when chips reach zero', () => {
-    const run = applyRound({ ...startRun(1), chips: 40 }, losingHand(40))
+describe('applyRound kill', () => {
+  // The invariant resumeKillReplay_ (game-view, the post-kill resume path) relies on: on a non-final
+  // kill the shift advances and the beaten dealer is recorded as the last kill, so `shiftIndex - 1` IS
+  // the outgoing dealer to show dying/gone under the upgrade picker.
+  it('a non-final kill advances the shift; the beaten dealer is shiftIndex - 1', () => {
+    const after = applyRound({ ...startRun(1), integrity: 1 }, beatTwentyWin())
+    expect(after.kills.length).toBe(1)
+    expect(after.coda).toBe(false)
+    expect(after.shiftIndex).toBe(2)
+    expect(after.kills.at(-1)).toBe(after.shiftIndex - 1)
+  })
 
-    expect(run.over).toBe(true)
-    expect(run.chips).toBe(0)
+  // The 6th kill enters the coda instead of a normal 'resolved' — so a resolved + upgradePending save
+  // (which the resume path keys on) can NEVER occur at the final-dealer boundary. Companion to the
+  // token-inflation coda test below; here we pin the phase-defining flags directly.
+  it('the final-dealer kill sets coda (never a resolved + upgrade pick)', () => {
+    const after = applyRound(
+      { ...startRun(1), shiftIndex: 6, integrity: 1, kills: [1, 2, 3, 4, 5] },
+      beatTwentyWin(),
+    )
+    expect(after.kills.length).toBe(6)
+    expect(after.coda).toBe(true)
   })
 })
 
-describe('isLastCall', () => {
-  it('triggers when chips fall below the table minimum', () => {
-    expect(isLastCall({ ...startRun(1), chips: 5 })).toBe(true)
+describe('token inflation', () => {
+  // A beat-20 win kills Dealer 1 at its last hit; that killing hand banks 22 win tokens + a
+  // 40-token kill bounty toward the shift's inflation tally (Dealer 1 denom = 140).
+  it('adds a fraction of the shift cap based on the shift token earnings', () => {
+    // 78 preset + 22 + 40 = 140 = the denom → the full 7% cap.
+    const full = applyRound({ ...startRun(1), integrity: 1, tokensThisShift: 78 }, beatTwentyWin())
+    expect(full.tokenInflation).toBeCloseTo(0.07, 5)
+    expect(full.tokensThisShift).toBe(0) // reset for the next dealer
+  })
+
+  it('scales the add down when the shift earned less than the denom', () => {
+    // 8 + 22 + 40 = 70 = half the 140 denom → half the cap.
+    const half = applyRound({ ...startRun(1), integrity: 1, tokensThisShift: 8 }, beatTwentyWin())
+    expect(half.tokenInflation).toBeCloseTo(0.035, 5)
+  })
+
+  it('does not inflate on the Dealer 6 kill (which enters the coda)', () => {
+    const run = { ...startRun(1), shiftIndex: 6, integrity: 1, kills: [1, 2, 3, 4, 5], tokensThisShift: 300 }
+    const after = applyRound(run, beatTwentyWin())
+    expect(after.coda).toBe(true)
+    expect(after.tokenInflation).toBe(0)
+  })
+
+  it('Token eco resists inflation — a maxed path cuts the add to ~a third', () => {
+    const base = { ...startRun(1), integrity: 1, tokensThisShift: 78 }
+    const none = applyRound(base, beatTwentyWin())
+    const maxed = applyRound({ ...base, upgrades: { antiDealer: 0, chipEco: 0, tokenEco: 3 } }, beatTwentyWin())
+    expect(none.tokenInflation).toBeCloseTo(0.07, 5)
+    expect(maxed.tokenInflation).toBeCloseTo(0.0245, 5) // ×0.35 resistance (both hands cap the fraction)
+  })
+})
+
+describe('powerupCost', () => {
+  it('inflates a base cost by the run inflation, rounded', () => {
+    expect(powerupCost(60, { ...startRun(1), tokenInflation: 0 })).toBe(60)
+    expect(powerupCost(60, { ...startRun(1), tokenInflation: 0.2 })).toBe(72)
+    expect(powerupCost(50, { ...startRun(1), tokenInflation: 0.05 })).toBe(53) // round(52.5)
+  })
+})
+
+describe('spendTokens', () => {
+  it('accumulates tokens spent (cumulative, never decreases)', () => {
+    const run = { ...startRun(1), tokens: 100 }
+    const after = spendTokens(spendTokens(run, 30), 20)
+    expect(after.tokensSpent).toBe(50)
+    expect(after.tokens).toBe(50)
   })
 })
