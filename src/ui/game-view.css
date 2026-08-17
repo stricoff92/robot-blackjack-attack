@@ -2053,6 +2053,20 @@ button.is-hidden,
   border-color: rgba(var(--teal-rgb), 0.55);
 }
 
+/* The build version, pinned top-right opposite the Credits link (same insets + stacking). A plain
+ * dim label, not a pill — it's a stamp, not a control — and pointer-events:none so a press on it
+ * falls through to tap-to-start. Intro only; removed on start. */
+.version-tag {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right, 0px));
+  top: max(14px, env(safe-area-inset-top, 0px));
+  z-index: 21;
+  font: 700 12px var(--font-ui);
+  letter-spacing: 0.05em;
+  color: rgba(var(--cream-rgb), 0.5);
+  pointer-events: none;
+}
+
 /* During the tap-to-play intro the whole HUD overlay (token/points counters, powerup + action
  * buttons, info button) is hidden — only the table + the nexus's projected "TAP TO START" show.
  * It fades in on the tap. */

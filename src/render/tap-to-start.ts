@@ -16,11 +16,19 @@ const TAP_STRIKE_MS = 520
 
 const CYAN: HoloTextStyle = { glow: 'rgba(130, 240, 236, 0.95)', bloom: 'rgba(150, 246, 242, 0.55)', core: 'rgba(214, 253, 251, 0.9)' }
 
-// Draw the opening projection — the ROBOT / BLACKJACK / ATTACK title near the top of the felt
-// above a "TAP TO START" line — and RETURN their boxes (ray-targets). `age` = ms since it
-// appeared (strike-in), `fade` winds it out on the tap (1 → 0), `now` positions the shared holo
-// flicker + the breathing pulse.
-export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: number, fade: number, now: number, showPrompt = true): HoloRayTarget[] {
+// Draw the opening projection — the ROBOT / BLACKJACK / ATTACK title near the top of the felt, the
+// player's best score under it, and a "TAP TO START" line below that — and RETURN their boxes
+// (ray-targets). `age` = ms since it appeared (strike-in), `fade` winds it out on the tap (1 → 0),
+// `now` positions the shared holo flicker + the breathing pulse.
+export function drawTapToStart(
+  ctx: CanvasRenderingContext2D,
+  l: Layout,
+  personalBest: number,
+  age: number,
+  fade: number,
+  now: number,
+  showPrompt = true,
+): HoloRayTarget[] {
   const cx = l.width / 2
   const scale = Math.min(l.width, l.height)
 
@@ -70,11 +78,24 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
   const lineCenter = (i: number): number => firstCenter + i * titleLineH
   const titleBottom = lineCenter(TITLE_LINES.length - 1) + titlePx * 0.5
 
-  // Tap line: a gap below the title, but never allowed onto the player's card-box outline —
-  // clamp it to stay a margin ABOVE that outline (this is the overlap the player saw).
+  // Best line: the player's own high score, projected in the gap between the wordmark and whatever
+  // stands below it (the tap prompt, or the Continue / New game buttons). Skipped for first-timers
+  // (best 0). It hangs off the TITLE, so it holds the same spot whether the prompt or the menu is
+  // below it. CrazyGames leaderboards are submit-only, so this is our local best — see game/leaderboard.
+  const bestPx = clamp(scale * 0.034, 15, 30)
+  const bestY = titleBottom + titlePx * 0.34 + bestPx * 0.5
+  const bestBottom = bestY + bestPx * 0.5
+
+  // Tap line: a gap below the block above it, but never allowed onto the player's card-box outline —
+  // clamp it to stay a margin ABOVE that outline (this is the overlap the player saw). On a felt too
+  // short to hold both, that clamp would pull the prompt up onto the best line, so the best line is
+  // dropped instead of overlapped (on the menu screen there is no prompt, so the card box is what it
+  // must clear).
   const cardTop = playerCardBox(l).y
   const tapYMax = cardTop - tapPx * 0.85 - tapPx * 0.35
-  const tapY = Math.min(titleBottom + titlePx * 0.55 + tapPx * 0.5, tapYMax)
+  const tapWithBest = Math.min(bestBottom + titlePx * 0.55 + tapPx * 0.5, tapYMax)
+  const showBest = personalBest > 0 && bestBottom <= (showPrompt ? tapWithBest - tapPx * 0.85 : cardTop - bestPx * 0.5)
+  const tapY = showBest ? tapWithBest : Math.min(titleBottom + titlePx * 0.55 + tapPx * 0.5, tapYMax)
 
   const strikeT = clamp01(age / TAP_STRIKE_MS)
   // A gentle breathing pulse once struck in — never fully off, so it reads as a live invitation.
@@ -112,6 +133,17 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
     ctx.fillText(TITLE_LINES[i], titleLeft, y)
   }
 
+  // --- Best line: cyan holo, centred under the title block, locale-grouped like every other score. ---
+  let bestW = 0
+  if (showBest) {
+    ctx.textAlign = 'center'
+    ctx.globalAlpha = presence
+    ctx.font = boldSystemFont(bestPx)
+    const best = `BEST ${personalBest.toLocaleString()}`
+    bestW = ctx.measureText(best).width
+    drawHoloText(ctx, best, titleCenterX, bestY, bestPx, CYAN, now)
+  }
+
   // --- Tap line: cyan holo, centred under the title block (drawHoloText applies its own
   // flicker on top of the alpha). Suppressed when the Continue / New game menu is showing — the
   // HTML buttons stand in for the prompt, but the wordmark above still projects. ---
@@ -125,12 +157,16 @@ export function drawTapToStart(ctx: CanvasRenderingContext2D, l: Layout, age: nu
   }
   ctx.restore()
 
-  // Ray-targets: the title block always, plus the tap line (centred under it) when shown, each
-  // sized to 1/1.5 of its fan reach so the 25% pad in drawHoloRays lands the lit fan just past the
-  // letters, not to the side.
+  // Ray-targets: the title block always, plus the best line and the tap line (each centred under
+  // it) when shown, each sized to 1/1.5 of its fan reach so the 25% pad in drawHoloRays lands the
+  // lit fan just past the letters, not to the side.
   const targets: HoloRayTarget[] = [
     { left: titleCenterX - titleRayHalfW, right: titleCenterX + titleRayHalfW, top: titleTop, bottom: titleBottom },
   ]
+  if (showBest) {
+    const bestRayHalfW = (bestW / 2 + bestPx * 0.2) / 1.5
+    targets.push({ left: titleCenterX - bestRayHalfW, right: titleCenterX + bestRayHalfW, top: bestY - bestPx * 0.85, bottom: bestY + bestPx * 0.85 })
+  }
   if (showPrompt) {
     const tapRayHalfW = (tapW / 2 + tapPx * 0.2) / 1.5
     targets.push({ left: titleCenterX - tapRayHalfW, right: titleCenterX + tapRayHalfW, top: tapY - tapPx * 0.85, bottom: tapY + tapPx * 0.85 })

@@ -1,6 +1,7 @@
 import './game-view.css'
 
 import { FLAGS } from '../flags'
+import { GAME_VERSION } from '../version'
 import { readDebugFlags } from '../game/debug'
 import type { Card } from '../game/deck'
 import { POWERUPS } from '../game/powerups'
@@ -687,6 +688,8 @@ class GameView {
   // no in-game entry point). Built alongside the tap catcher / title menu; see buildCreditsUi_.
   private creditsLink_: HTMLElement | null = null
   private creditsPanel_: HTMLElement | null = null
+  // The build version, opposite the Credits link on the title screen. Same intro-only lifetime.
+  private versionTag_: HTMLElement | null = null
   // A "Battery Saver ON/OFF" toast that flashes just above the toggle when it's pressed, then fades.
   // batteryToastTimer_ holds the pending hold-then-fade timer so a rapid re-press can restart it.
   private batteryToastEl_!: HTMLDivElement
@@ -878,6 +881,7 @@ class GameView {
       this.buildTapCatcher_()
     }
     this.buildCreditsUi_() // a Credits link (top-left) + modal, in both intro states
+    this.buildVersionTag_() // ...and the build version (top-right)
   }
 
   // No saved run: a transparent full-screen catcher records the first tap. Not a menu.
@@ -971,7 +975,7 @@ class GameView {
     this.titleMenu_ = null
     this.saverToggleEl_?.remove()
     this.saverToggleEl_ = null
-    this.dismissCreditsUi_()
+    this.dismissIntroCorners_()
     // A resumed KILL that lands on the upgrade picker takes a dedicated path: snap to a defeated table
     // (the beaten dealer already gone) and show the picker over the empty felt, rather than walking the
     // full-HP replacement in beneath it. The pick then walks the replacement in via the normal deferred
@@ -1582,7 +1586,8 @@ class GameView {
     if (tap) {
       // Suppress the "TAP TO START" line when the Continue / New game menu is up (the HTML buttons
       // are the prompt); the wordmark still projects.
-      this.frameProjections_.push(...drawTapToStart(ctx, layout, tap.age, tap.fade, timestamp, !this.titleMenuMode_))
+      // getPersonalBest() is in-memory cached after its first read, so the per-frame call is cheap.
+      this.frameProjections_.push(...drawTapToStart(ctx, layout, getPersonalBest(), tap.age, tap.fade, timestamp, !this.titleMenuMode_))
     }
   }
 
@@ -2454,7 +2459,7 @@ class GameView {
       this.saverToggleEl_?.remove() // the title pill goes with the catcher (HUD button takes over)
       this.saverToggleEl_ = null
       this.revealCornerToggles_() // ...and the HUD button (+ music mute) takes over THIS frame
-      this.dismissCreditsUi_() // the Credits link + modal go too
+      this.dismissIntroCorners_() // the Credits link + modal and the version tag go too
     }
     // Game over: the ending cards have just finished being sucked up. Latch the reveal
     // (before drawCards, so the shredded cards stay gone this frame), start projecting
@@ -3558,6 +3563,17 @@ class GameView {
     this.stage_.container.appendChild(panel)
   }
 
+  // The build version in the title screen's top-right corner, mirroring the Credits link opposite it
+  // (an absolute-positioned sibling in the stage container — the HUD overlay is opacity:0 during the
+  // intro). Purely a label: pointer-events are off in CSS so it can never swallow a tap-to-start
+  // press. Torn down with the rest of the intro chrome.
+  private buildVersionTag_(): void {
+    const tag = element('div', 'version-tag')
+    tag.textContent = GAME_VERSION
+    this.versionTag_ = tag
+    this.stage_.container.appendChild(tag)
+  }
+
   private openCredits_(): void {
     this.creditsPanel_?.classList.remove('is-hidden')
   }
@@ -3566,13 +3582,16 @@ class GameView {
     this.creditsPanel_?.classList.add('is-hidden')
   }
 
-  // Remove the Credits link + modal when the run starts (called from every intro-exit path, beside
-  // the saver-pill teardown). Null-guarded, so a path that already tore them down is a no-op.
-  private dismissCreditsUi_(): void {
+  // Remove the title screen's corner chrome — the Credits link + modal, and the version tag — when
+  // the run starts (called from every intro-exit path, beside the saver-pill teardown). Null-guarded,
+  // so a path that already tore them down is a no-op.
+  private dismissIntroCorners_(): void {
     this.creditsLink_?.remove()
     this.creditsLink_ = null
     this.creditsPanel_?.remove()
     this.creditsPanel_ = null
+    this.versionTag_?.remove()
+    this.versionTag_ = null
   }
 
   // Reflect the current battery-saver state on both surfaces: the round HUD button and (when shown)
