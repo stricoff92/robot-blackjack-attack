@@ -32,20 +32,68 @@ window.setTimeout(() => document.getElementById('boot-splash')?.remove(), BOOT_S
 if (import.meta.env.DEV) {
   // WebKit's Error.stack is frames ONLY — unlike V8 it carries no leading "Name: message" line — so
   // printing the stack alone showed an iPhone a list of frames with nothing saying what failed.
-  // Always lead with name + message, then the frames.
+  // Always lead with name + message, then the frames. `||` not `??`: an Error with an empty-string
+  // message must still fall back to the placeholder.
   const describeError = (err: unknown): string => {
     const e = err as { name?: string; message?: string; stack?: string } | undefined
     if (!e || (!e.message && !e.stack)) {
       return String(err)
     }
-    const head = `${e.name ?? 'Error'}: ${e.message ?? '(no message)'}`
+    const head = `${e.name || 'Error'}: ${e.message || '(no message)'}`
     if (!e.stack) {
       return head
     }
     return e.stack.startsWith(head) ? e.stack : `${head}\n${e.stack}`
   }
+
+  // A wallet browser extension — or a browser with a built-in wallet (Brave, Opera) — injects an
+  // EIP-1193 provider as `window.ethereum` into the PAGE context, so failures in ITS script land on
+  // our window.onerror looking like ours. Read LAZILY, only when an error actually surfaces: a
+  // banner on every load would cover the action row in those browsers, and wallets that inject late
+  // (after an async handshake with their service worker) would defeat a one-shot timer.
+  // for…in walks the prototype chain; the explicit list catches non-enumerable flags neither sees.
+  const WALLET_FLAGS = ['isMetaMask', 'isCoinbaseWallet', 'isBraveWallet', 'isRabby', 'isTrust', 'isPhantom']
+  const describeInjectedProvider = (): string => {
+    let provider: Record<string, unknown> | undefined
+    try {
+      provider = (window as unknown as { ethereum?: Record<string, unknown> }).ethereum
+    } catch {
+      return '' // a getter that throws is itself third-party; nothing useful to report
+    }
+    if (!provider) {
+      return ''
+    }
+    const named: string[] = []
+    try {
+      for (const key in provider) {
+        if (key.startsWith('is') && provider[key] === true) {
+          named.push(key)
+        }
+      }
+      for (const key of WALLET_FLAGS) {
+        if (provider[key] === true && !named.includes(key)) {
+          named.push(key)
+        }
+      }
+    } catch {
+      /* proxy-based provider — its mere presence is the answer */
+    }
+    return (
+      `\n\nNOTE: window.ethereum${named.length > 0 ? ` (${named.join(', ')})` : ''} is injected into this ` +
+      `page by a wallet extension or a browser with a built-in wallet. This game contains no web3 code — ` +
+      `errors naming window.ethereum are not from the game.`
+    )
+  }
+
+  // Bounded: every producer prepends here, and an offline load can fire one per failed asset.
+  // Rebuilding textContent from the whole history was O(n²) and unbounded.
+  const MAX_ENTRIES = 20
+  let entries: string[] = []
   const showError = (label: string, detail: string, err?: unknown): void => {
-    const text = `${label}: ${detail}`
+    entries.unshift(`${label}: ${detail}`)
+    if (entries.length > MAX_ENTRIES) {
+      entries.length = MAX_ENTRIES
+    }
     let box = document.getElementById('dev-error-overlay')
     if (!box) {
       box = document.createElement('div')
@@ -56,57 +104,51 @@ if (import.meta.env.DEV) {
           'background:rgba(120,0,0,0.95);color:#fff;font:12px/1.4 ui-monospace,Menlo,monospace;' +
           'padding:10px 12px;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text;',
       )
-      box.addEventListener('pointerdown', () => box && box.remove())
+      box.addEventListener('pointerdown', () => {
+        entries = []
+        box?.remove()
+      })
       document.body.appendChild(box)
     }
-    box.textContent = `⚠️ TAP TO DISMISS\n\n${text}\n\n${box.textContent ?? ''}`
-    // Also log, in case Web Inspector IS attached.
+    box.textContent = `⚠️ TAP TO DISMISS\n\n${entries.join('\n\n')}`
+    // Also log, in case Web Inspector IS attached. Pass the raw value so the node/error is inspectable.
     console.error(label, err ?? detail)
   }
+
   window.addEventListener('error', (ev) => {
-    // A cross-origin script (the CrazyGames SDK is the only one) is scrubbed by the browser to a
-    // bare "Script error." with no error object and no position. Say that outright — otherwise it
-    // reads as an unidentified game crash when it is someone else's script.
+    // A cross-origin script is scrubbed by the browser to a bare "Script error." with no error
+    // object and no position. Say that outright — otherwise it reads as an unidentified game crash
+    // when it is someone else's script. Do NOT name a single culprit: the page's own cross-origin
+    // script is the CrazyGames SDK, but a browser extension injects its own into the page too, and
+    // assuming the SDK sent us chasing the wrong one when a wallet extension was to blame.
     if (!ev.error && !ev.filename) {
-      showError('error', `${ev.message} — cross-origin script; the browser withholds the detail. The only cross-origin script here is the CrazyGames SDK.`)
+      showError(
+        'error',
+        `${ev.message} — a cross-origin script failed and the browser withholds the detail. ` +
+          `Candidates: the CrazyGames SDK, or a script injected into this page by a browser extension.` +
+          describeInjectedProvider(),
+      )
       return
     }
     const where = ev.filename ? `\n  at ${ev.filename}:${ev.lineno}:${ev.colno}` : ''
-    showError('error', `${ev.error ? describeError(ev.error) : ev.message}${where}`, ev.error)
+    const described = `${ev.error ? describeError(ev.error) : ev.message}${where}`
+    showError('error', /ethereum/i.test(described) ? `${described}${describeInjectedProvider()}` : described, ev.error)
   })
-  window.addEventListener('unhandledrejection', (ev) => showError('unhandledrejection', describeError(ev.reason), ev.reason))
-  // A wallet browser extension — or a browser with a built-in wallet (Brave, Opera) — injects an
-  // EIP-1193 provider as `window.ethereum` into the PAGE context, so failures in ITS script land on
-  // our window.onerror looking like game errors. Nothing in this project touches web3, so when one
-  // is present, name it: otherwise "undefined is not an object (evaluating
-  // 'window.ethereum.selectedAddress')" reads as our bug on a device with no visible console.
-  window.setTimeout(() => {
-    let provider: Record<string, unknown> | undefined
-    try {
-      provider = (window as unknown as { ethereum?: Record<string, unknown> }).ethereum
-    } catch {
-      return // an exotic getter that throws is itself third-party; nothing useful to report
-    }
-    if (!provider) {
-      return
-    }
-    let flags = ''
-    try {
-      const on = Object.keys(provider).filter((key) => key.startsWith('is') && provider[key] === true)
-      flags = on.length > 0 ? ` (${on.join(', ')})` : ''
-    } catch {
-      /* proxy-based provider — its mere presence is the answer */
-    }
+
+  window.addEventListener('unhandledrejection', (ev) => {
+    const described = describeError(ev.reason)
     showError(
-      'third-party',
-      `window.ethereum${flags} is injected into this page by a wallet extension or a browser with a ` +
-        `built-in wallet (Brave / Opera inject one with nothing installed). This game contains no web3 ` +
-        `code — errors naming window.ethereum are not from the game.`,
+      'unhandledrejection',
+      /ethereum/i.test(described) ? `${described}${describeInjectedProvider()}` : described,
+      ev.reason,
     )
-  }, 1500)
+  })
 
   // A resource that 404s or is blocked (script / img / audio) fires an error event on the ELEMENT,
   // and that event does not bubble — so the window listener above never sees it. Capture phase does.
+  // KNOWN GAP: this registers when main.ts runs, so index.html's own <head> assets (the font preload
+  // and the CrazyGames SDK) can fail before it exists. Catching those needs an inline <script> in
+  // <head>, which would ship in production — not worth it for a dev-only aid.
   window.addEventListener(
     'error',
     (ev) => {
@@ -114,8 +156,12 @@ if (import.meta.env.DEV) {
       if (!(el instanceof Element)) {
         return
       }
-      const url = (el as HTMLScriptElement).src || (el as HTMLLinkElement).href || '(no url)'
-      showError('resource', `<${el.tagName.toLowerCase()}> failed to load: ${url}`)
+      // currentSrc first: an <img> using srcset has no src. Guard the type — SVG href is an
+      // SVGAnimatedString, which would interpolate as "[object SVGAnimatedString]".
+      const candidate =
+        (el as HTMLImageElement).currentSrc || (el as HTMLScriptElement).src || (el as HTMLLinkElement).href
+      const url = typeof candidate === 'string' && candidate ? candidate : '(no url)'
+      showError('resource', `<${el.tagName.toLowerCase()}> failed to load: ${url}`, el)
     },
     true,
   )
