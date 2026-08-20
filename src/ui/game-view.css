@@ -5,7 +5,15 @@
  *   - primary actions (Hit/Stand/Double/Split/Deal/…): bottom-center row
  *   - message line: centered, just above the action bar
  *
- * Text layers are click-through; only buttons take input. */
+ * Text layers are click-through; only buttons take input.
+ *
+ * Safe-area insets: LEFT / RIGHT / BOTTOM are honoured (landscape side-notch, home indicator). TOP
+ * deliberately is NOT — the CrazyGames app already frames the game clear of the notch, so honouring
+ * env(safe-area-inset-top) on top of that double-insets the top row: on an iPhone 13 the counters
+ * dropped to 47px while the ability column's fixed top (84px / 50px compact) stayed put, hiding the
+ * energy pill behind the first ability button. No browser ever showed this — Safari's own chrome
+ * zeroes the top inset in portrait, and a nested frame (the crazygames.com web player) always
+ * reports 0 — so the top row is a plain constant. Don't reintroduce env() on `top`. */
 
 /* Design tokens — the overlay's single source of colour + type, sourced from the CANVAS world so
  * the HTML chrome reads as one system with the game behind it (not an off-the-shelf palette). The
@@ -43,7 +51,7 @@
  * top-left corner. */
 .hud-tokens {
   position: absolute;
-  top: max(12px, env(safe-area-inset-top, 0px));
+  top: 12px;
   left: max(14px, env(safe-area-inset-left, 0px));
   display: flex;
   align-items: center;
@@ -67,7 +75,7 @@
  * (updatePointsCounter); the "+N" reward delta flashes just beneath it. */
 .hud-points {
   position: absolute;
-  top: max(12px, env(safe-area-inset-top, 0px));
+  top: 12px;
   right: max(14px, env(safe-area-inset-right, 0px));
   text-align: right;
   pointer-events: none;
@@ -78,7 +86,7 @@
  * injects an iframe into it. Transparent by default so an unfilled/absent banner shows nothing. */
 .hud-score-banner {
   position: absolute;
-  top: max(12px, env(safe-area-inset-top, 0px));
+  top: 12px;
   left: max(14px, env(safe-area-inset-left, 0px));
   z-index: 5;
   overflow: hidden;
@@ -1565,7 +1573,7 @@ button.is-hidden,
  * one row so it stays a thin strip below the raised powerup column. */
 @media (max-width: 560px), (max-height: 620px) {
   .hud-tokens {
-    top: max(8px, env(safe-area-inset-top, 0px));
+    top: 8px;
     left: max(10px, env(safe-area-inset-left, 0px));
     gap: 5px;
     padding: 4px 12px 2px 9px;
@@ -1579,7 +1587,7 @@ button.is-hidden,
   }
 
   .hud-points {
-    top: max(8px, env(safe-area-inset-top, 0px));
+    top: 8px;
     right: max(10px, env(safe-area-inset-right, 0px));
   }
 
@@ -2029,12 +2037,13 @@ button.is-hidden,
 /* The Credits link on the title / tap-to-start screen (attribution for the CC music + Flaticon
  * icons). A quiet pill pinned top-left, clear of the bottom-anchored Continue / New game menu (which
  * overlapped it in the bottom-right on narrow screens) and the bottom-centre battery pill. z-index 21
- * keeps it above the tap catcher / title menu (both z 20) so its own taps win. The safe-area insets
- * keep it out from under a mobile notch / status bar. Intro only; removed on start. */
+ * keeps it above the tap catcher / title menu (both z 20) so its own taps win. The LEFT safe-area
+ * inset keeps it clear of a landscape side-notch; `top` is a constant, per the header note. Intro
+ * only; removed on start. */
 .credits-link {
   position: absolute;
   left: max(14px, env(safe-area-inset-left, 0px));
-  top: max(14px, env(safe-area-inset-top, 0px));
+  top: 14px;
   z-index: 21;
   font: 700 12px var(--font-ui);
   color: rgba(var(--cream-rgb), 0.72);
@@ -2059,7 +2068,7 @@ button.is-hidden,
 .version-tag {
   position: absolute;
   right: max(14px, env(safe-area-inset-right, 0px));
-  top: max(14px, env(safe-area-inset-top, 0px));
+  top: 14px;
   z-index: 21;
   font: 700 12px var(--font-ui);
   letter-spacing: 0.05em;
