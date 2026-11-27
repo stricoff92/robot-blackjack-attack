@@ -3,7 +3,6 @@ import { music } from './audio/music'
 import { voice } from './audio/voice'
 import { getAudioDebugSnapshot } from './audio/context'
 import { getMuteSetting, initCrazyGames, loadingStart, loadingStop, logStorageHealth, onMuteChange, setAudioMuteControl } from './platform/crazygames'
-import { bootAllowed, renderLock } from './platform/sitelock'
 import { isBatterySaver } from './game/power-mode'
 import { isMusicMuted } from './game/music-mute'
 import { setSaverDpr } from './render/canvas'
@@ -15,9 +14,8 @@ if (!root) {
 }
 
 // Boot failsafe. The splash (index.html) is removed on the normal path once the game view mounts,
-// and by renderLock on a sitelocked host — but nothing covers a boot that never finishes: a throw
-// anywhere in this module, a hung SDK, or an exception inside mountGameView all leave it pulsing
-// forever. In production there is no error overlay, so an endless spinner is indistinguishable from
+// but nothing covers a boot that never finishes: a throw anywhere in this module, a hung SDK, or an
+// exception inside mountGameView all leave it pulsing forever. In production there is no error overlay, so an endless spinner is indistinguishable from
 // a slow load and reads as "still loading" rather than "broken". Armed FIRST, before any await, so
 // it survives a failure at any point below; the normal removal beats it by seconds, making this a
 // no-op in every healthy boot. Deliberately generous — it must never cut a slow-but-working load.
@@ -263,15 +261,6 @@ await Promise.race([
 // localStorage throw or go ephemeral (Private tab / Block All Cookies / in-app webview), which
 // otherwise silently drops every save — this surfaces it in Web Inspector at startup.
 logStorageHealth()
-
-// Production sitelock: only boot on a genuine CrazyGames host. Runs after SDK init so the hybrid
-// check can consult the SDK's environment. A no-op in dev / preview-unlock builds; on a foreign
-// prod host it blanks the screen and halts here (before any loading event or game mount) with a
-// never-resolving await — no thrown error, nothing for a thief to see. See platform/sitelock.ts.
-if (!bootAllowed()) {
-  renderLock(root)
-  await new Promise<never>(() => {})
-}
 
 // Signal the loading window to CrazyGames (must be after init). Our assets are small and mostly
 // lazy, so this brackets the synchronous mount; the first gameplayStart (the first deal) closes the

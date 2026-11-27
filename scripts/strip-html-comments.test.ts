@@ -103,7 +103,7 @@ describe('stripIndexHtmlComments: the real index.html', () => {
   it('keeps every structural landmark (assertShippable ran inside)', () => {
     expect(output).toContain('<div id="app"></div>')
     expect(output).toContain('id="boot-splash"')
-    expect(output).toContain('sdk.crazygames.com/crazygames-sdk-v3.js')
+    expect(output).toContain('name="description"')
     expect(output).toContain('@media (prefers-reduced-motion: reduce)')
     expect(output).toMatch(/^<!doctype html>/i)
   })

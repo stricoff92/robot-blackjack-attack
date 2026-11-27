@@ -4,9 +4,6 @@ encryption_key.txt
 
 dist/
 dest/
-# Upload archives from package.sh (BUILD_OUT_DIR); rba-*.zip also covers older root-level builds.
-builds/
-rba-*.zip
 
 .vscode/
 

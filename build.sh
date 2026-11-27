@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
-# Release build for CrazyGames.
+# Release build for GitHub Pages.
 #
-#   typecheck  ->  tests  ->  production bundle (dest/)  ->  upload-ready zip
+#   typecheck  ->  tests  ->  production bundle (dest/)  ->  verify
+#
+# The deploy itself runs in CI (.github/workflows/deploy.yml); this is the same pipeline locally.
 #
 # Usage: ./build.sh            (run from anywhere; it cd's to the repo root itself)
 #
 # Fails fast: `set -euo pipefail` means a red typecheck or a failing test aborts the run
-# BEFORE any bundle or zip is produced, so a broken build can never be packaged by mistake.
+# BEFORE any bundle is produced, so a broken build can never be deployed by mistake.
 set -euo pipefail
 
 # Always operate from the repo root (this script's own directory), so relative paths and the
@@ -45,7 +47,5 @@ echo "==> Production bundle (vite build -> dest/)"
 # pass. This is the same bundler step `npm run build` performs (terser property-mangling and all).
 npx vite build
 
-# Verify + zip. package.sh is the single zipper (it can also be run on its own to re-package an
-# existing dest/ without rebuilding), so the release archive gets the same pre-upload checks —
-# prod build, current, clean, sitelock + leaderboard key present — however it was produced.
-./package.sh
+# verify-dest.sh can also be run on its own to re-check an existing dest/ without rebuilding.
+./verify-dest.sh

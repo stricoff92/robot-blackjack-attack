@@ -48,7 +48,7 @@ FONT: Sixtyfour, SIL Open Font License Version 1.1 (attribution + license text r
   The OFL requires the license accompany any redistribution of the font, and the .ttf ships in
   the bundle, so the upstream license text is vendored at public/OFL.txt (copied verbatim from
   google/fonts ofl/sixtyfour/OFL.txt). Vite's publicDir copies it to the ARCHIVE ROOT as OFL.txt
-  on every build, which is what satisfies the clause. Do not move it into src/assets: package.sh
+  on every build, which is what satisfies the clause. Do not move it into src/assets: verify-dest.sh
   fails any file in dest/assets that nothing references, and a license file references nothing.
   There is no Reserved Font Name, so the family may keep the name "Sixtyfour" as-is.
 

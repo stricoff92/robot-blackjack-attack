@@ -37,7 +37,7 @@ const RAW_TEXT_TAGS: ReadonlySet<string> = new Set(['script', 'style'])
 const REQUIRED_LANDMARKS: readonly string[] = [
   '<title>Robot Blackjack Attack</title>',
   'rel="preload"',
-  'sdk.crazygames.com/crazygames-sdk-v3.js',
+  'name="description"',
   'touch-action: manipulation',
   '@font-face',
   '#boot-splash {',

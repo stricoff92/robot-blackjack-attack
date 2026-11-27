@@ -7,6 +7,10 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Robot Blackjack Attack</title>
+    <meta
+      name="description"
+      content="A blackjack roguelike: beat six robot dealers with lasers, powerups and upgrades."
+    />
     <!-- Warm the Sixtyfour pixel title face on the FIRST frame so the boot splash's wordmark can
          swap from the system fallback to the real face while it's still on screen (font-display:
          swap below). Vite fingerprints this path to the exact same hashed .ttf the runtime loader
@@ -21,14 +25,6 @@
       type="font/ttf"
       crossorigin
     />
-    <!-- CrazyGames SDK v3 (ads, gameplay events, leaderboard submit, iframe-safe storage). Loaded
-         from their CDN — not npm — and exposed as window.CrazyGames.SDK. It is absent off-platform
-         (and may fail to load if blocked); the game degrades gracefully, see
-         src/platform/crazygames.ts. `defer` so it does NOT block HTML parsing / first paint (a
-         plain <script> in <head> stalls <body> — and the boot splash — until it downloads, which
-         is slow on mobile). defer still runs it BEFORE the deferred module (document order), so
-         window.CrazyGames.SDK is present when main.ts calls initCrazyGames(). -->
-    <script defer src="https://sdk.crazygames.com/crazygames-sdk-v3.js"></script>
     <style>
       html,
       body {
@@ -36,7 +32,7 @@
         height: 100%;
         overflow: hidden;
         background: #0b0b12;
-        /* CrazyGames-recommended: block accidental selection of game elements.
+        /* Block accidental selection of game elements.
            On mobile/tablets a double-tap or press-and-hold would otherwise raise
            the magnifier or select the whole game and pop a contextual menu. */
         -webkit-user-select: none;
@@ -63,7 +59,7 @@
          fast repeated taps (e.g. tapping Hit several times), scrolling and pinch; it
          removes only the non-standard double-tap-zoom. The universal selector also
          reaches the body-level overlays that live OUTSIDE #app (boot splash,
-         CrazyGames ad container, dev error box). The canvas is excluded and narrowed
+         dev error box). The canvas is excluded and narrowed
          to `none` below so in-world drags never scroll or select. */
       *:not(canvas) {
         touch-action: manipulation;
@@ -85,7 +81,7 @@
         font-display: swap;
       }
       /* Instant boot splash — pure static HTML/CSS so it paints on the FIRST frame, before the
-         JS bundle + CrazyGames SDK init resolve (that gap was a dark screen for 1-2s on mobile).
+         JS bundle resolves (that gap was a dark screen for 1-2s on mobile).
          main.ts fades + removes #boot-splash once the game view has mounted. The only web font is
          the preloaded pixel title face (swaps in when ready); everything else is the game palette. */
       #boot-splash {

@@ -55,27 +55,24 @@ ECODE myfunction() {
 ```
 
 
-## CrazyGames Platform
+## Hosting: GitHub Pages
 
-This game ships to CrazyGames as a static HTML5 bundle. `npm run build` outputs to `dest/`; a zip of its contents (with `index.html` at the root) is what gets uploaded. No server-side code. Details below reflect knowledge as of early 2026 — confirm SDK method names against https://docs.crazygames.com before integrating.
+The game ships to GitHub Pages as a static HTML5 bundle at https://stricoff92.github.io/robot-blackjack-attack/ (previously CrazyGames; that SDK layer is being removed, see docs/github-pages-migration.md). `.github/workflows/deploy.yml` runs `./build.sh` (typecheck → tests → `vite build` → `verify-dest.sh`) on every push to `main` and publishes `dest/`. No server-side code.
 
 ### Build & assets
  - Use relative asset paths (`base: './'` in Vite). The game is served from a subpath, so absolute `/assets/...` paths break.
  - Keep the initial bundle small and load fast; show a loading indicator for anything slow.
- - Keep assets bundled/local. Avoid external network requests — they may be blocked.
+ - Keep assets bundled/local. No external network requests.
 
 ### Responsive canvas (required)
- - The game runs in an iframe and must fill whatever space it is given, on desktop and mobile, and re-layout on resize / orientation change. No fixed pixel dimensions.
+ - The game must fill whatever space it is given, on desktop and mobile, and re-layout on resize / orientation change. No fixed pixel dimensions.
  - Size the canvas backing store to `cssSize * devicePixelRatio` and scale the 2d context by DPR so rendering stays crisp; game code draws in logical (CSS) pixels. See `src/render/canvas.ts`.
  - `html, body, #app` fill the viewport; `overflow: hidden` (no scrollbars); `touch-action: none` on the canvas so mobile gestures don't scroll or zoom the page.
  - Support both mouse/keyboard and touch input.
 
-### SDK (integrate later, wrap in a typed module)
- - Load the CrazyGames SDK from their CDN `<script>` tag, not npm.
- - Signal active play with gameplay start/stop calls, and loading start/stop around asset loading.
- - Mute all audio while an ad plays and restore it afterward; provide a mute button.
- - Start audio only after a user gesture (browser autoplay policy).
- - Use the SDK's data module for persistence — iframe localStorage may be partitioned.
+### Persistence & audio
+ - Persistence is `localStorage` (shared `stricoff92.github.io` origin — keep every key under the `rba.` prefix).
+ - Start audio only after a user gesture (browser autoplay policy). Provide a mute button.
 
 ## Git
 
